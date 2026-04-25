@@ -125,6 +125,7 @@ async def _dispatch_fan_out(
                 phase="developing",
                 status=TaskStatus.queued,
                 output_artifact=task_msg.output_artifact,
+                queued_message=task_msg.model_dump(),
             )
         )
         log.info("Enqueued developer task %s", task_msg.task_id)
@@ -250,6 +251,7 @@ async def _dispatch_review_result(
                 status=TaskStatus.queued,
                 revision=new_revision,
                 output_artifact=output_artifact,
+                queued_message=task_msg.model_dump(),
             )
         )
 

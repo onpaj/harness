@@ -76,10 +76,24 @@ class Worker:
     async def _process_task(self, task: TaskMessage, agent_def) -> None:
         log.info("[%s] Starting task %s", WORKER_ID, task.task_id)
 
-        # Mark phase/task as in_progress in state
+        # Guard against stale queue messages from previous pipeline runs
+        current_state = await self._state.get(task.feature_id)
+        if current_state.status.value != agent_def.phase:
+            log.warning(
+                "[%s] Discarding stale task %s: feature is in %r but this worker handles %r",
+                WORKER_ID, task.task_id, current_state.status.value, agent_def.phase,
+            )
+            return
+
+        # Prepare per-task log file
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        task_log_file = log_dir / f"{task.task_id}.log"
+
+        # Mark phase/task as in_progress in state (includes log_file path)
         await self._state.update(
             task.feature_id,
-            lambda s: _mark_task_started(s, task, WORKER_ID),
+            lambda s: _mark_task_started(s, task, WORKER_ID, str(task_log_file)),
         )
 
         # Prepare work dir
@@ -102,7 +116,7 @@ class Worker:
 
         # Build prompt and run agent
         prompt = build_prompt(agent_def, task, artifact_contents)
-        output = await run_agent(agent_def, prompt, work_dir=work_dir)
+        output = await run_agent(agent_def, prompt, work_dir=work_dir, log_file=task_log_file)
 
         # Upload output artifact
         await self._store.upload(task.output_artifact, output)
@@ -141,7 +155,7 @@ class Worker:
             log.error("Could not mark feature %s as failed: %s", task.feature_id, exc)
 
 
-def _mark_task_started(state, task: TaskMessage, worker_id: str):
+def _mark_task_started(state, task: TaskMessage, worker_id: str, log_file: str | None = None):
     phase = state.status.value
     updated = (
         state
@@ -150,6 +164,7 @@ def _mark_task_started(state, task: TaskMessage, worker_id: str):
             status=TaskStatus.in_progress,
             worker_id=worker_id,
             started_at=datetime.now(UTC),
+            log_file=log_file,
         )
         .with_phase(phase, PhaseInfo(status=PhaseStatus.in_progress))
     )

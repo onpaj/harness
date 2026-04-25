@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import subprocess
+import sys
 from datetime import UTC, datetime
 from typing import ClassVar
 
 from pathlib import Path
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.coordinate import Coordinate
 from textual.reactive import reactive
-from textual.widgets import DataTable, Footer, Header, Label, ListItem, ListView, Log, Static
+from textual.screen import ModalScreen
+from textual.widgets import Button, DataTable, Footer, Header, Label, ListItem, ListView, RichLog, Static
 
 from agentharness.config import Config
 from agentharness.models import FeatureState, FeatureStatus, TaskStatus
+from agentharness.storage import PipelineQueue
 
 _REFRESH_SECONDS = 2.0
 
@@ -41,6 +49,43 @@ _STATUS_COLORS = {
 
 _PHASE_ORDER = ["planning", "architecting", "designing", "developing", "reviewing"]
 
+_OBSERVER_PID_FILE = Path("logs/observer.pid")
+
+
+def _observer_pid() -> int | None:
+    if not _OBSERVER_PID_FILE.exists():
+        return None
+    try:
+        pid = int(_OBSERVER_PID_FILE.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (ValueError, ProcessLookupError, PermissionError):
+        _OBSERVER_PID_FILE.unlink(missing_ok=True)
+        return None
+
+
+def _start_observer() -> int:
+    exe = str(Path(sys.executable).parent / "agentharness")
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    fh = open(log_dir / "observer.log", "a")
+    proc = subprocess.Popen(
+        [exe, "_observe"],
+        stdout=fh,
+        stderr=fh,
+        start_new_session=True,
+    )
+    _OBSERVER_PID_FILE.write_text(str(proc.pid))
+    return proc.pid
+
+
+def _stop_observer(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    _OBSERVER_PID_FILE.unlink(missing_ok=True)
+
 
 def _phase_bar(state: FeatureState) -> str:
     filled = sum(
@@ -61,6 +106,17 @@ def _task_summary(state: FeatureState, phase: str = "developing") -> str:
         return ""
     done = sum(1 for t in tasks if t.status == TaskStatus.completed)
     return f"{done}/{len(tasks)} tasks"
+
+
+def _fmt_duration(started_at: datetime | None, completed_at: datetime | None = None) -> str:
+    if not started_at:
+        return ""
+    ref = completed_at or datetime.now(UTC)
+    started = started_at.replace(tzinfo=UTC) if started_at.tzinfo is None else started_at
+    ref = ref.replace(tzinfo=UTC) if ref.tzinfo is None else ref
+    secs = int((ref - started).total_seconds())
+    m, s = divmod(secs, 60)
+    return f"{m}m {s}s"
 
 
 def _fmt_age(dt: datetime | None) -> str:
@@ -93,16 +149,27 @@ class FeatureList(ListView):
         super().__init__(*args, **kwargs)
         self._feature_ids: list[str] = []
 
-    def update_features(self, states: list[FeatureState]) -> None:
-        self._feature_ids = [s.feature_id for s in states]
-        self.clear()
-        for state in states:
-            icon = _STATUS_ICONS.get(state.status, "?")
-            bar = _phase_bar(state)
-            summary = _task_summary(state) or state.status.value
-            color = _STATUS_COLORS.get(state.status, "white")
-            label = f"[{color}]{icon}[/]  {state.feature_id[-16:]}  [{color}]{bar}[/]  [dim]{summary}[/dim]"
-            self.append(ListItem(Label(label)))
+    async def update_features(self, states: list[FeatureState]) -> None:
+        new_ids = [s.feature_id for s in states]
+        if new_ids == self._feature_ids:
+            for list_item, state in zip(self.query(ListItem), states):
+                list_item.query_one(Label).update(self._feature_label(state))
+            return
+        prev_id = self.selected_feature_id()
+        self._feature_ids = new_ids
+        await self.clear()
+        if states:
+            await self.extend([ListItem(Label(self._feature_label(s))) for s in states])
+        if prev_id and prev_id in self._feature_ids:
+            self.index = self._feature_ids.index(prev_id)
+
+    @staticmethod
+    def _feature_label(state: FeatureState) -> str:
+        icon = _STATUS_ICONS.get(state.status, "?")
+        bar = _phase_bar(state)
+        summary = _task_summary(state) or state.status.value
+        color = _STATUS_COLORS.get(state.status, "white")
+        return f"[{color}]{icon}[/]  {state.feature_id[-16:]}  [{color}]{bar}[/]  [dim]{summary}[/dim]"
 
     def selected_feature_id(self) -> str | None:
         idx = self.index
@@ -116,31 +183,66 @@ class TaskPanel(DataTable):
 
     BORDER_TITLE = "Tasks"
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._row_task_ids: list[str] = []
+
     def on_mount(self) -> None:
-        self.add_columns("Task", "Status", "Worker", "Rev", "Running")
+        self.add_columns("Task", "Status", "Agent", "Rev", "Running")
         self.cursor_type = "row"
 
     def update_tasks(self, state: FeatureState) -> None:
+        new_rows, new_ids = self._build_task_rows(state)
+        if new_ids == self._row_task_ids:
+            for row_idx, row_data in enumerate(new_rows):
+                for col_idx, cell_value in enumerate(row_data):
+                    self.update_cell_at(Coordinate(row_idx, col_idx), cell_value)
+            return
+        prev_task_id = self.selected_task_id()
+        self._row_task_ids = new_ids
         self.clear()
+        for row_data in new_rows:
+            self.add_row(*row_data)
+        if prev_task_id and prev_task_id in self._row_task_ids:
+            self.move_cursor(row=self._row_task_ids.index(prev_task_id))
+
+    def _build_task_rows(self, state: FeatureState) -> tuple[list[tuple], list[str]]:
+        _phase_colors = {"completed": "green", "in_progress": "yellow", "failed": "red", "pending": "dim"}
+        rows: list[tuple] = []
+        ids: list[str] = []
+        for phase in _PHASE_ORDER:
+            info = state.phases.get(phase)
+            if not info:
+                continue
+            color = _phase_colors.get(info.status.value, "dim")
+            rows.append((
+                f"[{color}]{phase}[/]",
+                f"[{color}]{info.status.value}[/]",
+                info.agent or "—",
+                str(info.revision),
+                _fmt_duration(info.started_at, info.completed_at),
+            ))
+            ids.append(phase)
         for task in state.tasks:
             color = _task_status_color(task.status)
-            duration = ""
-            if task.started_at:
-                ref = task.completed_at or datetime.now(UTC)
-                started = task.started_at.replace(tzinfo=UTC) if task.started_at.tzinfo is None else task.started_at
-                secs = int((ref.replace(tzinfo=UTC) if ref.tzinfo is None else ref - started).total_seconds())
-                m, s = divmod(secs, 60)
-                duration = f"{m}m {s}s"
-            self.add_row(
+            rows.append((
                 f"[{color}]{task.task_id.split('-dev-')[-1]}[/]",
                 f"[{color}]{task.status.value}[/]",
                 task.worker_id or "—",
                 str(task.revision),
-                duration,
-            )
+                _fmt_duration(task.started_at, task.completed_at),
+            ))
+            ids.append(task.task_id)
+        return rows, ids
+
+    def selected_task_id(self) -> str | None:
+        idx = self.cursor_row
+        if 0 <= idx < len(self._row_task_ids):
+            return self._row_task_ids[idx]
+        return None
 
 
-class EventLogPanel(Log):
+class EventLogPanel(RichLog):
     """Scrollable event history."""
 
     BORDER_TITLE = "Event Log"
@@ -148,7 +250,7 @@ class EventLogPanel(Log):
 
     def update_events(self, state: FeatureState) -> None:
         self.clear()
-        for evt in reversed(state.history[-50:]):
+        for evt in state.history[-50:]:
             ts = evt.timestamp.strftime("%H:%M:%S")
             parts = [f"[dim]{ts}[/dim]  [bold]{evt.event}[/bold]"]
             if evt.phase:
@@ -159,7 +261,8 @@ class EventLogPanel(Log):
                 parts.append(f"[dim]{evt.worker_id}[/dim]")
             if evt.details:
                 parts.append(f"[dim italic]{evt.details}[/dim italic]")
-            self.write_line("  ".join(parts))
+            self.write(Text.from_markup("  ".join(parts)))
+        self.scroll_end(animate=False)
 
 
 _LOG_DIR = Path("logs")
@@ -167,7 +270,61 @@ _LOG_TAIL_LINES = 150
 _MAX_ACTIVE_LOGS = 6   # most recently modified log files to show
 
 
-class WorkerLogPanel(Log):
+class TaskLogPanel(RichLog):
+    """Realtime log for the selected feature's task log files."""
+
+    BORDER_TITLE = "Task Log"
+    MAX_LINES: ClassVar[int] = 500
+
+    def update_for_task(self, state: FeatureState | None, task_id: str | None) -> None:
+        if not state or not task_id:
+            self.clear()
+            self.border_title = "Task Log"
+            return
+
+        short = task_id.split("-dev-")[-1]
+        self.border_title = f"Task Log  {short}  agent: {state.status.value}"
+
+        task_entry = next((t for t in state.tasks if t.task_id == task_id), None)
+        if task_entry and task_entry.log_file:
+            log_path = Path(task_entry.log_file)
+            if log_path.exists():
+                try:
+                    raw_lines = log_path.read_text().splitlines()[-_LOG_TAIL_LINES:]
+                    self.clear()
+                    label = log_path.stem
+                    for line in raw_lines:
+                        self.write(Text.from_markup(f"[dim green]{label}[/dim green]  {line}"))
+                    self.scroll_end(animate=False)
+                except OSError:
+                    pass
+            return
+
+        # Fallback: scan log dir by task_id stem match
+        if not _LOG_DIR.exists():
+            return
+        lines: list[tuple[str, str, str]] = []
+        for lf in _LOG_DIR.rglob("*.log"):
+            if task_id not in lf.stem:
+                continue
+            label = lf.stem
+            try:
+                text = lf.read_text()
+            except OSError:
+                continue
+            for line in text.splitlines()[-_LOG_TAIL_LINES:]:
+                ts = line[:8] if len(line) >= 8 and line[2] == ":" else "00:00:00"
+                lines.append((ts, label, line))
+        if not lines:
+            return
+        lines.sort(key=lambda t: t[0])
+        self.clear()
+        for _, label, line in lines[-_LOG_TAIL_LINES:]:
+            self.write(Text.from_markup(f"[dim green]{label}[/dim green]  {line}"))
+        self.scroll_end(animate=False)
+
+
+class WorkerLogPanel(RichLog):
     """Live tail of active task log files (logs/{queue}/{task_id}.log)."""
 
     BORDER_TITLE = "Worker Logs"
@@ -177,7 +334,6 @@ class WorkerLogPanel(Log):
         if not _LOG_DIR.exists():
             return
 
-        # Collect all log files (observer + per-task), sorted by mtime desc
         all_logs = sorted(
             _LOG_DIR.rglob("*.log"),
             key=lambda p: p.stat().st_mtime if p.exists() else 0,
@@ -185,9 +341,8 @@ class WorkerLogPanel(Log):
         )
         active_logs = all_logs[:_MAX_ACTIVE_LOGS]
 
-        lines: list[tuple[float, str, str]] = []
+        lines: list[tuple[str, str, str]] = []
         for log_file in active_logs:
-            # label = queue/task_id or "observer"
             parts = log_file.relative_to(_LOG_DIR).parts
             label = "/".join(parts[:-1]) if len(parts) > 1 else log_file.stem
             try:
@@ -202,7 +357,48 @@ class WorkerLogPanel(Log):
 
         self.clear()
         for _, label, line in lines[-_LOG_TAIL_LINES:]:
-            self.write_line(f"[dim cyan]{label}[/dim cyan]  {line}")
+            self.write(Text.from_markup(f"[dim cyan]{label}[/dim cyan]  {line}"))
+        self.scroll_end(animate=False)
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Modal confirmation dialog."""
+
+    CSS = """
+    ConfirmScreen {
+        align: center middle;
+    }
+    #dialog {
+        width: 50;
+        height: 9;
+        border: thick $error;
+        background: $surface;
+        padding: 1 2;
+    }
+    #buttons {
+        layout: horizontal;
+        align: center middle;
+        margin-top: 1;
+    }
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Container
+        with Container(id="dialog"):
+            yield Label(self._message)
+            with Horizontal(id="buttons"):
+                yield Button("Confirm", variant="error", id="confirm")
+                yield Button("Cancel", variant="default", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm")
 
 
 class StatusBar(Static):
@@ -216,7 +412,9 @@ class StatusBar(Static):
             queues_part = f"  |  queues: {queue_str}" if active else "  |  [dim]all queues idle[/dim]"
         else:
             queues_part = ""
-        self.update(f"[dim]Last refresh: {now}  |  Refreshing every {_REFRESH_SECONDS:.0f}s{queues_part}  |  q: quit  |  r: refresh[/dim]")
+        pid = _observer_pid()
+        observer_part = f"  |  [green]observer pid:{pid}[/green]" if pid else "  |  [red]observer off[/red]"
+        self.update(f"[dim]Last refresh: {now}  |  Refreshing every {_REFRESH_SECONDS:.0f}s{queues_part}{observer_part}[/dim]")
 
 
 class PipelineMonitor(App):
@@ -231,7 +429,7 @@ class PipelineMonitor(App):
         height: 1fr;
     }
     FeatureList {
-        width: 36;
+        width: 54;
         border: round $primary;
     }
     #right-col {
@@ -239,15 +437,19 @@ class PipelineMonitor(App):
         layout: vertical;
     }
     TaskPanel {
-        height: 25%;
+        height: 20%;
         border: round $primary;
     }
     EventLogPanel {
-        height: 25%;
+        height: 20%;
         border: round $primary;
     }
-    WorkerLogPanel {
+    TaskLogPanel {
         height: 1fr;
+        border: round $success;
+    }
+    WorkerLogPanel {
+        height: 15%;
         border: round $accent;
     }
     StatusBar {
@@ -261,6 +463,12 @@ class PipelineMonitor(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh now"),
         Binding("l", "open_log", "Open log in less"),
+        Binding("c", "clear_logs", "Clear worker logs"),
+        Binding("p", "purge_queues", "Purge all queues"),
+        Binding("i", "implement", "Implement selected feature"),
+        Binding("o", "toggle_observer", "Observer on/off"),
+        Binding("k", "kill_task", "Kill selected task"),
+        Binding("t", "resume_task", "Resume selected task"),
     ]
 
     TITLE = "AgentHarness Pipeline Monitor"
@@ -277,6 +485,7 @@ class PipelineMonitor(App):
             with Vertical(id="right-col"):
                 yield TaskPanel(id="task-panel")
                 yield EventLogPanel(id="event-log")
+                yield TaskLogPanel(id="task-log")
                 yield WorkerLogPanel(id="worker-log")
         yield StatusBar(id="status-bar")
         yield Footer()
@@ -292,7 +501,7 @@ class PipelineMonitor(App):
         )
         self._states = states
         feature_list = self.query_one(FeatureList)
-        feature_list.update_features(states)
+        await feature_list.update_features(states)
         self.query_one(StatusBar).update_time(queue_depths)
         self.query_one(WorkerLogPanel).refresh_logs()
         self._update_detail_panels()
@@ -305,14 +514,230 @@ class PipelineMonitor(App):
         state = next((s for s in self._states if s.feature_id == selected_id), None)
         if not state:
             return
-        self.query_one(TaskPanel).update_tasks(state)
+        task_panel = self.query_one(TaskPanel)
+        task_panel.update_tasks(state)
         self.query_one(EventLogPanel).update_events(state)
+        task_id = task_panel.selected_task_id()
+        self.query_one(TaskLogPanel).update_for_task(state, task_id)
 
     def on_list_view_selected(self) -> None:
         self._update_detail_panels()
 
+    def on_data_table_cursor_moved(self) -> None:
+        self._update_task_log()
+
+    def _update_task_log(self) -> None:
+        feature_list = self.query_one(FeatureList)
+        selected_id = feature_list.selected_feature_id()
+        if not selected_id:
+            return
+        state = next((s for s in self._states if s.feature_id == selected_id), None)
+        if not state:
+            return
+        task_id = self.query_one(TaskPanel).selected_task_id()
+        self.query_one(TaskLogPanel).update_for_task(state, task_id)
+
     def action_refresh(self) -> None:
         self.call_after_refresh(self._refresh_data)
+
+    def action_clear_logs(self) -> None:
+        self.query_one(WorkerLogPanel).clear()
+
+    def action_kill_task(self) -> None:
+        task_id = self.query_one(TaskPanel).selected_task_id()
+        if not task_id:
+            self.notify("No task selected.", severity="warning")
+            return
+
+        def on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", task_id],
+                    capture_output=True, text=True,
+                )
+                pids = [int(p) for p in result.stdout.split() if p.strip()]
+                if not pids:
+                    self.notify(f"No process found for task {task_id}.", severity="warning")
+                    return
+                for pid in pids:
+                    os.kill(pid, signal.SIGTERM)
+                self.notify(f"Killed {len(pids)} process(es) for {task_id.split('-dev-')[-1]}.", severity="warning")
+            except Exception as exc:
+                self.notify(f"Kill failed: {exc}", severity="error")
+
+        short = task_id.split("-dev-")[-1]
+        self.push_screen(ConfirmScreen(f"Kill process for task: {short}?"), on_confirm)
+
+    def action_resume_task(self) -> None:
+        feature_id = self.query_one(FeatureList).selected_feature_id()
+        task_id = self.query_one(TaskPanel).selected_task_id()
+        if not feature_id or not task_id:
+            self.notify("No task selected.", severity="warning")
+            return
+        label = task_id if task_id in _PHASE_ORDER else task_id.split("-dev-")[-1]
+        self.push_screen(
+            ConfirmScreen(f"Resume: {label}?"),
+            lambda confirmed: self.run_worker(self._do_resume_task(feature_id, task_id), exclusive=False) if confirmed else None,
+        )
+
+    async def _do_resume_task(self, feature_id: str, task_id: str) -> None:
+        from azure.storage.blob.aio import BlobServiceClient
+        from agentharness.models import FeatureStatus, PhaseInfo, PhaseStatus, TaskMessage, TaskStatus
+        from agentharness.state_manager import StateManager
+        from agentharness.storage import phase_artifact_path, review_artifact_path
+
+        _PHASE_TO_QUEUE = {
+            "planning": "planner-queue",
+            "architecting": "architect-queue",
+            "designing": "designer-queue",
+            "developing": "developer-queue",
+            "reviewing": "review-queue",
+        }
+
+        conn_str = self._config.storage.connection_string
+        blob_service = BlobServiceClient.from_connection_string(conn_str)
+        try:
+            state_mgr = StateManager(blob_service, self._config.storage.container)
+            state = await state_mgr.get(feature_id)
+
+            if task_id in _PHASE_ORDER:
+                await self._resume_phase(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, conn_str, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
+            else:
+                await self._resume_dev_task(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, conn_str, TaskMessage, TaskStatus)
+        finally:
+            await blob_service.close()
+
+    async def _resume_phase(self, state_mgr, state, feature_id, phase, phase_to_queue, conn_str, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path) -> None:
+        queue_name = phase_to_queue.get(phase)
+        if not queue_name:
+            self.notify(f"No queue mapped for phase {phase!r}.", severity="error")
+            return
+
+        _phase_inputs = {
+            "planning": [f"artifacts/{feature_id}/brief.md"],
+            "architecting": [phase_artifact_path(feature_id, "spec", 1), f"artifacts/{feature_id}/brief.md"],
+            "designing": [phase_artifact_path(feature_id, "spec", 1), phase_artifact_path(feature_id, "arch-review", 1)],
+            "reviewing": [phase_artifact_path(feature_id, "spec", 1), phase_artifact_path(feature_id, "arch-review", 1)],
+        }
+        _phase_outputs = {
+            "planning": phase_artifact_path(feature_id, "spec", 1),
+            "architecting": phase_artifact_path(feature_id, "arch-review", 1),
+            "designing": phase_artifact_path(feature_id, "design", 1),
+            "reviewing": review_artifact_path(feature_id, 1),
+        }
+        _phase_agents = {
+            "planning": "planner",
+            "architecting": "architect",
+            "designing": "designer",
+            "reviewing": "reviewer",
+        }
+        _phase_status = {
+            "planning": FeatureStatus.planning,
+            "architecting": FeatureStatus.architecting,
+            "designing": FeatureStatus.designing,
+            "reviewing": FeatureStatus.reviewing,
+        }
+
+        task_msg = TaskMessage(
+            feature_id=feature_id,
+            task_id=f"{feature_id}-{phase}-1",
+            input_artifacts=_phase_inputs.get(phase, []),
+            output_artifact=_phase_outputs[phase],
+            agent_role=_phase_agents[phase],
+        )
+
+        await state_mgr.update(
+            feature_id,
+            lambda s: (
+                s.with_status(_phase_status[phase])
+                .with_phase(phase, PhaseInfo(status=PhaseStatus.pending))
+                .with_event("phase_resumed", phase=phase)
+            ),
+        )
+
+        q = PipelineQueue.from_connection_string(conn_str, queue_name)
+        try:
+            await q.send_task(task_msg)
+        finally:
+            await q.close()
+
+        self.notify(f"Phase {phase!r} requeued → {queue_name}", severity="information")
+
+    async def _resume_dev_task(self, state_mgr, state, feature_id, task_id, phase_to_queue, conn_str, TaskMessage, TaskStatus) -> None:
+        task_entry = next((t for t in state.tasks if t.task_id == task_id), None)
+        if not task_entry:
+            self.notify(f"Task {task_id!r} not found in state.", severity="error")
+            return
+        if task_entry.status == TaskStatus.completed:
+            self.notify("Task is already completed — cannot resume.", severity="warning")
+            return
+        if not task_entry.queued_message:
+            self.notify("No saved message for this task — cannot resume.", severity="error")
+            return
+
+        queue_name = phase_to_queue.get(task_entry.phase)
+        if not queue_name:
+            self.notify(f"Unknown phase {task_entry.phase!r}.", severity="error")
+            return
+
+        await state_mgr.update(
+            feature_id,
+            lambda s: s.with_task_update(
+                task_id,
+                status=TaskStatus.queued,
+                worker_id=None,
+                started_at=None,
+                completed_at=None,
+            ).with_event("task_resumed", task_id=task_id),
+        )
+
+        q = PipelineQueue.from_connection_string(conn_str, queue_name)
+        try:
+            await q.send_task(TaskMessage(**task_entry.queued_message))
+        finally:
+            await q.close()
+
+        short = task_id.split("-dev-")[-1]
+        self.notify(f"Task {short!r} queued → {queue_name}", severity="information")
+
+    def action_toggle_observer(self) -> None:
+        pid = _observer_pid()
+        if pid:
+            _stop_observer(pid)
+            self.notify(f"Observer stopped (pid {pid}).", severity="warning")
+        else:
+            new_pid = _start_observer()
+            self.notify(f"Observer started (pid {new_pid}).", severity="information")
+
+    def action_implement(self) -> None:
+        feature_id = self.query_one(FeatureList).selected_feature_id()
+        if not feature_id:
+            self.notify("No feature selected.", severity="warning")
+            return
+        self.run_worker(self._do_implement(feature_id), exclusive=False)
+
+    async def _do_implement(self, feature_id: str) -> None:
+        from agentharness.brainstorm import enqueue_planner
+        await enqueue_planner(feature_id, self._config)
+        self.notify(f"Pipeline started: {feature_id}", severity="information")
+
+    def action_purge_queues(self) -> None:
+        def on_confirm(confirmed: bool) -> None:
+            if confirmed:
+                self.run_worker(self._do_purge_queues(), exclusive=True)
+        self.push_screen(ConfirmScreen("Purge ALL queues? This cannot be undone."), on_confirm)
+
+    async def _do_purge_queues(self) -> None:
+        conn = self._config.storage.connection_string
+        for name in self._config.queue_names():
+            q = PipelineQueue.from_connection_string(conn, name)
+            try:
+                await q.purge()
+            finally:
+                await q.close()
+        self.notify("All queues purged.", severity="warning")
 
     async def action_open_log(self) -> None:
         import subprocess

@@ -53,6 +53,8 @@ class TaskEntry(BaseModel):
     completed_at: datetime | None = None
     output_artifact: str | None = None
     review_feedback: str | None = None
+    log_file: str | None = None
+    queued_message: dict | None = None
 
 
 class HistoryEvent(BaseModel):
@@ -134,7 +136,7 @@ class AgentDefinition(BaseModel):
     model: str
     phase: str
     max_turns: int = 20
-    allowed_tools: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] | None = None
     output_format: str = "markdown"
     visibility_timeout: int = 600
     retry_limit: int = 3

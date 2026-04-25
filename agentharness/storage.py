@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -25,12 +26,17 @@ class ArtifactStore:
         client = BlobServiceClient.from_connection_string(config.storage.connection_string)
         return cls(client, config.storage.container)
 
-    async def upload(self, blob_path: str, content: str | bytes) -> None:
+    async def upload(self, blob_path: str, content: str | bytes, verify_retries: int = 5, verify_delay: float = 0.5) -> None:
         if isinstance(content, str):
             content = content.encode()
         container = self._service.get_container_client(self._container)
         blob = container.get_blob_client(blob_path)
         await blob.upload_blob(content, overwrite=True)
+        for _ in range(verify_retries):
+            if await blob.exists():
+                return
+            await asyncio.sleep(verify_delay)
+        raise RuntimeError(f"Blob not available after upload: {blob_path}")
 
     async def download(self, blob_path: str) -> str:
         container = self._service.get_container_client(self._container)
@@ -95,6 +101,9 @@ class PipelineQueue:
             pass
         await dl_queue.send_message(message.content)
         await self._client.delete_message(message)
+
+    async def purge(self) -> None:
+        await self._client.clear_messages()
 
     async def ensure_exists(self) -> None:
         try:

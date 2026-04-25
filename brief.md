@@ -1,40 +1,38 @@
-# Feature Brief: AgentHarness Landing Page
+# Feature Brief: Artifact Browser in TUI
 
 ## Problem Statement
-Engineers on the team already use Claude Code, but they still spend significant time babysitting it — guiding decisions, correcting mistakes, debugging outputs, and context-switching between tasks. There's still too much human in the loop. The landing page exists to show colleagues that AgentHarness solves exactly this: you describe the feature once, and the autonomous pipeline handles the rest.
+Users running AgentHarness have no way to inspect pipeline artifacts without leaving the terminal or manually navigating Azure Blob Storage. The TUI shows pipeline status but offers no way to read what agents actually produced.
 
 ## Goals
-- Convince engineer colleagues to try AgentHarness by clearly communicating the "before vs after" value proposition
-- Communicate what AgentHarness is, what it does, and how to get started — in under 2 minutes of reading
+- Allow users to browse and read all artifacts for any feature directly inside the TUI watch command.
 
 ## Functional Requirements
-- Hero section: punchy headline + subheadline focused on "remove yourself from the loop"
-- Problem section: relatable "you're using Claude Code but still babysitting it" framing
-- How it works: visual pipeline walkthrough (brainstorm → planner → architect → designer → developer(s) → reviewer → done)
-- Key benefits: save hours, no guiding, no correcting, no context-switching
-- Quick start / how to use: minimal steps to get started (brainstorm skill, implement command)
-- Footer with project context
+- Add an artifact browser panel or screen to the existing Textual TUI (`agentharness watch`)
+- List all features, then list all artifacts for a selected feature (brief.md, spec, arch-review, design, impl files, review)
+- On selection, display the artifact content in a readable pane
+- Navigation via keyboard (arrow keys, enter to open, escape/back to return)
+- All artifact types must be supported: brief.md, spec.rN.md, arch-review.rN.md, design.rN.md, impl/{task}.rN.md, review/review.rN.md, state.json
 
 ## Non-Functional Requirements
-- Fully static — no backend, no build step required (plain HTML + CSS + minimal JS)
-- Loads fast, no heavy frameworks
-- Looks polished enough to take seriously
+- Artifact content is fetched from Azure Blob Storage on demand (no pre-caching)
+- UI must remain responsive during fetch (async)
+- Should integrate cleanly into the existing Textual TUI without disrupting the main pipeline monitor view
 
 ## Technical Constraints
-- Single HTML file preferred (self-contained, easy to share and host)
-- No React, no npm, no build pipeline — it's a landing page, not an app
-- Can use a CDN-hosted CSS library if needed (Tailwind CDN, or hand-rolled)
+- Python + Textual framework (existing TUI in `agentharness/tui.py`)
+- Azure Blob Storage via existing `agentharness/storage.py` client
+- Read-only — no writes, no pipeline actions triggered from this view
 
 ## Out of Scope
-- Authentication or login
-- Interactive demo
-- Documentation site (this is a marketing/intro page only)
-- Internationalization
+- Editing artifacts
+- Triggering pipeline actions from artifact view
+- Copying artifacts to clipboard or opening in external editor
+- Diffing artifact revisions
 
 ## Success Criteria
-- A colleague reads it and says "I want to try this"
-- The pipeline steps are clear without needing to read the README
-- Page looks professional: minimal, clean, dark blue color scheme
+- User can open TUI, navigate to any feature, browse its artifact list, and read any artifact without leaving the terminal
+- All artifact types are accessible
+- UI remains responsive while loading artifact content from Azure
 
 ## Additional Context
-AgentHarness is a distributed, event-driven pipeline running specialized Claude agents in sequence: planner → architect → designer → developer(s) → reviewer. Users interact via Claude Code skills (`/brainstorm`, `/implement`) or CLI commands. The target audience is engineers already familiar with Claude Code who want to stop babysitting it.
+Artifacts live in Azure Blob Storage under `artifacts/{feature_id}/`. The storage client already supports listing and downloading blobs. The TUI is built with Textual and currently shows a pipeline monitor with queue depths and event logs.

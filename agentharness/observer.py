@@ -87,28 +87,34 @@ async def _run_subprocess(
             await proc.stdin.drain()
             proc.stdin.close()
 
-            pop_receipt = await _wait_with_renewal(proc, task.task_id, raw_msg, queue)
+            current_pop_receipt = await _wait_with_renewal(proc, task.task_id, raw_msg, queue)
 
     except Exception as exc:
         log.error("Subprocess management failed for %s: %s", task.task_id, exc)
         return
 
     if proc.returncode == 0:
-        await queue.delete_message(raw_msg)
-        log.info("Task %s done — message deleted", task.task_id)
+        try:
+            await queue._client.delete_message(raw_msg.id, pop_receipt=current_pop_receipt)
+            log.info("Task %s done — message deleted", task.task_id)
+        except Exception as exc:
+            log.error("Could not delete message for %s: %s", task.task_id, exc)
     else:
         log.error("Task %s failed (exit %d) — message will reappear", task.task_id, proc.returncode)
 
 
-async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: object, queue: PipelineQueue) -> None:
-    """Wait for subprocess, renewing queue message visibility every _RENEWAL_INTERVAL seconds."""
+async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: object, queue: PipelineQueue) -> str:
+    """Wait for subprocess, renewing queue message visibility every _RENEWAL_INTERVAL seconds.
+
+    Returns the latest pop_receipt (required for deletion after renewals).
+    """
     msg_id = raw_msg.id
     pop_receipt = raw_msg.pop_receipt
 
     while True:
         try:
             await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=_RENEWAL_INTERVAL)
-            return  # subprocess finished
+            return pop_receipt  # subprocess finished — return current receipt
         except asyncio.TimeoutError:
             try:
                 result = await queue._client.update_message(
@@ -122,5 +128,5 @@ async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: objec
                 err_str = str(exc)
                 if "MessageNotFound" in err_str:
                     log.debug("Message for %s already deleted — task completed before renewal", task_id)
-                    return
+                    return pop_receipt
                 log.warning("Could not renew visibility for %s: %s — message may be re-queued", task_id, exc)

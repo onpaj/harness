@@ -23,6 +23,7 @@ async def run_agent(
     prompt: str,
     work_dir: Path | None = None,
     timeout_seconds: float | None = None,
+    log_file: Path | None = None,
 ) -> str:
     """Run claude CLI non-interactively and return stdout.
 
@@ -50,10 +51,18 @@ async def run_agent(
 
         async def _stream_stdout() -> None:
             assert proc.stdout
-            async for raw in proc.stdout:
-                line = raw.decode(errors="replace").rstrip("\n")
-                lines.append(line)
-                log.info("[claude] %s", line)
+            log_fh = open(log_file, "a") if log_file else None
+            try:
+                async for raw in proc.stdout:
+                    line = raw.decode(errors="replace").rstrip("\n")
+                    lines.append(line)
+                    log.info("[claude] %s", line)
+                    if log_fh:
+                        log_fh.write(line + "\n")
+                        log_fh.flush()
+            finally:
+                if log_fh:
+                    log_fh.close()
 
         async def _drain_stderr() -> None:
             assert proc.stderr
@@ -90,8 +99,11 @@ def _build_command(agent_def: AgentDefinition, prompt: str) -> list[str]:
         "--model", agent_def.model,
     ]
 
-    if agent_def.allowed_tools:
-        cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
+    if agent_def.allowed_tools is not None:
+        if agent_def.allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
+        else:
+            cmd.extend(["--tools", ""])
 
     if agent_def.max_turns > 1:
         cmd.extend(["--max-turns", str(agent_def.max_turns)])

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 
 from agentharness.config import Config
@@ -21,10 +19,20 @@ _BRAINSTORM_AGENT = Path(".agents/brainstorm.md")
 _BRIEF_FILENAME = "brief.md"
 
 
-def generate_feature_id() -> str:
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    entropy = hashlib.sha1(os.urandom(8)).hexdigest()[:6]
-    return f"feat-{timestamp}-{entropy}"
+def _slug_from_brief(brief_content: str) -> str:
+    import re
+    for line in brief_content.splitlines():
+        line = line.strip()
+        if line.startswith("# "):
+            title = re.sub(r"^#\s*(Feature Brief:\s*)?", "", line, flags=re.IGNORECASE)
+            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+            return slug[:40]
+    return "untitled"
+
+
+def generate_feature_id(brief_content: str = "") -> str:
+    slug = _slug_from_brief(brief_content) if brief_content else "untitled"
+    return f"feat-{slug}"
 
 
 def run_brainstorm_session(work_dir: Path, agent_path: Path) -> None:
@@ -58,8 +66,8 @@ def start_brainstorm(config: Config | None = None) -> None:
         print(f"Error: Agent definition not found at {agent_path}", file=sys.stderr)
         sys.exit(1)
 
-    feature_id = generate_feature_id()
-    work_dir = Path(tempfile.mkdtemp(prefix=f"brainstorm-{feature_id}-"))
+    feature_id = generate_feature_id()  # placeholder until brief is written
+    work_dir = Path(tempfile.mkdtemp(prefix=f"brainstorm-"))
 
     print(f"\n=== AgentHarness Brainstorm Session ===")
     print(f"Feature ID: {feature_id}")
@@ -93,6 +101,7 @@ def start_brainstorm(config: Config | None = None) -> None:
         sys.exit(1)
 
     brief_content = brief_path.read_text(encoding="utf-8")
+    feature_id = generate_feature_id(brief_content)
     print(f"\n{'='*60}")
     print("Generated Brief:")
     print("="*60)
@@ -181,6 +190,6 @@ async def upload_brief_file(brief_path: Path, config: Config) -> str:
     if not brief_path.exists():
         raise FileNotFoundError(f"Brief file not found: {brief_path}")
     brief_content = brief_path.read_text(encoding="utf-8")
-    feature_id = generate_feature_id()
+    feature_id = generate_feature_id(brief_content)
     await upload_brief(feature_id, brief_content, config)
     return feature_id
