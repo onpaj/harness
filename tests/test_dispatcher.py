@@ -1,4 +1,4 @@
-"""Unit tests for dispatcher — state transitions, parsing, fan-out/fan-in."""
+"""Unit tests for dispatcher — state transitions, parsing, serial dispatch."""
 
 import pytest
 
@@ -127,3 +127,28 @@ class TestFeatureStateHelpers:
         updated = state.with_task_update(task_id, status=TaskStatus.completed)
         assert state.tasks[0].status == TaskStatus.queued
         assert updated.tasks[0].status == TaskStatus.completed
+
+    def test_all_tasks_complete_when_one_failed(self):
+        state = self._state_with_tasks(["completed", "failed"])
+        assert state.all_tasks_complete("developing") is True
+
+    def test_not_all_complete_when_pending_remains(self):
+        state = self._state_with_tasks(["completed", "pending"])
+        assert state.all_tasks_complete("developing") is False
+
+    def test_next_pending_task_returns_first_pending(self):
+        state = self._state_with_tasks(["completed", "pending", "pending"])
+        next_task = state.next_pending_task("developing")
+        assert next_task is not None
+        assert next_task.task_id == "feat-test-dev-1"
+
+    def test_next_pending_task_returns_none_when_none_pending(self):
+        state = self._state_with_tasks(["completed", "completed"])
+        assert state.next_pending_task("developing") is None
+
+    def test_next_pending_task_ignores_other_phases(self):
+        tasks = [
+            TaskEntry(task_id="feat-test-review-0", phase="reviewing", status=TaskStatus.pending),
+        ]
+        state = FeatureState(feature_id="feat-test").with_tasks_added(tasks)
+        assert state.next_pending_task("developing") is None

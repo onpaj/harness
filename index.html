@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentHarness — Autonomous Feature Delivery</title>
+  <meta name="description" content="AgentHarness wraps Claude Code in a pipeline of specialized agents that delivers reviewed code from a single feature description. Stop babysitting. Start shipping.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='12' fill='%230a192f'/><text y='.9em' font-size='80' x='10'>⚡</text></svg>">
+  <style>
+    /* ===== DESIGN TOKENS ===== */
+    :root {
+      --bg-primary:    #0a192f;
+      --bg-secondary:  #112240;
+      --text-primary:  #ccd6f6;
+      --text-secondary:#8892b0;
+      --accent:        #64ffda;
+      --accent-hover:  #4cd9b0;
+
+      --space-xs: 0.5rem;
+      --space-sm: 1rem;
+      --space-md: 2rem;
+      --space-lg: 4rem;
+      --space-xl: 6rem;
+
+      --font-base: 1rem;
+      --font-lg:   1.25rem;
+      --font-xl:   1.5rem;
+      --font-2xl:  2rem;
+      --font-hero: clamp(2.5rem, 5vw, 4rem);
+    }
+
+    /* ===== RESET & BASE ===== */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-padding-top: 80px;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: var(--font-base);
+      line-height: 1.6;
+    }
+
+    /* ===== FADE-IN UTILITY ===== */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ===== NAVIGATION ===== */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background-color: var(--bg-secondary);
+      border-bottom: 1px solid rgba(100, 255, 218, 0.1);
+      height: 60px;
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-md);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .nav-brand {
+      font-size: var(--font-lg);
+      font-weight: 700;
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .nav-toggle {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--text-primary);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: var(--space-xs);
+      line-height: 1;
+    }
+
+    .nav-toggle:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    #nav-menu {
+      list-style: none;
+      display: flex;
+      gap: var(--space-md);
+    }
+
+    #nav-menu a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: var(--font-base);
+      transition: color 0.2s ease;
+    }
+
+    #nav-menu a:hover {
+      color: var(--accent);
+    }
+
+    #nav-menu a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+
+    /* ===== HERO ===== */
+    header#hero {
+      min-height: 80vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: var(--space-xl) var(--space-md);
+    }
+
+    .hero-content {
+      max-width: 800px;
+    }
+
+    header#hero h1 {
+      font-size: var(--font-hero);
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1.1;
+      margin-bottom: var(--space-md);
+    }
+
+    header#hero h1 span {
+      color: var(--accent);
+    }
+
+    .subheadline {
+      font-size: var(--font-lg);
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto var(--space-lg);
+    }
+
+    .cta-button {
+      display: inline-block;
+      padding: 0.875rem 2rem;
+      border: 2px solid var(--accent);
+      color: var(--accent);
+      background: transparent;
+      text-decoration: none;
+      font-size: var(--font-lg);
+      font-weight: 600;
+      border-radius: 4px;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    .cta-button:hover {
+      background-color: var(--accent);
+      color: var(--bg-primary);
+    }
+
+    .cta-button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    /* ===== SECTION COMMON ===== */
+    section {
+      padding: var(--space-xl) var(--space-md);
+    }
+
+    .section-inner {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    section h2 {
+      font-size: var(--font-2xl);
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: var(--space-md);
+    }
+
+    /* ===== PROBLEM ===== */
+    #problem {
+      background-color: var(--bg-secondary);
+    }
+
+    #problem .section-inner {
+      max-width: 800px;
+    }
+
+    #problem p {
+      color: var(--text-secondary);
+      margin-bottom: var(--space-md);
+      font-size: var(--font-lg);
+    }
+
+    #problem ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
+
+    #problem ul li {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      color: var(--text-primary);
+      font-size: var(--font-lg);
+    }
+
+    #problem ul li::before {
+      content: '→';
+      color: var(--accent);
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    /* ===== PIPELINE ===== */
+    #how-it-works .pipeline-intro {
+      color: var(--text-secondary);
+      font-size: var(--font-lg);
+      margin-bottom: var(--space-lg);
+    }
+
+    .pipeline {
+      list-style: none;
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      gap: 0;
+      position: relative;
+    }
+
+    .pipeline-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: var(--space-md) var(--space-xs);
+      position: relative;
+    }
+
+    .pipeline-stage:not(:last-child)::after {
+      content: '→';
+      position: absolute;
+      right: -0.6em;
+      top: 1.5rem;
+      color: var(--text-secondary);
+      font-size: var(--font-xl);
+      z-index: 1;
+    }
+
+    .stage-icon {
+      font-size: 2rem;
+      margin-bottom: var(--space-xs);
+      display: block;
+    }
+
+    .stage-name {
+      font-weight: 700;
+      color: var(--accent);
+      font-size: var(--font-base);
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    .stage-desc {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.4;
+      display: block;
+    }
+
+    /* ===== BENEFITS ===== */
+    #benefits {
+      background-color: var(--bg-secondary);
+    }
+
+    .benefits-grid {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-md);
+      margin-top: var(--space-md);
+    }
+
+    .benefit-card:last-child {
+      grid-column: 2;
+    }
+
+    .benefit-card {
+      background-color: var(--bg-primary);
+      padding: var(--space-md);
+      border-radius: 8px;
+      border: 1px solid rgba(100, 255, 218, 0.1);
+    }
+
+    .benefit-card h3 {
+      font-size: var(--font-lg);
+      color: var(--accent);
+      margin-bottom: var(--space-xs);
+    }
+
+    .benefit-card p {
+      color: var(--text-secondary);
+      font-size: var(--font-base);
+      line-height: 1.6;
+    }
+
+    /* ===== QUICK START ===== */
+    #quick-start .section-inner {
+      max-width: 800px;
+    }
+
+    .prereq {
+      color: var(--text-secondary);
+      margin-bottom: var(--space-md);
+      font-style: italic;
+    }
+
+    #quick-start ol {
+      list-style: none;
+      counter-reset: steps;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-md);
+    }
+
+    #quick-start ol li {
+      counter-increment: steps;
+      display: flex;
+      gap: var(--space-md);
+      align-items: flex-start;
+      color: var(--text-primary);
+      font-size: var(--font-lg);
+    }
+
+    #quick-start ol li::before {
+      content: counter(steps);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 2rem;
+      height: 2rem;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: var(--font-base);
+      flex-shrink: 0;
+    }
+
+    code {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.9rem;
+      background: var(--bg-secondary);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    /* ===== FOOTER ===== */
+    footer {
+      padding: var(--space-lg) var(--space-md);
+      border-top: 1px solid rgba(136, 146, 176, 0.2);
+    }
+
+    .footer-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-sm);
+    }
+
+    footer p {
+      color: var(--text-secondary);
+      font-size: var(--font-base);
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+      transition: color 0.2s ease;
+    }
+
+    footer a:hover {
+      color: var(--accent-hover);
+    }
+
+    footer a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* ===== MOBILE (< 768px) ===== */
+    @media (max-width: 767px) {
+      .nav-toggle {
+        display: block;
+      }
+
+      #nav-menu {
+        display: none;
+        position: absolute;
+        top: 60px;
+        left: 0;
+        right: 0;
+        background-color: var(--bg-secondary);
+        flex-direction: column;
+        padding: var(--space-sm) var(--space-md);
+        border-bottom: 1px solid rgba(100, 255, 218, 0.1);
+        gap: var(--space-sm);
+      }
+
+      #nav-menu.open {
+        display: flex;
+      }
+
+      #nav-menu a {
+        font-size: var(--font-lg);
+        padding: var(--space-xs) 0;
+      }
+
+      .pipeline {
+        grid-auto-flow: row;
+        grid-auto-columns: unset;
+        grid-template-columns: 1fr;
+      }
+
+      .pipeline-stage {
+        flex-direction: row;
+        text-align: left;
+        align-items: flex-start;
+        padding: var(--space-sm) 0;
+      }
+
+      .pipeline-stage:not(:last-child)::after {
+        content: '↓';
+        position: static;
+        display: block;
+        text-align: left;
+        padding: 0.25rem 0;
+        font-size: var(--font-xl);
+        color: var(--text-secondary);
+      }
+
+      .pipeline-stage {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .pipeline-stage .stage-icon {
+        font-size: 1.5rem;
+        margin-bottom: var(--space-xs);
+        flex-shrink: 0;
+      }
+
+      .pipeline-stage-text {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .benefits-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .benefit-card:last-child {
+        grid-column: auto;
+      }
+
+      footer {
+        flex-direction: column;
+        text-align: center;
+      }
+    }
+
+    /* ===== TABLET (768px – 1024px) ===== */
+    @media (min-width: 768px) and (max-width: 1024px) {
+      .benefits-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .benefit-card:last-child {
+        grid-column: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="nav-inner">
+      <a class="nav-brand" href="#hero">AgentHarness</a>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav-menu" aria-label="Toggle navigation">☰</button>
+      <ul id="nav-menu">
+        <li><a href="#problem">Problem</a></li>
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#benefits">Benefits</a></li>
+        <li><a href="#quick-start">Quick Start</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <header id="hero">
+    <div class="hero-content">
+      <h1>Stop babysitting <span>Claude Code.</span></h1>
+      <p class="subheadline">AgentHarness wraps Claude Code in a pipeline of specialized agents that delivers reviewed code from a single feature description.</p>
+      <a href="#how-it-works" class="cta-button">See How It Works ↓</a>
+    </div>
+  </header>
+
+  <section id="problem" aria-labelledby="problem-heading">
+    <div class="section-inner fade-in">
+      <h2 id="problem-heading">You're already using Claude Code.<br>But you're still in the loop.</h2>
+      <p>Every feature still needs you — making decisions, fixing mistakes, watching the output. That's not automation.</p>
+      <ul>
+        <li>Guiding every architectural decision</li>
+        <li>Correcting generated code mistakes</li>
+        <li>Debugging unexpected outputs</li>
+        <li>Context-switching between tasks and Claude sessions</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="how-it-works" aria-labelledby="pipeline-heading">
+    <div class="section-inner fade-in">
+      <h2 id="pipeline-heading">How It Works</h2>
+      <p class="pipeline-intro">Describe the feature once. The pipeline handles the rest.</p>
+      <ol class="pipeline">
+        <li class="pipeline-stage">
+          <span class="stage-icon">💡</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Brainstorm</span>
+            <span class="stage-desc">Explore and define what to build</span>
+          </div>
+        </li>
+        <li class="pipeline-stage">
+          <span class="stage-icon">📋</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Planner</span>
+            <span class="stage-desc">Break the feature into a detailed spec</span>
+          </div>
+        </li>
+        <li class="pipeline-stage">
+          <span class="stage-icon">🏗️</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Architect</span>
+            <span class="stage-desc">Design the structure and integration points</span>
+          </div>
+        </li>
+        <li class="pipeline-stage">
+          <span class="stage-icon">🎨</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Designer</span>
+            <span class="stage-desc">Define UI components and interactions</span>
+          </div>
+        </li>
+        <li class="pipeline-stage">
+          <span class="stage-icon">⚡</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Developer(s)</span>
+            <span class="stage-desc">Implement code with tests in parallel</span>
+          </div>
+        </li>
+        <li class="pipeline-stage">
+          <span class="stage-icon">🔍</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Reviewer</span>
+            <span class="stage-desc">Verify quality, security, and correctness</span>
+          </div>
+        </li>
+        <li class="pipeline-stage">
+          <span class="stage-icon">✅</span>
+          <div class="pipeline-stage-text">
+            <span class="stage-name">Done</span>
+            <span class="stage-desc">Reviewed implementation ready to merge</span>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="benefits" aria-labelledby="benefits-heading">
+    <div class="section-inner">
+      <h2 id="benefits-heading">Why AgentHarness</h2>
+      <ul class="benefits-grid">
+        <li class="benefit-card fade-in">
+          <h3>Save hours per feature</h3>
+          <p>Describe what you want once. The pipeline delivers a reviewed implementation without further input.</p>
+        </li>
+        <li class="benefit-card fade-in">
+          <h3>No guiding required</h3>
+          <p>Agents make architectural and design decisions autonomously. You review the result, not the process.</p>
+        </li>
+        <li class="benefit-card fade-in">
+          <h3>No correcting mistakes</h3>
+          <p>Each stage's output is validated by the next. Errors are caught before they reach you.</p>
+        </li>
+        <li class="benefit-card fade-in">
+          <h3>No context-switching</h3>
+          <p>Queue a feature and return to your current work. The pipeline runs without your attention.</p>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="quick-start" aria-labelledby="quickstart-heading">
+    <div class="section-inner fade-in">
+      <h2 id="quickstart-heading">Quick Start</h2>
+      <p class="prereq">Prerequisites: Claude Code with AgentHarness skills installed.</p>
+      <ol>
+        <li>Ensure Claude Code is running with AgentHarness skills installed</li>
+        <li>In Claude Code, describe the feature you want built</li>
+        <li>Run the brainstorm skill to explore and define it — <code>/brainstorm</code></li>
+        <li>When ready, kick off the full pipeline — <code>/implement</code></li>
+      </ol>
+    </div>
+  </section>
+
+  <footer>
+    <div class="footer-inner">
+      <p>AgentHarness — Autonomous feature delivery for Claude Code</p>
+      <a href="#" target="_blank" rel="noopener noreferrer">View Repository →</a>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      const toggle = document.querySelector('.nav-toggle');
+      const menu = document.getElementById('nav-menu');
+
+      toggle.addEventListener('click', function () {
+        const isOpen = menu.classList.toggle('open');
+        toggle.setAttribute('aria-expanded', isOpen);
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && menu.classList.contains('open')) {
+          menu.classList.remove('open');
+          toggle.setAttribute('aria-expanded', 'false');
+          toggle.focus();
+        }
+      });
+
+      document.querySelectorAll('a[href^="#"]').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+          const target = document.querySelector(link.getAttribute('href'));
+          if (!target) return;
+          e.preventDefault();
+          menu.classList.remove('open');
+          toggle.setAttribute('aria-expanded', 'false');
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      });
+
+      if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('.fade-in').forEach(function (el) { observer.observe(el); });
+      } else {
+        document.querySelectorAll('.fade-in').forEach(function (el) { el.classList.add('visible'); });
+      }
+    }());
+  </script>
+
+</body>
+</html>

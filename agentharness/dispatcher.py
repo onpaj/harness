@@ -53,7 +53,7 @@ async def dispatch_after_completion(
         return await _dispatch_fan_out(state, agent_output, config, queues)
 
     if status in (FeatureStatus.developing, FeatureStatus.dev_revision):
-        return await _check_fan_in(state, completed_task, config, queues)
+        return await _dispatch_serial_next(state, completed_task, config, queues)
 
     if status == FeatureStatus.reviewing:
         return await _dispatch_review_result(state, agent_output, config, queues)
@@ -114,45 +114,56 @@ async def _dispatch_fan_out(
         log.warning("Designer produced no tasks for %s — creating fallback task", state.feature_id)
         tasks = [_fallback_developer_task(state.feature_id)]
 
-    agent_path = config.agent_path_for_queue("developer-queue")
-
-    task_entries: list[TaskEntry] = []
-    for task_msg in tasks:
-        await dev_queue.send_task(task_msg)
-        task_entries.append(
-            TaskEntry(
-                task_id=task_msg.task_id,
-                phase="developing",
-                status=TaskStatus.queued,
-                output_artifact=task_msg.output_artifact,
-                queued_message=task_msg.model_dump(),
-            )
+    task_entries: list[TaskEntry] = [
+        TaskEntry(
+            task_id=task_msg.task_id,
+            phase="developing",
+            status=TaskStatus.pending,
+            output_artifact=task_msg.output_artifact,
+            queued_message=task_msg.model_dump(),
         )
-        log.info("Enqueued developer task %s", task_msg.task_id)
+        for task_msg in tasks
+    ]
+
+    first_task = tasks[0]
+    await dev_queue.send_task(first_task)
+    task_entries[0] = task_entries[0].model_copy(update={"status": TaskStatus.queued})
+    log.info("Enqueued first developer task %s (%d pending)", first_task.task_id, len(tasks) - 1)
 
     return (
         state
         .with_status(FeatureStatus.developing)
         .with_tasks_added(task_entries)
-        .with_event("fan_out", phase="developing", details=f"{len(tasks)} tasks enqueued")
+        .with_event("serial_dispatch", phase="developing", details=f"{len(tasks)} tasks, 1 enqueued")
     )
 
 
-async def _check_fan_in(
+async def _dispatch_serial_next(
     state: FeatureState,
     completed_task: TaskMessage,
     config: Config,
     queues: dict[str, PipelineQueue],
 ) -> FeatureState | None:
-    if not state.all_tasks_complete("developing"):
-        log.info(
-            "Fan-in: task %s done, waiting for other developer tasks",
-            completed_task.task_id,
-        )
-        return None
+    next_task_entry = state.next_pending_task("developing")
+    if next_task_entry is not None:
+        dev_queue = queues.get("developer-queue")
+        if not dev_queue:
+            raise RuntimeError("developer-queue not found")
+        next_task_msg = TaskMessage.model_validate(next_task_entry.queued_message)
+        await dev_queue.send_task(next_task_msg)
+        updated = state.with_task_update(next_task_entry.task_id, status=TaskStatus.queued)
+        log.info("Serial dispatch: enqueued next task %s", next_task_msg.task_id)
+        return updated
 
-    log.info("Fan-in: all developer tasks complete for %s, triggering review", state.feature_id)
-    return await _enqueue_review(state, config, queues)
+    if state.all_tasks_complete("developing"):
+        log.info("Serial dispatch: all tasks done for %s, triggering review", state.feature_id)
+        return await _enqueue_review(state, config, queues)
+
+    log.info(
+        "Serial dispatch: task %s done, waiting for in-progress tasks",
+        completed_task.task_id,
+    )
+    return None
 
 
 async def _enqueue_review(
@@ -242,18 +253,21 @@ async def _dispatch_review_result(
             review_feedback=feedback,
             work_dir=_impl_work_dir(state.feature_id),
         )
-        await dev_queue.send_task(task_msg)
-
         new_task_entries.append(
             TaskEntry(
                 task_id=task_id,
                 phase="developing",
-                status=TaskStatus.queued,
+                status=TaskStatus.pending,
                 revision=new_revision,
                 output_artifact=output_artifact,
                 queued_message=task_msg.model_dump(),
             )
         )
+
+    first_entry = new_task_entries[0]
+    first_msg = TaskMessage.model_validate(first_entry.queued_message)
+    await dev_queue.send_task(first_msg)
+    new_task_entries[0] = first_entry.model_copy(update={"status": TaskStatus.queued})
 
     updated_config = state.config.model_copy(
         update={"current_revision_round": revision_round}

@@ -1,38 +1,39 @@
-# Feature Brief: Artifact Browser in TUI
+# Feature Brief: Per-Agent Mandatory Context Files
 
 ## Problem Statement
-Users running AgentHarness have no way to inspect pipeline artifacts without leaving the terminal or manually navigating Azure Blob Storage. The TUI shows pipeline status but offers no way to read what agents actually produced.
+Consumers of AgentHarness have no way to provide domain-specific context (design libraries, coding standards, architecture docs) to individual agents. Every agent runs with only the feature artifacts — there's no mechanism to inject shared, reusable files that apply globally to a specific agent type.
 
 ## Goals
-- Allow users to browse and read all artifacts for any feature directly inside the TUI watch command.
+- Allow consumers to declare local filesystem paths (files or directories) per agent in `config.json`
+- Have those files automatically read and injected into the agent's prompt at runtime
 
 ## Functional Requirements
-- Add an artifact browser panel or screen to the existing Textual TUI (`agentharness watch`)
-- List all features, then list all artifacts for a selected feature (brief.md, spec, arch-review, design, impl files, review)
-- On selection, display the artifact content in a readable pane
-- Navigation via keyboard (arrow keys, enter to open, escape/back to return)
-- All artifact types must be supported: brief.md, spec.rN.md, arch-review.rN.md, design.rN.md, impl/{task}.rN.md, review/review.rN.md, state.json
+- `config.json` supports a new optional `context_files` field per agent entry, accepting a list of local filesystem paths (files or directories)
+- At runtime, before the agent prompt is assembled, all declared paths are resolved and their contents are read from the local filesystem
+- File contents are injected into the agent prompt as clearly labelled context blocks (e.g. `### Context: /docs/design_library/tokens.md`)
+- Directories expand to all files within them (non-recursive by default, recursive opt-in via trailing `**`)
+- Missing or unreadable files produce a clear warning (logged) but do not abort the pipeline
+- The feature is purely additive — agents with no `context_files` entry behave exactly as before
 
 ## Non-Functional Requirements
-- Artifact content is fetched from Azure Blob Storage on demand (no pre-caching)
-- UI must remain responsive during fetch (async)
-- Should integrate cleanly into the existing Textual TUI without disrupting the main pipeline monitor view
+- File reads happen once per task dispatch, not on every retry
+- No size limit enforced by the harness, but documentation should warn about prompt bloat
+- Works on any OS path format supported by Python's `pathlib`
 
 ## Technical Constraints
-- Python + Textual framework (existing TUI in `agentharness/tui.py`)
-- Azure Blob Storage via existing `agentharness/storage.py` client
-- Read-only — no writes, no pipeline actions triggered from this view
+- Config loaded via `agentharness/config.py` from `.pipeline/config.json`
+- Prompt assembled in `agentharness/prompt_builder.py`
+- Must not break existing agent definitions or config structure
 
 ## Out of Scope
-- Editing artifacts
-- Triggering pipeline actions from artifact view
-- Copying artifacts to clipboard or opening in external editor
-- Diffing artifact revisions
+- Fetching files from Azure Blob or remote URLs
+- Per-feature context files (only global, per-agent-type)
+- Hot-reloading config changes without worker restart
 
 ## Success Criteria
-- User can open TUI, navigate to any feature, browse its artifact list, and read any artifact without leaving the terminal
-- All artifact types are accessible
-- UI remains responsive while loading artifact content from Azure
+- A designer agent configured with `context_files: ["/docs/design_library"]` receives those file contents in its prompt
+- Existing agents with no `context_files` pass all existing tests unchanged
+- Unit tests cover: path resolution, directory expansion, missing file warning, prompt injection format
 
 ## Additional Context
-Artifacts live in Azure Blob Storage under `artifacts/{feature_id}/`. The storage client already supports listing and downloading blobs. The TUI is built with Textual and currently shows a pipeline monitor with queue depths and event logs.
+Primary use cases: design token files for designer agent, coding standards for developer agents, architecture decision records for architect agent.

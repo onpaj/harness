@@ -199,6 +199,44 @@ def status(ctx: click.Context, feature_id: str) -> None:
     asyncio.run(_show_status(feature_id, config))
 
 
+@main.command("init")
+@click.option("--dir", "target_dir", default=".", show_default=True, type=click.Path(), help="Project directory to initialise")
+@click.option("--force", is_flag=True, help="Overwrite existing files")
+def init_project(target_dir: str, force: bool) -> None:
+    """Copy agent definitions and pipeline config into a project directory."""
+    import shutil
+    data_root = Path(__file__).parent / "data"
+    target = Path(target_dir).resolve()
+
+    if not data_root.exists():
+        console.print("[red]Data files not found in package — reinstall agentharness.[/red]")
+        sys.exit(1)
+
+    destinations = [
+        (data_root / "agents", target / ".agents"),
+        (data_root / "pipeline", target / ".pipeline"),
+    ]
+
+    for src, dst in destinations:
+        if not src.exists():
+            continue
+        dst.mkdir(parents=True, exist_ok=True)
+        for src_file in src.iterdir():
+            dst_file = dst / src_file.name
+            if dst_file.exists() and not force:
+                console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)} (use --force to overwrite)")
+                continue
+            shutil.copy2(src_file, dst_file)
+            console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
+
+    env_example = target / ".env.example"
+    if not env_example.exists() or force:
+        env_example.write_text("AZURE_STORAGE_CONNECTION_STRING=\n")
+        console.print(f"[green]wrote[/green] .env.example")
+
+    console.print("\n[bold]Done.[/bold] Copy .env.example → .env and fill in your connection string.")
+
+
 @main.command("list")
 @click.pass_context
 def list_features(ctx: click.Context) -> None:

@@ -23,6 +23,7 @@ class FeatureStatus(str, Enum):
 
 
 class TaskStatus(str, Enum):
+    pending = "pending"
     queued = "queued"
     in_progress = "in_progress"
     completed = "completed"
@@ -115,9 +116,17 @@ class FeatureState(BaseModel):
     def tasks_for_phase(self, phase: str) -> list[TaskEntry]:
         return [t for t in self.tasks if t.phase == phase]
 
+    def next_pending_task(self, phase: str) -> TaskEntry | None:
+        """Return the first pending task for a phase, or None."""
+        return next(
+            (t for t in self.tasks if t.phase == phase and t.status == TaskStatus.pending),
+            None,
+        )
+
     def all_tasks_complete(self, phase: str) -> bool:
         phase_tasks = self.tasks_for_phase(phase)
-        return bool(phase_tasks) and all(t.status == TaskStatus.completed for t in phase_tasks)
+        terminal = {TaskStatus.completed, TaskStatus.failed}
+        return bool(phase_tasks) and all(t.status in terminal for t in phase_tasks)
 
 
 class TaskMessage(BaseModel):
