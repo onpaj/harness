@@ -127,6 +127,10 @@ def review_artifact_path(feature_id: str, revision: int) -> str:
     return f"artifacts/{feature_id}/review/review.r{revision}.md"
 
 
+def task_review_artifact_path(feature_id: str, task_name: str, revision: int) -> str:
+    return f"artifacts/{feature_id}/review/{task_name}.r{revision}.md"
+
+
 def phase_artifact_path(feature_id: str, phase_name: str, revision: int) -> str:
     return f"artifacts/{feature_id}/{phase_name}.r{revision}.md"
 

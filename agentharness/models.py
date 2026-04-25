@@ -84,6 +84,8 @@ class FeatureState(BaseModel):
     tasks: list[TaskEntry] = Field(default_factory=list)
     history: list[HistoryEvent] = Field(default_factory=list)
     config: PipelineConfig = Field(default_factory=PipelineConfig)
+    worktree_path: str | None = None
+    cleanup_warning: str | None = None
 
     def with_event(self, event: str, **kwargs: Any) -> FeatureState:
         """Return new state with appended history event (immutable update)."""
@@ -106,6 +108,19 @@ class FeatureState(BaseModel):
             for t in self.tasks
         ]
         return self.model_copy(update={"tasks": new_tasks, "updated_at": datetime.now(UTC)})
+
+    def with_worktree_path(self, path: str) -> FeatureState:
+        """Return new state with worktree_path set. Raises if already set to a different value."""
+        if self.worktree_path is not None and self.worktree_path != path:
+            raise ValueError(
+                f"worktree_path is already set to {self.worktree_path!r}; "
+                f"cannot overwrite with {path!r} (immutability invariant)"
+            )
+        return self.model_copy(update={"worktree_path": path, "updated_at": datetime.now(UTC)})
+
+    def with_cleanup_warning(self, message: str) -> FeatureState:
+        """Return new state with cleanup_warning set."""
+        return self.model_copy(update={"cleanup_warning": message, "updated_at": datetime.now(UTC)})
 
     def with_tasks_added(self, new_tasks: list[TaskEntry]) -> FeatureState:
         """Return new state with additional tasks appended."""

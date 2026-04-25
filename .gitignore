@@ -7,3 +7,4 @@ dist/
 *.egg-info/
 logs/**
 implementations/**
+brief.md

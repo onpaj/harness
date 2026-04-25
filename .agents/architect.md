@@ -1,7 +1,7 @@
 ---
 id: architect
 display_name: "Architect Agent"
-model: claude-opus-4-6
+model: claude-opus-4-7
 phase: architecting
 max_turns: 1
 allowed_tools: []

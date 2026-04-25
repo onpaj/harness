@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
+from agentharness.context_files import ContextFileResult, format_context_section
 from agentharness.models import AgentDefinition, TaskMessage
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
@@ -33,9 +35,14 @@ def build_prompt(
     agent_def: AgentDefinition,
     task: TaskMessage,
     artifact_contents: dict[str, str],
+    context_result: Optional[ContextFileResult] = None,
 ) -> str:
     """Assemble the full prompt string to pass to the Claude CLI."""
     sections: list[str] = [agent_def.system_prompt]
+
+    context_section = format_context_section(context_result.files) if context_result else ""
+    if context_section:
+        sections.append(context_section)
 
     if artifact_contents:
         artifact_blocks = "\n\n".join(

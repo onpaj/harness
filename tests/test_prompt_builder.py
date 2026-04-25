@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from agentharness.context_files import ContextFileResult, ResolvedContextFile
 from agentharness.models import AgentDefinition, TaskMessage
 from agentharness.prompt_builder import build_prompt, artifact_label, load_agent_definition
 
@@ -86,6 +87,116 @@ class TestBuildPrompt:
         assert "### arch.md" in result
         assert "spec content" in result
         assert "arch content" in result
+
+
+def make_resolved_file(display_path: str, content: str) -> ResolvedContextFile:
+    return ResolvedContextFile(
+        declared_path=display_path,
+        resolved_path=Path(display_path),
+        display_path=display_path,
+        content=content,
+        size_bytes=len(content.encode("utf-8")),
+    )
+
+
+def make_context_result(*files: ResolvedContextFile) -> ContextFileResult:
+    return ContextFileResult(
+        agent_name="test-agent",
+        files=tuple(files),
+        warnings=(),
+        total_bytes=sum(f.size_bytes for f in files),
+    )
+
+
+class TestBuildPromptContextFiles:
+    def test_none_context_result_matches_original_output(self):
+        agent = make_agent_def(system_prompt="Be helpful.")
+        task = make_task()
+        without_context = build_prompt(agent, task, {})
+        with_none = build_prompt(agent, task, {}, context_result=None)
+        assert without_context == with_none
+
+    def test_empty_context_result_matches_original_output(self):
+        agent = make_agent_def(system_prompt="Be helpful.")
+        task = make_task()
+        without_context = build_prompt(agent, task, {})
+        empty_result = make_context_result()
+        with_empty = build_prompt(agent, task, {}, context_result=empty_result)
+        assert without_context == with_empty
+
+    def test_context_section_header_appears_with_files(self):
+        agent = make_agent_def()
+        task = make_task()
+        result = make_context_result(make_resolved_file("/docs/style.md", "# Style Guide"))
+        prompt = build_prompt(agent, task, {}, context_result=result)
+        assert "## Agent Context Files" in prompt
+
+    def test_context_file_block_format(self):
+        agent = make_agent_def()
+        task = make_task()
+        result = make_context_result(make_resolved_file("/docs/style.md", "# Style Guide"))
+        prompt = build_prompt(agent, task, {}, context_result=result)
+        assert "### Context: /docs/style.md" in prompt
+        assert "# Style Guide" in prompt
+
+    def test_context_section_positioned_before_artifacts(self):
+        agent = make_agent_def(system_prompt="Instructions here.")
+        task = make_task()
+        artifacts = {"spec.md": "spec content"}
+        result = make_context_result(make_resolved_file("/docs/style.md", "style content"))
+        prompt = build_prompt(agent, task, artifacts, context_result=result)
+        ctx_pos = prompt.index("## Agent Context Files")
+        artifacts_pos = prompt.index("## Input Artifacts")
+        assert ctx_pos < artifacts_pos
+
+    def test_context_section_positioned_after_instructions(self):
+        agent = make_agent_def(system_prompt="Instructions here.")
+        task = make_task()
+        result = make_context_result(make_resolved_file("/docs/style.md", "style content"))
+        prompt = build_prompt(agent, task, {}, context_result=result)
+        instructions_pos = prompt.index("Instructions here.")
+        ctx_pos = prompt.index("## Agent Context Files")
+        assert instructions_pos < ctx_pos
+
+    def test_multiple_files_all_appear_in_prompt(self):
+        agent = make_agent_def()
+        task = make_task()
+        result = make_context_result(
+            make_resolved_file("/docs/a.md", "content A"),
+            make_resolved_file("/docs/b.md", "content B"),
+        )
+        prompt = build_prompt(agent, task, {}, context_result=result)
+        assert "### Context: /docs/a.md" in prompt
+        assert "content A" in prompt
+        assert "### Context: /docs/b.md" in prompt
+        assert "content B" in prompt
+
+    def test_multiple_files_ordered_as_provided(self):
+        agent = make_agent_def()
+        task = make_task()
+        result = make_context_result(
+            make_resolved_file("/docs/a.md", "content A"),
+            make_resolved_file("/docs/b.md", "content B"),
+        )
+        prompt = build_prompt(agent, task, {}, context_result=result)
+        pos_a = prompt.index("### Context: /docs/a.md")
+        pos_b = prompt.index("### Context: /docs/b.md")
+        assert pos_a < pos_b
+
+    def test_no_context_header_without_files(self):
+        agent = make_agent_def()
+        task = make_task()
+        result = make_context_result()
+        prompt = build_prompt(agent, task, {}, context_result=result)
+        assert "## Agent Context Files" not in prompt
+
+    def test_no_extra_blank_lines_when_context_is_none(self):
+        agent = make_agent_def(system_prompt="Instructions.")
+        task = make_task(context="Do the task.")
+        without = build_prompt(agent, task, {})
+        with_none = build_prompt(agent, task, {}, context_result=None)
+        assert without == with_none
+        assert "\n\n\n" not in with_none
 
 
 class TestArtifactLabel:

@@ -1,39 +1,41 @@
-# Feature Brief: Per-Agent Mandatory Context Files
+# Feature Brief: Optional Git Worktree Isolation per Feature
 
 ## Problem Statement
-Consumers of AgentHarness have no way to provide domain-specific context (design libraries, coding standards, architecture docs) to individual agents. Every agent runs with only the feature artifacts — there's no mechanism to inject shared, reusable files that apply globally to a specific agent type.
+Parallel developer tasks within a single feature pipeline share the same working directory, creating race conditions where concurrent agents overwrite each other's file changes. This causes non-deterministic failures and corrupted implementations.
 
 ## Goals
-- Allow consumers to declare local filesystem paths (files or directories) per agent in `config.json`
-- Have those files automatically read and injected into the agent's prompt at runtime
+- Allow each feature pipeline to run in an isolated git worktree
+- Make worktree usage opt-in via `config.json` so existing setups are unaffected
 
 ## Functional Requirements
-- `config.json` supports a new optional `context_files` field per agent entry, accepting a list of local filesystem paths (files or directories)
-- At runtime, before the agent prompt is assembled, all declared paths are resolved and their contents are read from the local filesystem
-- File contents are injected into the agent prompt as clearly labelled context blocks (e.g. `### Context: /docs/design_library/tokens.md`)
-- Directories expand to all files within them (non-recursive by default, recursive opt-in via trailing `**`)
-- Missing or unreadable files produce a clear warning (logged) but do not abort the pipeline
-- The feature is purely additive — agents with no `context_files` entry behave exactly as before
+- Add a `use_worktrees` boolean flag to `.pipeline/config.json` (default: `false`)
+- When `use_worktrees: true`, create a new git worktree for each feature at pipeline start
+- Worktree path: e.g. `.worktrees/{feature_id}/`
+- All agent subprocesses for that feature run with the worktree as their working directory
+- On successful pipeline completion (`done` state), automatically delete the worktree
+- On failure, leave the worktree in place for manual inspection and debugging
 
 ## Non-Functional Requirements
-- File reads happen once per task dispatch, not on every retry
-- No size limit enforced by the harness, but documentation should warn about prompt bloat
-- Works on any OS path format supported by Python's `pathlib`
+- Worktree creation must not block the worker loop
+- Worktree path must be stored in `state.json` so all workers can resolve it
+- Must be safe when `use_worktrees: false` — no behaviour change in that mode
 
 ## Technical Constraints
-- Config loaded via `agentharness/config.py` from `.pipeline/config.json`
-- Prompt assembled in `agentharness/prompt_builder.py`
-- Must not break existing agent definitions or config structure
+- Uses `git worktree add` / `git worktree remove` via subprocess
+- Worktree path stored as `worktree_path` field on `FeatureState` in `models.py`
+- Worker reads `use_worktrees` from config at startup
+- Agent subprocesses already launched via `agent_runner.py` — CWD override goes there
 
 ## Out of Scope
-- Fetching files from Azure Blob or remote URLs
-- Per-feature context files (only global, per-agent-type)
-- Hot-reloading config changes without worker restart
+- Per-task worktrees (feature-level only)
+- Merging worktree changes back into main branch (user's responsibility)
+- UI for worktree management
 
 ## Success Criteria
-- A designer agent configured with `context_files: ["/docs/design_library"]` receives those file contents in its prompt
-- Existing agents with no `context_files` pass all existing tests unchanged
-- Unit tests cover: path resolution, directory expansion, missing file warning, prompt injection format
+- With `use_worktrees: true`, parallel developer tasks write to isolated directories with no cross-task conflicts
+- Worktree is removed automatically when feature reaches `done`
+- Worktree persists on `failed` state for inspection
+- Existing pipelines with `use_worktrees: false` (or omitted) behave identically to today
 
 ## Additional Context
-Primary use cases: design token files for designer agent, coding standards for developer agents, architecture decision records for architect agent.
+The `worker.py` creates tasks and launches agents; `dispatcher.py` drives state transitions. The `state_manager.py` handles atomic `state.json` updates via Azure blob lease — `worktree_path` should be set once at feature creation and never mutated after.

@@ -1,7 +1,7 @@
 ---
 id: brainstorm
 display_name: "Brainstorm Agent"
-model: claude-opus-4-6
+model: claude-opus-4-7
 phase: brainstorming
 max_turns: 50
 allowed_tools:

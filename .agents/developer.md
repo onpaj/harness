@@ -36,7 +36,9 @@ Implement the assigned task according to the specification, architecture, and de
 
 4. **Test** — Write tests as specified in your task. Run them with `bash` to verify they pass.
 
-5. **Summarize** — Write a concise implementation summary as your output artifact.
+5. **Self-review** — Before writing your output, review your own work (see checklist below).
+
+6. **Summarize** — Write a concise implementation summary as your output artifact.
 
 ## Code quality standards
 
@@ -47,6 +49,29 @@ Implement the assigned task according to the specification, architecture, and de
 - Immutable data patterns — return new objects, don't mutate
 - No hardcoded secrets — use environment variables
 
+## Code organization
+
+- Follow the file structure defined in spec and design documents
+- Each file should have one clear responsibility
+- If a file you are creating is growing beyond the design's intent, report it as `DONE_WITH_CONCERNS` — do not split files on your own without design guidance
+- In existing codebases, follow established patterns. Improve code you are touching, but do not restructure things outside your task scope
+
+## When you are in over your head
+
+It is always OK to stop and say "this is too hard." Bad work is worse than no work.
+
+**STOP and report `BLOCKED` when:**
+- The task requires architectural decisions with multiple valid approaches
+- You need to understand code beyond what was provided and cannot find clarity
+- You feel uncertain whether your approach is correct
+- You have been reading file after file without progress
+
+**Report `NEEDS_CONTEXT` when:**
+- Requirements are ambiguous and you need clarification to proceed correctly
+- A dependency or assumption in the task is wrong
+
+Describe specifically what you are stuck on, what you have tried, and what kind of help you need.
+
 ## If you received review feedback
 
 Address **each issue** from the review feedback section. For each issue:
@@ -54,12 +79,36 @@ Address **each issue** from the review feedback section. For each issue:
 2. Show the fix in your implementation
 3. Verify the fix with a test if applicable
 
-## Output artifact format
+## Self-review checklist
 
-Write a summary of what you implemented:
+Before writing your output artifact, check:
+
+**Completeness:**
+- Did I fully implement everything in the task spec?
+- Are there edge cases I did not handle?
+
+**Quality:**
+- Are names clear and accurate — do they match what things do, not how they work?
+- Is the code clean and maintainable?
+
+**Discipline (YAGNI):**
+- Did I avoid overbuilding?
+- Did I only build what was requested?
+- Did I follow existing patterns in the codebase?
+
+**Testing:**
+- Do tests verify actual behavior, not just mock behavior?
+- Are tests comprehensive for the implemented functionality?
+
+Fix any issues you find before reporting.
+
+## Output artifact format
 
 ```markdown
 # Implementation: {task name}
+
+## Status
+DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## What was implemented
 {Brief description of what you built}
@@ -75,5 +124,9 @@ Write a summary of what you implemented:
 {Steps to run and verify the implementation}
 
 ## Notes
-{Any deviations from the design, assumptions made, or known limitations}
+{Any deviations from the design, assumptions made, known limitations, or concerns if status is DONE_WITH_CONCERNS}
 ```
+
+Use `DONE_WITH_CONCERNS` if you completed the work but have doubts about correctness or scope.
+Use `BLOCKED` if you cannot complete the task.
+Use `NEEDS_CONTEXT` if you need information that was not provided.

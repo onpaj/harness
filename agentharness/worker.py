@@ -13,6 +13,7 @@ from azure.storage.blob.aio import BlobServiceClient
 
 from agentharness.agent_runner import AgentExecutionError, run_agent
 from agentharness.config import Config
+from agentharness.context_files import ContextFileResult, resolve_context_files
 from agentharness.dispatcher import dispatch_after_completion
 from agentharness.models import (
     FeatureStatus,
@@ -48,6 +49,7 @@ class Worker:
         self._state = state_manager
         self._all_queues = all_queues
         self._config = config
+        self._context_cache: dict[str, ContextFileResult] = {}
 
     async def run(self) -> None:
         agent_path = self._config.agent_path_for_queue(self._queue_name)
@@ -114,8 +116,11 @@ class Worker:
             except Exception as exc:
                 log.warning("Could not download artifact %s: %s", blob_path, exc)
 
+        # Resolve context files (read-once; cached for retries of the same task)
+        context_result = self._resolve_context_files_cached(task.task_id)
+
         # Build prompt and run agent
-        prompt = build_prompt(agent_def, task, artifact_contents)
+        prompt = build_prompt(agent_def, task, artifact_contents, context_result)
         output = await run_agent(agent_def, prompt, work_dir=work_dir, log_file=task_log_file)
 
         # Upload output artifact
@@ -134,6 +139,31 @@ class Worker:
         )
         if next_state is not None:
             await self._state.update(task.feature_id, lambda _: next_state)
+
+        # Task completed successfully — release cached context for this task
+        self._context_cache.pop(task.task_id, None)
+
+    def _resolve_context_files_cached(self, task_id: str) -> ContextFileResult | None:
+        """Return the ContextFileResult for this task, reading files only on first call."""
+        queue_config = self._config.queues.get(self._queue_name)
+        if not queue_config or not queue_config.context_files:
+            return None
+
+        if task_id in self._context_cache:
+            log.debug("[%s] Reusing cached context files for task %s", WORKER_ID, task_id)
+            return self._context_cache[task_id]
+
+        agent_name = Path(queue_config.agent).stem
+        result = resolve_context_files(
+            queue_config.context_files,
+            agent_name,
+            self._config.config_dir,
+        )
+        for warning in result.warnings:
+            log.warning("[%s] %s", WORKER_ID, warning)
+
+        self._context_cache[task_id] = result
+        return result
 
     async def _move_to_dead_letter(self, raw_msg, task: TaskMessage) -> None:
         dead_letter_name = f"{self._queue_name}-poison"

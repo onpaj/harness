@@ -1,189 +1,207 @@
 # AgentHarness
 
-Distributed, event-driven pipeline for autonomous software development using specialized Claude AI agents. Describe a feature, the agents handle the rest.
-
-```
-brief.md → planner → architect → designer → developer(s) → reviewer → done
-                                                  ↑               |
-                                             dev_revision ←───────┘
-```
+A distributed, event-driven pipeline that autonomously processes development tasks using specialized Claude agents. Describe a feature, upload a brief, and a chain of agents produces the implementation without further human input.
 
 ## How it works
 
-1. **Brainstorm** — describe your feature in a conversation with Claude Code. The agent asks clarifying questions and produces a structured `brief.md`.
-2. **Upload** — the brief is stored in Azure Blob Storage under a unique feature ID.
-3. **Implement** — a single command enqueues the first task. From here, agents run autonomously.
-4. **Monitor** — a Textual TUI shows real-time pipeline status across all features.
+```
+brief.md (user input)
+    ↓
+Analyst  →  spec.r1.md
+    ↓
+Architect  →  arch-review.r1.md
+    ↓
+Designer  →  design.r1.md
+    ↓
+Planner  →  task-plan.r1.md  (fan-out: N developer tasks)
+    ↓
+Developer ×N  →  impl/{task}.r{N}.md
+    ↓
+Reviewer  →  review/{task}.r{N}.md  →  PASS or REVISION_NEEDED
+```
 
-Each agent is a Claude Code CLI subprocess, defined by a versioned Markdown file with a YAML frontmatter specifying model, tools, and timeouts. Agents communicate through artifacts (Markdown files in blob storage) and Azure Storage Queues.
+Each agent is a Claude Code CLI subprocess. All state lives in Azure Blob Storage. Queues drive execution — no central scheduler.
 
-## Requirements
-
-- Python 3.11+
-- [Claude Code CLI](https://claude.ai/code) (`claude` in PATH, authenticated)
-- Azure Storage account (Blob + Queues)
-- Azure CLI (`az`) for setup and debugging
-
-## Installation
+## Quickstart
 
 ```bash
-git clone https://github.com/your-org/AgentHarness
-cd AgentHarness
-python -m venv .venv
-.venv/bin/pip install -e .
+pip install -e ".[dev]"
+cp .env.example .env   # add AZURE_STORAGE_CONNECTION_STRING
+agentharness init      # scaffold Azure queues and containers
 ```
 
-## Configuration
-
-### 1. Environment
+Run the pipeline:
 
 ```bash
-cp .env.example .env
-# Edit .env and fill in your Azure Storage connection string
+agentharness brainstorm                         # interactive brief → uploads to Azure
+agentharness submit brief.md                    # upload existing brief, get feature ID
+agentharness implement feat-20260425-abc123     # enqueue first task, start pipeline
+agentharness observe                            # start observer (primary execution mode)
+agentharness watch                              # Textual TUI, auto-refresh 2s
 ```
 
-`.env` is loaded automatically on startup — never commit it to version control.
+## CLI reference
 
-### 2. Azure infrastructure
+| Command | Description |
+|---------|-------------|
+| `brainstorm` | Interactive discovery → writes `brief.md` → uploads to Azure |
+| `submit <brief>` | Upload brief, return feature ID (no pipeline start) |
+| `implement <feat-id>` | Enqueue analyst task, start autonomous pipeline |
+| `observe` | Start observer: polls all queues, spawns subprocess per task |
+| `worker <queue>` | Legacy: run async worker loop on one queue |
+| `worker <queue> --concurrency N` | Legacy: run N parallel workers |
+| `start [--dev-concurrency N]` | Legacy: start all workers as background processes |
+| `watch` | Textual TUI, auto-refresh 2s |
+| `status <feat-id>` | One-shot status snapshot |
+| `list` | List all features |
+| `init` | Initialize project scaffolding (queues, container) |
 
-Use the `/azure-storage` Claude Code skill or run directly:
+## Execution modes
 
-```bash
-az storage container create --name pipeline-artifacts \
-  --connection-string "$AZURE_STORAGE_CONNECTION_STRING"
+**Observer mode (primary):** `agentharness observe` — a single process polls all queues and spawns `agentharness _run_task` as a subprocess per message. Tasks run in isolation; the observer manages visibility renewal and graceful shutdown.
 
-for q in planner-queue architect-queue designer-queue developer-queue review-queue; do
-  az storage queue create --name "$q" \
-    --connection-string "$AZURE_STORAGE_CONNECTION_STRING"
-done
-```
+**Legacy worker mode:** `agentharness worker {queue-name}` — async loop that processes tasks in-process. Useful for debugging a single queue.
 
-### 3. Pipeline config
-
-Edit `.pipeline/config.json` to point to your storage account and adjust timeouts.
-
-## Usage
-
-### With Claude Code (recommended)
-
-Open this repository in Claude Code and use the built-in skills:
+## State machine
 
 ```
-/brainstorm       → guided feature discovery, produces brief.md
-/implement        → starts the autonomous pipeline for a feature
-/azure-storage    → setup, inspect, and debug Azure storage
+brainstorming → analyzing → architecting → designing → planning → developing → reviewing → done
+                                                                       ↑              |
+                                                                  dev_revision ←------+
+                                                                       |
+                                                                   developing → reviewing
 ```
 
-### CLI
+`failed` is reachable from any state after `dead_letter_threshold` retries or `max_revisions` revision cycles.
 
-```bash
-# Upload a brief (no pipeline yet)
-agentharness submit brief.md
-# → Brief uploaded: feat-20260425-abc123
-# → Start pipeline: agentharness implement feat-20260425-abc123
+### Task status values
 
-# Start the pipeline
-agentharness implement feat-20260425-abc123
+| Status | Meaning |
+|--------|---------|
+| `pending` | Created, not yet enqueued (serial dispatch) |
+| `queued` | Enqueued to Azure Storage Queue |
+| `in_progress` | Worker has started |
+| `completed` | Finished successfully |
+| `failed` | Terminal failure |
 
-# Run workers (one process per queue, or multiple for developer-queue)
-agentharness worker planner-queue &
-agentharness worker architect-queue &
-agentharness worker designer-queue &
-agentharness worker developer-queue --concurrency 3 &
-agentharness worker review-queue &
+## Agents (`.agents/*.md`)
 
-# Monitor
-agentharness watch                              # real-time TUI
-agentharness status feat-20260425-abc123        # snapshot
-agentharness list                               # all features
-```
+| Agent | Model | Phase | Tools | Output parsing |
+|-------|-------|-------|-------|----------------|
+| analyst | claude-opus-4-7 | analyzing | none | none |
+| architect | claude-opus-4-7 | architecting | none | none |
+| designer | claude-sonnet-4-6 | designing | none | none |
+| planner | claude-opus-4-7 | planning | none | `task_list` |
+| developer | claude-sonnet-4-6 | developing | bash, read, write | none |
+| reviewer | claude-sonnet-4-6 | reviewing | none | `review_result` |
 
-## Pipeline phases
-
-| Phase | Agent | Model | Role |
-|-------|-------|-------|------|
-| Planning | planner | claude-opus-4-6 | Transforms brief into structured spec |
-| Architecting | architect | claude-opus-4-6 | Architecture assessment and guidance |
-| Designing | designer | claude-sonnet-4-6 | UX/UI design, breaks work into developer tasks |
-| Developing | developer | claude-sonnet-4-6 | Implements each task (has bash/read/write tools) |
-| Reviewing | reviewer | claude-haiku-4-5 | Reviews against spec, marks pass/fail per task |
-
-The reviewer can send failing tasks back to developers (up to 3 rounds by default).
-
-## Artifacts
-
-All artifacts are stored in Azure Blob Storage:
-
-```
-artifacts/{feature_id}/
-  state.json           Feature lifecycle state (source of truth)
-  brief.md             Original user brief
-  spec.r1.md           Planner output
-  arch-review.r1.md    Architect output
-  design.r1.md         Designer output (includes task list)
-  impl/
-    {task}.r1.md       Developer implementation summary
-    {task}.r2.md       After revision (if needed)
-  review/
-    review.r1.md       Reviewer output
-```
-
-## Agent definitions
-
-Agents live in `.agents/` as Markdown files with YAML frontmatter:
+### Agent frontmatter
 
 ```yaml
 ---
 id: developer
 model: claude-sonnet-4-6
+phase: developing
 max_turns: 30
-allowed_tools: [bash, read, write]
-visibility_timeout: 1800
-output_parsing: none
+allowed_tools: [bash, read, write]   # maps to --allowedTools
+visibility_timeout: 1800             # seconds the worker holds the queue message
+retry_limit: 3
+output_parsing: none                 # none | task_list | review_result
+context_files: []                    # paths injected into prompt (see below)
 ---
 System prompt...
 ```
 
-Add or modify agents without changing Python code — just edit the Markdown and update `.pipeline/config.json`.
+### Output parsing
 
-## Architecture
+- `task_list` — planner only. Extracts `### task: {name}` headers to fan out developer tasks.
+- `review_result` — reviewer only. Extracts `### task: {name}` + `**Status:** PASS/REVISION_NEEDED`.
 
-- **Queues** — one Azure Storage Queue per pipeline phase. Workers are stateless and can run on any machine with storage access.
-- **State** — `state.json` per feature in blob storage, updated atomically via Azure blob lease (no database needed).
-- **Fan-out** — designer emits `N` developer tasks; the last developer worker to finish triggers review (last-writer pattern).
-- **Fault tolerance** — failed tasks return to queue after visibility timeout. After `dead_letter_threshold` failures, messages move to `{queue}-poison` for manual inspection.
-- **Distribution** — run workers on any machine that has `AZURE_STORAGE_CONNECTION_STRING` and the `claude` CLI. No direct communication between workers required.
+### Developer status codes
 
-## Development
+The developer agent may end its output with one of:
+
+| Status | Effect |
+|--------|--------|
+| `## Status: DONE` | Task completed, enqueue reviewer |
+| `## Status: DONE_WITH_CONCERNS` | Completed with caveats, enqueue reviewer |
+| `## Status: BLOCKED` | Immediate feature failure |
+| `## Status: NEEDS_CONTEXT` | Immediate feature failure |
+
+## Per-agent context files
+
+Any agent can declare `context_files` in its frontmatter. The paths are resolved relative to the project root and injected into the prompt as formatted blocks before the agent runs.
+
+```yaml
+context_files:
+  - docs/api-spec.md
+  - src/models/          # entire directory
+  - src/**/*.ts          # recursive glob
+```
+
+Supported: single files, directories, recursive patterns (`/**`). Large files emit a warning; unreadable files skip silently.
+
+## Serial task dispatch
+
+Developer tasks are executed serially (not in parallel) to prevent same-file conflicts. The planner emits all tasks with `status: pending`. The dispatcher enqueues the next `pending` task only after the current task completes review. `TaskEntry.queued_message` stores the serialized `TaskMessage` for deferred enqueue.
+
+## Per-task review
+
+Each developer task goes through its own review cycle independently:
+
+```
+Developer task N  →  Reviewer  →  PASS → next pending task
+                              ↘  REVISION_NEEDED → dev_revision → Developer task N (r+1) → Reviewer
+```
+
+After `max_revisions` revision rounds the feature is marked `failed`.
+
+## Artifact naming
+
+```
+artifacts/{feature_id}/brief.md
+artifacts/{feature_id}/spec.r1.md
+artifacts/{feature_id}/arch-review.r1.md
+artifacts/{feature_id}/design.r1.md
+artifacts/{feature_id}/task-plan.r1.md
+artifacts/{feature_id}/impl/{task}.r1.md      # r{N} = revision number
+artifacts/{feature_id}/review/{task}.r1.md
+artifacts/{feature_id}/state.json
+```
+
+## Concurrency safety
+
+`StateManager.update()` acquires an Azure blob lease (30s) before read-modify-write. Lease contention retries with exponential backoff. All other errors propagate immediately.
+
+## Claude Code skills
+
+| Skill | Trigger | What it does |
+|-------|---------|--------------|
+| `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to Azure |
+| `/implement {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
+| `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter |
+
+## Environment
 
 ```bash
-# Run tests
+cp .env.example .env
+# fill in AZURE_STORAGE_CONNECTION_STRING
+```
+
+`.env` is loaded automatically via `python-dotenv`. Never commit it — it's in `.gitignore`.
+
+## Running tests
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest tests/ -v
-
-# Add a new agent
-# 1. Create .agents/{name}.md
-# 2. Add to .pipeline/config.json
-# 3. Add transition in agentharness/dispatcher.py
-# 4. Create the Azure queue (/azure-storage skill)
 ```
 
-## Project structure
+Tests use mocked Azure clients — no real storage needed.
 
-```
-.agents/            Agent definitions
-.claude/agents/     Claude Code skills
-.pipeline/          Runtime config
-agentharness/       Python package
-  models.py         Pydantic models
-  config.py         Config loading
-  storage.py        Azure client wrappers
-  state_manager.py  Atomic state updates (blob lease)
-  prompt_builder.py Prompt assembly
-  agent_runner.py   Claude CLI subprocess
-  dispatcher.py     State machine + fan-out/fan-in
-  worker.py         Async worker loop
-  brainstorm.py     Brief upload + pipeline kickoff
-  tui.py            Textual monitoring UI
-  cli.py            CLI entry points
-tests/              Unit tests
-```
+## Adding a new agent
+
+1. Create `.agents/{name}.md` with YAML frontmatter + system prompt
+2. Add queue entry to `.pipeline/config.json`
+3. Add transition logic to `dispatcher.py` (`_LINEAR_TRANSITIONS` or custom handler)
+4. Create the Azure queue: `/azure-storage` → "create queue {name}-queue"

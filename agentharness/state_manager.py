@@ -96,3 +96,15 @@ class StateManager:
                         pass  # Lease may have expired; ignore
 
         raise RuntimeError(f"Exhausted retries updating state for {feature_id}")
+
+    async def set_worktree_path(self, feature_id: str, worktree_path: str) -> None:
+        """Atomically persist worktree_path under blob lease.
+
+        No-op if already set to the same value.
+        Raises ValueError if attempting to overwrite a different non-None value.
+        """
+        await self.update(feature_id, lambda s: s.with_worktree_path(worktree_path))
+
+    async def set_cleanup_warning(self, feature_id: str, message: str) -> None:
+        """Atomically persist cleanup_warning on the feature record under blob lease."""
+        await self.update(feature_id, lambda s: s.with_cleanup_warning(message))

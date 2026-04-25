@@ -1,7 +1,7 @@
 ---
 id: planner
 display_name: "Planner Agent"
-model: claude-opus-4-6
+model: claude-opus-4-7
 phase: planning
 max_turns: 1
 allowed_tools: []

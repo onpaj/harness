@@ -170,7 +170,8 @@ class FeatureList(ListView):
         bar = _phase_bar(state)
         summary = _task_summary(state) or state.status.value
         color = _STATUS_COLORS.get(state.status, "white")
-        return f"[{color}]{icon}[/]  {state.feature_id[-16:]}  [{color}]{bar}[/]  [dim]{summary}[/dim]"
+        short_id = state.feature_id.removeprefix("feat-")
+        return f"[{color}]{icon}[/]  {short_id}  [{color}]{bar}[/]  [dim]{summary}[/dim]"
 
     def selected_feature_id(self) -> str | None:
         idx = self.index
@@ -432,7 +433,7 @@ class PipelineMonitor(App):
         height: 1fr;
     }
     FeatureList {
-        width: 54;
+        width: 81;
         border: round $primary;
     }
     #right-col {

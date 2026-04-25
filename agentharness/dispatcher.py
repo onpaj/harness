@@ -20,7 +20,7 @@ from agentharness.storage import (
     PipelineQueue,
     impl_artifact_path,
     phase_artifact_path,
-    review_artifact_path,
+    task_review_artifact_path,
 )
 
 log = logging.getLogger(__name__)
@@ -53,10 +53,10 @@ async def dispatch_after_completion(
         return await _dispatch_fan_out(state, agent_output, config, queues)
 
     if status in (FeatureStatus.developing, FeatureStatus.dev_revision):
-        return await _dispatch_serial_next(state, completed_task, config, queues)
+        return await _dispatch_serial_next(state, completed_task, agent_output, config, queues)
 
     if status == FeatureStatus.reviewing:
-        return await _dispatch_review_result(state, agent_output, config, queues)
+        return await _dispatch_review_result(state, completed_task, agent_output, config, queues)
 
     log.warning("No dispatch logic for status %r", status)
     return None
@@ -141,147 +141,164 @@ async def _dispatch_fan_out(
 async def _dispatch_serial_next(
     state: FeatureState,
     completed_task: TaskMessage,
+    agent_output: str,
     config: Config,
     queues: dict[str, PipelineQueue],
-) -> FeatureState | None:
-    next_task_entry = state.next_pending_task("developing")
-    if next_task_entry is not None:
-        dev_queue = queues.get("developer-queue")
-        if not dev_queue:
-            raise RuntimeError("developer-queue not found")
-        next_task_msg = TaskMessage.model_validate(next_task_entry.queued_message)
-        await dev_queue.send_task(next_task_msg)
-        updated = state.with_task_update(next_task_entry.task_id, status=TaskStatus.queued)
-        log.info("Serial dispatch: enqueued next task %s", next_task_msg.task_id)
-        return updated
-
-    if state.all_tasks_complete("developing"):
-        log.info("Serial dispatch: all tasks done for %s, triggering review", state.feature_id)
-        return await _enqueue_review(state, config, queues)
-
-    log.info(
-        "Serial dispatch: task %s done, waiting for in-progress tasks",
-        completed_task.task_id,
-    )
-    return None
+) -> FeatureState:
+    dev_status = _parse_developer_status(agent_output)
+    if dev_status in ("BLOCKED", "NEEDS_CONTEXT"):
+        log.warning(
+            "Dev task %s reported %s — skipping review, marking feature failed",
+            completed_task.task_id,
+            dev_status,
+        )
+        return state.with_status(FeatureStatus.failed).with_event(
+            "feature_failed", details=f"Task {completed_task.task_id} reported {dev_status}"
+        )
+    log.info("Dev task %s complete (%s), enqueuing per-task review", completed_task.task_id, dev_status)
+    return await _enqueue_per_task_review(state, completed_task, queues)
 
 
-async def _enqueue_review(
+async def _enqueue_per_task_review(
     state: FeatureState,
-    config: Config,
+    dev_task: TaskMessage,
     queues: dict[str, PipelineQueue],
 ) -> FeatureState:
     review_queue = queues.get("review-queue")
     if not review_queue:
         raise RuntimeError("review-queue not found")
 
-    revision = state.config.current_revision_round + 1
     feature_id = state.feature_id
+    task_name = _task_name_from_id(dev_task.task_id, feature_id)
+    revision = dev_task.revision
 
     task = TaskMessage(
         feature_id=feature_id,
-        task_id=f"{feature_id}-review-{revision}",
+        task_id=f"{feature_id}-review-{task_name}-r{revision}",
         input_artifacts=[
             phase_artifact_path(feature_id, "spec", 1),
             phase_artifact_path(feature_id, "arch-review", 1),
+            dev_task.output_artifact,
         ],
-        output_artifact=review_artifact_path(feature_id, revision),
+        output_artifact=task_review_artifact_path(feature_id, task_name, revision),
         agent_role="reviewer",
-        work_dir=_impl_work_dir(feature_id),
+        context=task_name,
+        revision=revision,
+        work_dir=dev_task.work_dir,
     )
     await review_queue.send_task(task)
+    log.info("Enqueued per-task review for %s r%d", task_name, revision)
 
     return (
         state
         .with_status(FeatureStatus.reviewing)
         .with_phase("reviewing", PhaseInfo(status=PhaseStatus.pending))
-        .with_event("phase_enqueued", phase="reviewing")
+        .with_event("phase_enqueued", phase="reviewing", details=f"Per-task review for {task_name} r{revision}")
     )
 
 
 async def _dispatch_review_result(
     state: FeatureState,
+    completed_task: TaskMessage,
     review_output: str,
     config: Config,
     queues: dict[str, PipelineQueue],
 ) -> FeatureState:
+    task_name = completed_task.context or _task_name_from_id(completed_task.task_id, state.feature_id)
     failed_tasks = _parse_review_result(review_output)
 
-    if not failed_tasks:
-        log.info("Review passed for feature %s", state.feature_id)
-        return state.with_status(FeatureStatus.done).with_event("feature_completed")
+    if task_name not in failed_tasks:
+        next_task_entry = state.next_pending_task("developing")
+        if next_task_entry is None:
+            log.info("All tasks reviewed and passed for %s — done", state.feature_id)
+            return state.with_status(FeatureStatus.done).with_event("feature_completed")
 
-    revision_round = state.config.current_revision_round + 1
-    if revision_round > state.config.max_revisions:
-        log.warning(
-            "Feature %s exceeded max revisions (%d), marking failed",
-            state.feature_id,
-            state.config.max_revisions,
+        dev_queue = queues.get("developer-queue")
+        if not dev_queue:
+            raise RuntimeError("developer-queue not found")
+        next_task_msg = TaskMessage.model_validate(next_task_entry.queued_message)
+        await dev_queue.send_task(next_task_msg)
+        log.info("Review passed for %s, enqueuing next task %s", task_name, next_task_msg.task_id)
+        return (
+            state
+            .with_task_update(next_task_entry.task_id, status=TaskStatus.queued)
+            .with_status(FeatureStatus.developing)
+            .with_event("review_passed", details=f"Task {task_name} approved, next: {next_task_msg.task_id}")
         )
+
+    feedback = failed_tasks[task_name]
+    new_revision = completed_task.revision + 1
+
+    if new_revision > state.config.max_revisions:
+        log.warning("Task %s exceeded max revisions, marking feature failed", task_name)
         return state.with_status(FeatureStatus.failed).with_event(
-            "feature_failed", details="Max revisions exceeded"
+            "feature_failed", details=f"Max revisions exceeded for task {task_name}"
         )
 
-    log.info(
-        "Review found %d failing tasks for %s (revision round %d)",
-        len(failed_tasks),
-        state.feature_id,
-        revision_round,
-    )
     dev_queue = queues.get("developer-queue")
     if not dev_queue:
         raise RuntimeError("developer-queue not found")
 
-    new_task_entries: list[TaskEntry] = []
-    for task_name, feedback in failed_tasks.items():
-        new_revision = revision_round + 1
-        output_artifact = impl_artifact_path(state.feature_id, task_name, new_revision)
-        task_id = f"{state.feature_id}-dev-{task_name}-r{new_revision}"
+    feature_id = state.feature_id
+    output_artifact = impl_artifact_path(feature_id, task_name, new_revision)
+    task_id = f"{feature_id}-dev-{task_name}-r{new_revision}"
 
-        task_msg = TaskMessage(
-            feature_id=state.feature_id,
-            task_id=task_id,
-            input_artifacts=[
-                phase_artifact_path(state.feature_id, "spec", 1),
-                phase_artifact_path(state.feature_id, "arch-review", 1),
-                phase_artifact_path(state.feature_id, "design", 1),
-            ],
-            output_artifact=output_artifact,
-            agent_role="developer",
-            context=f"Revise task: {task_name}",
-            revision=new_revision,
-            review_feedback=feedback,
-            work_dir=_impl_work_dir(state.feature_id),
-        )
-        new_task_entries.append(
-            TaskEntry(
-                task_id=task_id,
-                phase="developing",
-                status=TaskStatus.pending,
-                revision=new_revision,
-                output_artifact=output_artifact,
-                queued_message=task_msg.model_dump(),
-            )
-        )
-
-    first_entry = new_task_entries[0]
-    first_msg = TaskMessage.model_validate(first_entry.queued_message)
-    await dev_queue.send_task(first_msg)
-    new_task_entries[0] = first_entry.model_copy(update={"status": TaskStatus.queued})
+    task_msg = TaskMessage(
+        feature_id=feature_id,
+        task_id=task_id,
+        input_artifacts=[
+            phase_artifact_path(feature_id, "spec", 1),
+            phase_artifact_path(feature_id, "arch-review", 1),
+            phase_artifact_path(feature_id, "design", 1),
+        ],
+        output_artifact=output_artifact,
+        agent_role="developer",
+        context=f"Revise task: {task_name}",
+        revision=new_revision,
+        review_feedback=feedback,
+        work_dir=_impl_work_dir(feature_id),
+    )
+    task_entry = TaskEntry(
+        task_id=task_id,
+        phase="developing",
+        status=TaskStatus.queued,
+        revision=new_revision,
+        output_artifact=output_artifact,
+        queued_message=task_msg.model_dump(),
+    )
+    await dev_queue.send_task(task_msg)
+    log.info("Review failed for %s, enqueuing revision r%d", task_name, new_revision)
 
     updated_config = state.config.model_copy(
-        update={"current_revision_round": revision_round}
+        update={"current_revision_round": state.config.current_revision_round + 1}
     )
     return (
         state
-        .with_status(FeatureStatus.dev_revision)
-        .with_tasks_added(new_task_entries)
+        .with_tasks_added([task_entry])
         .model_copy(update={"config": updated_config})
-        .with_event(
-            "revision_requested",
-            details=f"Round {revision_round}, {len(failed_tasks)} tasks",
-        )
+        .with_status(FeatureStatus.dev_revision)
+        .with_event("revision_requested", details=f"Task {task_name} r{new_revision}")
     )
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+_DEV_STATUS_RE = re.compile(
+    r"^##\s+Status\s*\n(DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)", re.MULTILINE
+)
+
+
+def _parse_developer_status(output: str) -> str:
+    """Return the developer's reported status, defaulting to DONE if absent."""
+    match = _DEV_STATUS_RE.search(output)
+    return match.group(1) if match else "DONE"
+
+
+def _task_name_from_id(task_id: str, feature_id: str) -> str:
+    """Extract task name from IDs like '{feature_id}-dev-{task_name}[-r{N}]'."""
+    prefix = f"{feature_id}-dev-"
+    suffix = task_id[len(prefix):]
+    return re.sub(r"-r\d+$", "", suffix)
 
 
 # ── Output parsers ──────────────────────────────────────────────────────────

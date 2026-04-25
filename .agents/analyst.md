@@ -1,7 +1,7 @@
 ---
 id: analyst
 display_name: "Analyst Agent"
-model: claude-opus-4-6
+model: claude-opus-4-7
 phase: analyzing
 max_turns: 1
 allowed_tools: []
