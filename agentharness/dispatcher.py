@@ -26,10 +26,10 @@ from agentharness.storage import (
 log = logging.getLogger(__name__)
 
 # Maps feature status → (next_status, next_queue_key)
-# None queue_key means fan-in wait (not all tasks done yet)
 _LINEAR_TRANSITIONS: dict[str, tuple[str, str]] = {
-    "planning": ("architecting", "architect-queue"),
+    "analyzing": ("architecting", "architect-queue"),
     "architecting": ("designing", "designer-queue"),
+    "designing": ("planning", "planner-queue"),
 }
 
 
@@ -46,10 +46,10 @@ async def dispatch_after_completion(
     """
     status = state.status
 
-    if status in (FeatureStatus.planning, FeatureStatus.architecting):
+    if status in (FeatureStatus.analyzing, FeatureStatus.architecting, FeatureStatus.designing):
         return await _dispatch_linear(state, status, config, queues)
 
-    if status == FeatureStatus.designing:
+    if status == FeatureStatus.planning:
         return await _dispatch_fan_out(state, agent_output, config, queues)
 
     if status in (FeatureStatus.developing, FeatureStatus.dev_revision):
@@ -303,6 +303,7 @@ def _parse_task_list(design_output: str, feature_id: str) -> list[TaskMessage]:
                 phase_artifact_path(feature_id, "spec", 1),
                 phase_artifact_path(feature_id, "arch-review", 1),
                 phase_artifact_path(feature_id, "design", 1),
+                phase_artifact_path(feature_id, "task-plan", 1),
             ],
             output_artifact=impl_artifact_path(feature_id, task_name, 1),
             agent_role="developer",
@@ -357,7 +358,7 @@ def _impl_work_dir(feature_id: str) -> str:
 def _artifacts_for_phase(feature_id: str, phase: str) -> list[str]:
     """Return input artifact paths for a given pipeline phase."""
     mapping: dict[str, list[str]] = {
-        "planning": [f"artifacts/{feature_id}/brief.md"],
+        "analyzing": [f"artifacts/{feature_id}/brief.md"],
         "architecting": [
             phase_artifact_path(feature_id, "spec", 1),
             f"artifacts/{feature_id}/brief.md",
@@ -366,13 +367,19 @@ def _artifacts_for_phase(feature_id: str, phase: str) -> list[str]:
             phase_artifact_path(feature_id, "spec", 1),
             phase_artifact_path(feature_id, "arch-review", 1),
         ],
+        "planning": [
+            phase_artifact_path(feature_id, "spec", 1),
+            phase_artifact_path(feature_id, "arch-review", 1),
+            phase_artifact_path(feature_id, "design", 1),
+        ],
     }
     return mapping.get(phase, [])
 
 
 def _output_name(phase: str) -> str:
     return {
-        "planning": "spec",
+        "analyzing": "spec",
         "architecting": "arch-review",
         "designing": "design",
+        "planning": "task-plan",
     }.get(phase, phase)

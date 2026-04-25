@@ -56,11 +56,11 @@ agentharness list                              # all features
 ## State machine
 
 ```
-brainstorming → planning → architecting → designing → developing → reviewing → done
-                                                           ↑              |
-                                                      dev_revision ←------+
-                                                           |
-                                                       developing → reviewing
+brainstorming → analyzing → architecting → designing → planning → developing → reviewing → done
+                                                                       ↑              |
+                                                                  dev_revision ←------+
+                                                                       |
+                                                                   developing → reviewing
 ```
 
 `failed` is reachable from any state after `dead_letter_threshold` retries or `max_revisions` revision rounds.

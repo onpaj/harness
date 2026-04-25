@@ -152,7 +152,7 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
 
 
 async def enqueue_planner(feature_id: str, config: Config) -> None:
-    """Enqueue the first planner task, transitioning feature to 'planning' status."""
+    """Enqueue the analyst task, transitioning feature to 'analyzing' status."""
     from azure.storage.blob.aio import BlobServiceClient
     from agentharness.models import TaskMessage
     from agentharness.storage import phase_artifact_path
@@ -166,20 +166,20 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
 
         task = TaskMessage(
             feature_id=feature_id,
-            task_id=f"{feature_id}-planning-1",
+            task_id=f"{feature_id}-analyzing-1",
             input_artifacts=[brief_blob],
             output_artifact=phase_artifact_path(feature_id, "spec", 1),
-            agent_role="planner",
+            agent_role="analyst",
         )
 
-        planner_queue = PipelineQueue.from_connection_string(conn_str, "planner-queue")
-        await planner_queue.ensure_exists()
-        await planner_queue.send_task(task)
-        await planner_queue.close()
+        analyst_queue = PipelineQueue.from_connection_string(conn_str, "analyst-queue")
+        await analyst_queue.ensure_exists()
+        await analyst_queue.send_task(task)
+        await analyst_queue.close()
 
         await state_mgr.update(
             feature_id,
-            lambda s: s.with_status(FeatureStatus.planning).with_event("pipeline_started"),
+            lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
         )
     finally:
         await blob_service.close()

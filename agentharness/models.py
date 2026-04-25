@@ -11,9 +11,10 @@ from pydantic import BaseModel, Field
 
 class FeatureStatus(str, Enum):
     brainstorming = "brainstorming"
-    planning = "planning"
+    analyzing = "analyzing"
     architecting = "architecting"
     designing = "designing"
+    planning = "planning"
     developing = "developing"
     reviewing = "reviewing"
     dev_revision = "dev_revision"
@@ -55,6 +56,7 @@ class TaskEntry(BaseModel):
     review_feedback: str | None = None
     log_file: str | None = None
     queued_message: dict | None = None
+    pid: int | None = None
 
 
 class HistoryEvent(BaseModel):

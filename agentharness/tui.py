@@ -33,6 +33,7 @@ _STATUS_ICONS = {
     FeatureStatus.developing: "▶",
     FeatureStatus.reviewing: "▶",
     FeatureStatus.dev_revision: "↺",
+    FeatureStatus.analyzing: "◌",
     FeatureStatus.planning: "◌",
     FeatureStatus.architecting: "◌",
     FeatureStatus.designing: "◌",
@@ -47,7 +48,7 @@ _STATUS_COLORS = {
     FeatureStatus.dev_revision: "magenta",
 }
 
-_PHASE_ORDER = ["planning", "architecting", "designing", "developing", "reviewing"]
+_PHASE_ORDER = ["analyzing", "architecting", "designing", "planning", "developing", "reviewing"]
 
 _OBSERVER_PID_FILE = Path("logs/observer.pid")
 
@@ -283,7 +284,8 @@ class TaskLogPanel(RichLog):
             return
 
         short = task_id.split("-dev-")[-1]
-        self.border_title = f"Task Log  {short}  agent: {state.status.value}"
+        self.border_title = f"Task Log  [{short}]"
+        self.clear()
 
         task_entry = next((t for t in state.tasks if t.task_id == task_id), None)
         if task_entry and task_entry.log_file:
@@ -291,17 +293,18 @@ class TaskLogPanel(RichLog):
             if log_path.exists():
                 try:
                     raw_lines = log_path.read_text().splitlines()[-_LOG_TAIL_LINES:]
-                    self.clear()
-                    label = log_path.stem
                     for line in raw_lines:
-                        self.write(Text.from_markup(f"[dim green]{label}[/dim green]  {line}"))
+                        self.write(Text.from_markup(f"[dim green]{log_path.stem}[/dim green]  {line}"))
                     self.scroll_end(animate=False)
                 except OSError:
-                    pass
+                    self.write(Text.from_markup(f"[dim red]Cannot read: {task_entry.log_file}[/dim red]"))
+            else:
+                self.write(Text.from_markup(f"[dim]No log yet for {short}[/dim]"))
             return
 
         # Fallback: scan log dir by task_id stem match
         if not _LOG_DIR.exists():
+            self.write(Text.from_markup("[dim]No logs directory[/dim]"))
             return
         lines: list[tuple[str, str, str]] = []
         for lf in _LOG_DIR.rglob("*.log"):
@@ -316,9 +319,9 @@ class TaskLogPanel(RichLog):
                 ts = line[:8] if len(line) >= 8 and line[2] == ":" else "00:00:00"
                 lines.append((ts, label, line))
         if not lines:
+            self.write(Text.from_markup(f"[dim]No log found for {short}[/dim]"))
             return
         lines.sort(key=lambda t: t[0])
-        self.clear()
         for _, label, line in lines[-_LOG_TAIL_LINES:]:
             self.write(Text.from_markup(f"[dim green]{label}[/dim green]  {line}"))
         self.scroll_end(animate=False)
@@ -549,21 +552,22 @@ class PipelineMonitor(App):
             self.notify("No task selected.", severity="warning")
             return
 
+        feature_id = self.query_one(FeatureList).selected_feature_id()
+        state = next((s for s in self._states if s.feature_id == feature_id), None)
+        entry = next((t for t in (state.tasks if state else []) if t.task_id == task_id), None)
+        pid = entry.pid if entry else None
+
         def on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
+            if not pid:
+                self.notify(f"No PID recorded for task {task_id.split('-dev-')[-1]}.", severity="warning")
+                return
             try:
-                result = subprocess.run(
-                    ["pgrep", "-f", task_id],
-                    capture_output=True, text=True,
-                )
-                pids = [int(p) for p in result.stdout.split() if p.strip()]
-                if not pids:
-                    self.notify(f"No process found for task {task_id}.", severity="warning")
-                    return
-                for pid in pids:
-                    os.kill(pid, signal.SIGTERM)
-                self.notify(f"Killed {len(pids)} process(es) for {task_id.split('-dev-')[-1]}.", severity="warning")
+                os.kill(pid, signal.SIGTERM)
+                self.notify(f"Sent SIGTERM to pid {pid} for {task_id.split('-dev-')[-1]}.", severity="warning")
+            except ProcessLookupError:
+                self.notify(f"Process {pid} already exited.", severity="warning")
             except Exception as exc:
                 self.notify(f"Kill failed: {exc}", severity="error")
 
@@ -589,9 +593,10 @@ class PipelineMonitor(App):
         from agentharness.storage import phase_artifact_path, review_artifact_path
 
         _PHASE_TO_QUEUE = {
-            "planning": "planner-queue",
+            "analyzing": "analyst-queue",
             "architecting": "architect-queue",
             "designing": "designer-queue",
+            "planning": "planner-queue",
             "developing": "developer-queue",
             "reviewing": "review-queue",
         }
@@ -616,27 +621,31 @@ class PipelineMonitor(App):
             return
 
         _phase_inputs = {
-            "planning": [f"artifacts/{feature_id}/brief.md"],
+            "analyzing": [f"artifacts/{feature_id}/brief.md"],
             "architecting": [phase_artifact_path(feature_id, "spec", 1), f"artifacts/{feature_id}/brief.md"],
             "designing": [phase_artifact_path(feature_id, "spec", 1), phase_artifact_path(feature_id, "arch-review", 1)],
+            "planning": [phase_artifact_path(feature_id, "spec", 1), phase_artifact_path(feature_id, "arch-review", 1), phase_artifact_path(feature_id, "design", 1)],
             "reviewing": [phase_artifact_path(feature_id, "spec", 1), phase_artifact_path(feature_id, "arch-review", 1)],
         }
         _phase_outputs = {
-            "planning": phase_artifact_path(feature_id, "spec", 1),
+            "analyzing": phase_artifact_path(feature_id, "spec", 1),
             "architecting": phase_artifact_path(feature_id, "arch-review", 1),
             "designing": phase_artifact_path(feature_id, "design", 1),
+            "planning": phase_artifact_path(feature_id, "task-plan", 1),
             "reviewing": review_artifact_path(feature_id, 1),
         }
         _phase_agents = {
-            "planning": "planner",
+            "analyzing": "analyst",
             "architecting": "architect",
             "designing": "designer",
+            "planning": "planner",
             "reviewing": "reviewer",
         }
         _phase_status = {
-            "planning": FeatureStatus.planning,
+            "analyzing": FeatureStatus.analyzing,
             "architecting": FeatureStatus.architecting,
             "designing": FeatureStatus.designing,
+            "planning": FeatureStatus.planning,
             "reviewing": FeatureStatus.reviewing,
         }
 

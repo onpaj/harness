@@ -62,14 +62,14 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         artifact_contents: dict[str, str] = {}
         for blob_path in task.input_artifacts:
-            try:
-                content = await store.download(blob_path)
-                label = artifact_label(blob_path)
-                artifact_contents[label] = content
-                if work_dir:
-                    (work_dir / label).write_text(content)
-            except Exception as exc:
-                log.warning("Could not download artifact %s: %s", blob_path, exc)
+            content = await _download_with_retry(store, blob_path)
+            if content is None:
+                log.warning("Skipping missing artifact %s", blob_path)
+                continue
+            label = artifact_label(blob_path)
+            artifact_contents[label] = content
+            if work_dir:
+                (work_dir / label).write_text(content)
 
         prompt = build_prompt(agent_def, task, artifact_contents)
         output = await run_agent(agent_def, prompt, work_dir=work_dir)
@@ -94,7 +94,7 @@ def _mark_started(state, task: TaskMessage):
     phase = state.status.value
     return (
         state
-        .with_task_update(task.task_id, status=TaskStatus.in_progress, worker_id=WORKER_ID, started_at=datetime.now(UTC))
+        .with_task_update(task.task_id, status=TaskStatus.in_progress, worker_id=WORKER_ID, started_at=datetime.now(UTC), pid=os.getpid())
         .with_phase(phase, PhaseInfo(status=PhaseStatus.in_progress))
         .with_event("task_started", phase=phase, task_id=task.task_id, worker_id=WORKER_ID)
     )
@@ -108,6 +108,26 @@ def _mark_completed(state, task: TaskMessage):
         .with_phase(phase, PhaseInfo(status=PhaseStatus.completed))
         .with_event("task_completed", phase=phase, task_id=task.task_id)
     )
+
+
+_ARTIFACT_RETRY_DELAYS = [2, 5, 10]  # seconds between attempts
+
+
+async def _download_with_retry(store: ArtifactStore, blob_path: str) -> str | None:
+    for attempt, delay in enumerate([0] + _ARTIFACT_RETRY_DELAYS, start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await store.download(blob_path)
+        except Exception as exc:
+            if attempt <= len(_ARTIFACT_RETRY_DELAYS):
+                log.warning(
+                    "Artifact %s not yet available (attempt %d), retrying in %ds: %s",
+                    blob_path, attempt, _ARTIFACT_RETRY_DELAYS[attempt - 1], exc,
+                )
+            else:
+                log.warning("Could not download artifact %s after %d attempts: %s", blob_path, attempt, exc)
+    return None
 
 
 def configure_logging() -> None:

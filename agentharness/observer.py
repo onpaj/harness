@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -35,18 +36,44 @@ async def observe(config: Config) -> None:
     log.info("Observer started — watching %d queues: %s", len(queues), ", ".join(queues))
     exe = str(Path(sys.executable).parent / "agentharness")
 
+    active_procs: dict[str, asyncio.Process] = {}
+
+    loop = asyncio.get_running_loop()
+
+    def _shutdown() -> None:
+        log.info("Observer shutting down — terminating %d active subprocess(es)", len(active_procs))
+        for task_id, proc in list(active_procs.items()):
+            try:
+                proc.terminate()
+                log.info("Sent SIGTERM to subprocess for task %s (pid %d)", task_id, proc.pid)
+            except ProcessLookupError:
+                pass
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, _shutdown)
+    loop.add_signal_handler(signal.SIGINT, _shutdown)
+
     try:
         await asyncio.gather(*[
-            _poll_queue(q_name, q, config, exe)
+            _poll_queue(q_name, q, config, exe, active_procs)
             for q_name, q in queues.items()
         ])
+    except asyncio.CancelledError:
+        pass
     finally:
         for q in queues.values():
             await q.close()
         await blob_service.close()
 
 
-async def _poll_queue(queue_name: str, queue: PipelineQueue, config: Config, exe: str) -> None:
+async def _poll_queue(
+    queue_name: str,
+    queue: PipelineQueue,
+    config: Config,
+    exe: str,
+    active_procs: dict[str, asyncio.Process],
+) -> None:
     log.info("Polling %s", queue_name)
     while True:
         result = await queue.receive_task(visibility_timeout=_VISIBILITY_TIMEOUT)
@@ -56,7 +83,7 @@ async def _poll_queue(queue_name: str, queue: PipelineQueue, config: Config, exe
         task, raw_msg = result
         log.info("Received task %s from %s", task.task_id, queue_name)
         asyncio.create_task(
-            _run_subprocess(queue_name, task, raw_msg, queue, exe),
+            _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs),
             name=f"task-{task.task_id}",
         )
 
@@ -67,6 +94,7 @@ async def _run_subprocess(
     raw_msg: object,
     queue: PipelineQueue,
     exe: str,
+    active_procs: dict[str, asyncio.Process],
 ) -> None:
     log_dir = Path("logs") / queue_name
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +111,9 @@ async def _run_subprocess(
                 stdout=fh,
                 stderr=fh,
             )
+            active_procs[task.task_id] = proc
+            log.info("Task %s running as pid %d", task.task_id, proc.pid)
+
             proc.stdin.write(task_json.encode())
             await proc.stdin.drain()
             proc.stdin.close()
@@ -92,6 +123,8 @@ async def _run_subprocess(
     except Exception as exc:
         log.error("Subprocess management failed for %s: %s", task.task_id, exc)
         return
+    finally:
+        active_procs.pop(task.task_id, None)
 
     if proc.returncode == 0:
         try:
