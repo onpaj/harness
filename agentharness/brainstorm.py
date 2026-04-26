@@ -41,12 +41,27 @@ def run_brainstorm_session(work_dir: Path, agent_path: Path) -> None:
     Uses os.execvp so the claude process inherits the terminal directly,
     giving it full TTY access for interactive use.
     """
+    from agentharness.context_files import format_context_section, resolve_context_files
+
     agent_def = load_agent_definition(agent_path)
+    project_root = agent_path.parent.parent
+
+    system_prompt = agent_def.system_prompt
+    if agent_def.context_files:
+        context_result = resolve_context_files(
+            agent_def.context_files,
+            agent_name=agent_def.id,
+            config_dir=project_root,
+        )
+        context_section = format_context_section(context_result.files)
+        if context_section:
+            system_prompt = f"{system_prompt}\n\n{context_section}"
+
     os.chdir(work_dir)
     os.execvp("claude", [
         "claude",
         "--model", agent_def.model,
-        "--system-prompt", agent_def.system_prompt,
+        "--system-prompt", system_prompt,
         "--allowedTools", "write",
         "--max-turns", str(agent_def.max_turns),
     ])

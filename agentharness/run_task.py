@@ -18,7 +18,7 @@ from azure.storage.blob.aio import BlobServiceClient
 
 from agentharness.agent_runner import run_agent
 from agentharness.config import Config
-from agentharness.dispatcher import dispatch_after_completion
+from agentharness.dispatcher import dispatch_after_completion, run_terminal_cleanup
 from agentharness.models import (
     FeatureStatus,
     PhaseInfo,
@@ -53,7 +53,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         log.info("[%s] Starting task %s", WORKER_ID, task.task_id)
 
-        await state_mgr.update(task.feature_id, lambda s: _mark_started(s, task))
+        started_state = await state_mgr.update(task.feature_id, lambda s: _mark_started(s, task))
 
         work_dir = None
         if task.work_dir:
@@ -72,7 +72,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
                 (work_dir / label).write_text(content)
 
         prompt = build_prompt(agent_def, task, artifact_contents)
-        output = await run_agent(agent_def, prompt, work_dir=work_dir)
+        output = await run_agent(agent_def, prompt, work_dir=work_dir, worktree_path=started_state.worktree_path)
 
         await store.upload(task.output_artifact, output)
         log.info("[%s] Task %s complete → %s", WORKER_ID, task.task_id, task.output_artifact)
@@ -81,7 +81,8 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         next_state = await dispatch_after_completion(updated_state, task, output, config, all_queues)
         if next_state is not None:
-            await state_mgr.update(task.feature_id, lambda _: next_state)
+            persisted = await state_mgr.update(task.feature_id, lambda _: next_state)
+            await run_terminal_cleanup(persisted, state_mgr)
 
     finally:
         for q in all_queues.values():

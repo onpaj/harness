@@ -1,41 +1,41 @@
-# Feature Brief: Optional Git Worktree Isolation per Feature
+# Feature Brief: AgentHarness Landing Page
 
 ## Problem Statement
-Parallel developer tasks within a single feature pipeline share the same working directory, creating race conditions where concurrent agents overwrite each other's file changes. This causes non-deterministic failures and corrupted implementations.
+Developer colleagues don't know AgentHarness exists or what it can do for them. They need a compelling, fast-loading page that convinces them to try it — written for developers, by a developer who uses it.
 
 ## Goals
-- Allow each feature pipeline to run in an isolated git worktree
-- Make worktree usage opt-in via `config.json` so existing setups are unaffected
+- Communicate the core value proposition in under 10 seconds of reading
+- Motivate developer colleagues to request access or start using it
+- Convey the "fire and forget" autonomous workflow clearly
 
 ## Functional Requirements
-- Add a `use_worktrees` boolean flag to `.pipeline/config.json` (default: `false`)
-- When `use_worktrees: true`, create a new git worktree for each feature at pipeline start
-- Worktree path: e.g. `.worktrees/{feature_id}/`
-- All agent subprocesses for that feature run with the worktree as their working directory
-- On successful pipeline completion (`done` state), automatically delete the worktree
-- On failure, leave the worktree in place for manual inspection and debugging
+- Static HTML single-page site (no build step, no framework required)
+- Hero section with punchy headline and subheading capturing the "you can sleep meanwhile" angle
+- What it is section: brief explanation of the pipeline (brief → analyst → architect → designer → planner → developer → reviewer → done)
+- Why use it section: key benefits (async, autonomous, no babysitting required)
+- How it works section: step-by-step flow a developer would follow (brainstorm → submit → walk away)
+- Call to action: encourages colleagues to try it or reach out
 
 ## Non-Functional Requirements
-- Worktree creation must not block the worker loop
-- Worktree path must be stored in `state.json` so all workers can resolve it
-- Must be safe when `use_worktrees: false` — no behaviour change in that mode
+- Fast load — no external JS frameworks, minimal dependencies
+- Works offline / from file system (no server needed)
+- Readable on desktop (primary target); mobile acceptable but not priority
 
 ## Technical Constraints
-- Uses `git worktree add` / `git worktree remove` via subprocess
-- Worktree path stored as `worktree_path` field on `FeatureState` in `models.py`
-- Worker reads `use_worktrees` from config at startup
-- Agent subprocesses already launched via `agent_runner.py` — CWD override goes there
+- Single `index.html` file (inline CSS, no separate stylesheets required)
+- No backend, no build pipeline
+- Can reference CDN fonts (e.g. Google Fonts) for typography
 
 ## Out of Scope
-- Per-task worktrees (feature-level only)
-- Merging worktree changes back into main branch (user's responsibility)
-- UI for worktree management
+- Authentication or gating
+- Live demo or interactive sandbox
+- Analytics or tracking
+- Documentation or API reference
 
 ## Success Criteria
-- With `use_worktrees: true`, parallel developer tasks write to isolated directories with no cross-task conflicts
-- Worktree is removed automatically when feature reaches `done`
-- Worktree persists on `failed` state for inspection
-- Existing pipelines with `use_worktrees: false` (or omitted) behave identically to today
+- A developer colleague reads it and immediately understands what AgentHarness does
+- They ask how to get access or try it themselves
+- The page communicates autonomy: describe → submit → sleep → wake up to a PR
 
 ## Additional Context
-The `worker.py` creates tasks and launches agents; `dispatcher.py` drives state transitions. The `state_manager.py` handles atomic `state.json` updates via Azure blob lease — `worktree_path` should be set once at feature creation and never mutated after.
+Design direction: dark background, deep blue accent color, bold modern typography, high contrast. Tone: confident, concise, developer-native — no fluff. Think of it as a pitch from one engineer to another.

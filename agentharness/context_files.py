@@ -96,11 +96,23 @@ def format_context_section(files: tuple[ResolvedContextFile, ...]) -> str:
 
 
 def _expand_path(declared_path: str, config_dir: Path) -> list[tuple[Path, str]]:
-    """Expand a declared path to (resolved_path, display_path) tuples."""
-    is_recursive = declared_path.endswith("/**")
+    """Expand a declared path to (resolved_path, display_path) tuples.
+
+    Supports:
+    - ``~`` home directory prefix (e.g. ``~/.claude/...``)
+    - Glob wildcards anywhere in the path (e.g. ``**/skills/*/SKILL.md``)
+    - Trailing ``/**`` for recursive directory expansion
+    - Absolute and config-dir-relative paths
+    """
+    expanded = declared_path
+    if expanded.startswith("~"):
+        expanded = str(Path(expanded).expanduser())
+
+    is_recursive = expanded.endswith("/**")
+    has_glob = "*" in expanded or "?" in expanded or "[" in expanded
 
     if is_recursive:
-        raw = declared_path[:-3]  # strip /**
+        raw = expanded[:-3]
         base = Path(raw) if Path(raw).is_absolute() else config_dir / raw
         if not base.exists():
             _logger.warning("Context file not found: %s", declared_path)
@@ -111,7 +123,25 @@ def _expand_path(declared_path: str, config_dir: Path) -> list[tuple[Path, str]]
         )
         return [(f, str(f)) for f in files]
 
-    base = Path(declared_path) if Path(declared_path).is_absolute() else config_dir / declared_path
+    if has_glob:
+        if Path(expanded).is_absolute():
+            parts = Path(expanded).parts
+            # Find the first part containing a wildcard to split root from pattern
+            split = next((i for i, p in enumerate(parts) if "*" in p or "?" in p or "[" in p), 1)
+            root = Path(*parts[:split])
+            pattern = str(Path(*parts[split:]))
+        else:
+            root = config_dir
+            pattern = expanded
+        matches = sorted(
+            (p for p in root.glob(pattern) if p.is_file()),
+            key=lambda p: str(p),
+        )
+        if not matches:
+            _logger.warning("Context glob matched no files: %s", declared_path)
+        return [(f, str(f)) for f in matches]
+
+    base = Path(expanded) if Path(expanded).is_absolute() else config_dir / expanded
 
     if not base.exists():
         _logger.warning("Context file not found: %s", declared_path)

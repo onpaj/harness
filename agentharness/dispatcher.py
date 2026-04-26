@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -16,6 +17,7 @@ from agentharness.models import (
     TaskMessage,
     TaskStatus,
 )
+from agentharness.worktree_manager import WorktreeRemovalError, remove_worktree
 from agentharness.storage import (
     PipelineQueue,
     impl_artifact_path,
@@ -24,6 +26,48 @@ from agentharness.storage import (
 )
 
 log = logging.getLogger(__name__)
+
+
+async def run_terminal_cleanup(state: FeatureState, state_manager) -> None:
+    """Best-effort worktree cleanup after a terminal state transition.
+
+    - done:   remove the worktree; on failure log ERROR + persist cleanup_warning.
+    - failed: log INFO preserving the worktree for operator inspection; no removal.
+    - other:  no-op.
+    """
+    if state.worktree_path is None:
+        return
+
+    if state.status == FeatureStatus.done:
+        log.info(
+            "Worktree removal started for %s at %s",
+            state.feature_id, state.worktree_path,
+        )
+        try:
+            await asyncio.to_thread(remove_worktree, state.worktree_path)
+            log.info(
+                "Worktree removal succeeded for %s at %s",
+                state.feature_id, state.worktree_path,
+            )
+        except WorktreeRemovalError as exc:
+            log.error(
+                "Worktree removal failed for %s at %s: %s",
+                state.feature_id, state.worktree_path, exc,
+            )
+            try:
+                await state_manager.set_cleanup_warning(state.feature_id, str(exc))
+            except Exception as warn_exc:
+                log.error(
+                    "Failed to persist cleanup_warning for %s: %s",
+                    state.feature_id, warn_exc,
+                )
+
+    elif state.status == FeatureStatus.failed:
+        log.info(
+            "Preserving worktree at %s for inspection (feature %s failed)",
+            state.worktree_path, state.feature_id,
+        )
+
 
 # Maps feature status → (next_status, next_queue_key)
 _LINEAR_TRANSITIONS: dict[str, tuple[str, str]] = {
@@ -101,7 +145,7 @@ async def _dispatch_linear(
 
 async def _dispatch_fan_out(
     state: FeatureState,
-    design_output: str,
+    planner_output: str,
     config: Config,
     queues: dict[str, PipelineQueue],
 ) -> FeatureState:
@@ -109,32 +153,35 @@ async def _dispatch_fan_out(
     if not dev_queue:
         raise RuntimeError("developer-queue not found")
 
-    tasks = _parse_task_list(design_output, state.feature_id)
-    if not tasks:
-        log.warning("Designer produced no tasks for %s — creating fallback task", state.feature_id)
-        tasks = [_fallback_developer_task(state.feature_id)]
-
-    task_entries: list[TaskEntry] = [
-        TaskEntry(
-            task_id=task_msg.task_id,
-            phase="developing",
-            status=TaskStatus.pending,
-            output_artifact=task_msg.output_artifact,
-            queued_message=task_msg.model_dump(),
-        )
-        for task_msg in tasks
-    ]
-
-    first_task = tasks[0]
-    await dev_queue.send_task(first_task)
-    task_entries[0] = task_entries[0].model_copy(update={"status": TaskStatus.queued})
-    log.info("Enqueued first developer task %s (%d pending)", first_task.task_id, len(tasks) - 1)
+    feature_id = state.feature_id
+    task_msg = TaskMessage(
+        feature_id=feature_id,
+        task_id=f"{feature_id}-dev-main",
+        input_artifacts=[
+            phase_artifact_path(feature_id, "spec", 1),
+            phase_artifact_path(feature_id, "arch-review", 1),
+            phase_artifact_path(feature_id, "design", 1),
+            phase_artifact_path(feature_id, "task-plan", 1),
+        ],
+        output_artifact=impl_artifact_path(feature_id, "main", 1),
+        agent_role="developer",
+        work_dir=_impl_work_dir(feature_id),
+    )
+    task_entry = TaskEntry(
+        task_id=task_msg.task_id,
+        phase="developing",
+        status=TaskStatus.queued,
+        output_artifact=task_msg.output_artifact,
+        queued_message=task_msg.model_dump(),
+    )
+    await dev_queue.send_task(task_msg)
+    log.info("Enqueued developer orchestrator task for %s", feature_id)
 
     return (
         state
         .with_status(FeatureStatus.developing)
-        .with_tasks_added(task_entries)
-        .with_event("serial_dispatch", phase="developing", details=f"{len(tasks)} tasks, 1 enqueued")
+        .with_tasks_added([task_entry])
+        .with_event("developer_dispatched", phase="developing", details="orchestrator task enqueued")
     )
 
 
@@ -250,6 +297,7 @@ async def _dispatch_review_result(
             phase_artifact_path(feature_id, "spec", 1),
             phase_artifact_path(feature_id, "arch-review", 1),
             phase_artifact_path(feature_id, "design", 1),
+            phase_artifact_path(feature_id, "task-plan", 1),
         ],
         output_artifact=output_artifact,
         agent_role="developer",
@@ -301,51 +349,6 @@ def _task_name_from_id(task_id: str, feature_id: str) -> str:
     return re.sub(r"-r\d+$", "", suffix)
 
 
-# ── Output parsers ──────────────────────────────────────────────────────────
-
-_TASK_HEADER_RE = re.compile(r"^###\s+task:\s*(.+)$", re.MULTILINE | re.IGNORECASE)
-
-
-def _parse_task_list(design_output: str, feature_id: str) -> list[TaskMessage]:
-    """Extract developer tasks from designer output.
-
-    Expected format in design.md:
-        ### task: auth-module
-        Implement JWT authentication middleware...
-
-        ### task: user-api
-        Create REST endpoints...
-    """
-    matches = list(_TASK_HEADER_RE.finditer(design_output))
-    if not matches:
-        return []
-
-    tasks: list[TaskMessage] = []
-    for i, match in enumerate(matches):
-        task_name = match.group(1).strip().lower().replace(" ", "-")
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(design_output)
-        context = design_output[start:end].strip()
-
-        task = TaskMessage(
-            feature_id=feature_id,
-            task_id=f"{feature_id}-dev-{task_name}",
-            input_artifacts=[
-                phase_artifact_path(feature_id, "spec", 1),
-                phase_artifact_path(feature_id, "arch-review", 1),
-                phase_artifact_path(feature_id, "design", 1),
-                phase_artifact_path(feature_id, "task-plan", 1),
-            ],
-            output_artifact=impl_artifact_path(feature_id, task_name, 1),
-            agent_role="developer",
-            context=f"Task: {task_name}\n\n{context}",
-            work_dir=_impl_work_dir(feature_id),
-        )
-        tasks.append(task)
-
-    return tasks
-
-
 _REVIEW_TASK_RE = re.compile(
     r"^###\s+task:\s*(.+?)\n.*?\*\*Status:\*\*\s*(PASS|REVISION_NEEDED)(.*?)(?=^###|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
@@ -364,22 +367,6 @@ def _parse_review_result(review_output: str) -> dict[str, str]:
             feedback = issues_match.group(1).strip() if issues_match else "See review output."
             failed[task_name] = feedback
     return failed
-
-
-def _fallback_developer_task(feature_id: str) -> TaskMessage:
-    return TaskMessage(
-        feature_id=feature_id,
-        task_id=f"{feature_id}-dev-main",
-        input_artifacts=[
-            phase_artifact_path(feature_id, "spec", 1),
-            phase_artifact_path(feature_id, "arch-review", 1),
-            phase_artifact_path(feature_id, "design", 1),
-        ],
-        output_artifact=impl_artifact_path(feature_id, "main", 1),
-        agent_role="developer",
-        context="Implement the feature as described in the spec and design documents.",
-        work_dir=_impl_work_dir(feature_id),
-    )
 
 
 def _impl_work_dir(feature_id: str) -> str:

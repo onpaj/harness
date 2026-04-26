@@ -18,6 +18,10 @@ class ConfigValidationError(Exception):
     """Raised when config.json fails validation."""
 
 
+# Alias for runtime environment issues (git version, OS, repo state)
+ConfigError = ConfigValidationError
+
+
 class QueueConfig(BaseModel):
     agent: str
     context_files: Any = None  # validated explicitly in load_config

@@ -7,9 +7,7 @@ from agentharness.config import Config
 from agentharness.dispatcher import (
     _dispatch_review_result,
     _dispatch_serial_next,
-    _fallback_developer_task,
     _parse_review_result,
-    _parse_task_list,
     _task_name_from_id,
 )
 from agentharness.models import (
@@ -20,49 +18,6 @@ from agentharness.models import (
     TaskStatus,
 )
 
-
-class TestParseTaskList:
-    def test_extracts_single_task(self):
-        design = "### task: auth-module\nImplement JWT auth.\n"
-        tasks = _parse_task_list(design, "feat-42")
-        assert len(tasks) == 1
-        assert tasks[0].task_id == "feat-42-dev-auth-module"
-        assert "feat-42-dev-auth-module" in tasks[0].task_id
-        assert "JWT auth" in tasks[0].context
-
-    def test_extracts_multiple_tasks(self):
-        design = (
-            "### task: auth-module\nAuth task.\n\n"
-            "### task: user-api\nAPI task.\n\n"
-            "### task: ui-login\nUI task.\n"
-        )
-        tasks = _parse_task_list(design, "feat-test")
-        assert len(tasks) == 3
-        assert tasks[0].task_id == "feat-test-dev-auth-module"
-        assert tasks[1].task_id == "feat-test-dev-user-api"
-        assert tasks[2].task_id == "feat-test-dev-ui-login"
-
-    def test_returns_empty_list_when_no_tasks(self):
-        tasks = _parse_task_list("No tasks here.", "feat-test")
-        assert tasks == []
-
-    def test_task_name_normalised_to_kebab_case(self):
-        design = "### task: My Complex Task Name\nDo things.\n"
-        tasks = _parse_task_list(design, "feat-test")
-        assert tasks[0].task_id == "feat-test-dev-my-complex-task-name"
-
-    def test_task_includes_correct_input_artifacts(self):
-        design = "### task: foo\nDo foo.\n"
-        tasks = _parse_task_list(design, "feat-99")
-        artifacts = tasks[0].input_artifacts
-        assert any("spec" in a for a in artifacts)
-        assert any("arch-review" in a for a in artifacts)
-        assert any("design" in a for a in artifacts)
-
-    def test_output_artifact_uses_revision_1(self):
-        design = "### task: bar\nDo bar.\n"
-        tasks = _parse_task_list(design, "feat-99")
-        assert "r1" in tasks[0].output_artifact
 
 
 class TestParseReviewResult:
@@ -98,13 +53,6 @@ class TestParseReviewResult:
         assert "task-one" in failed
         assert "task-two" in failed
 
-
-class TestFallbackDeveloperTask:
-    def test_creates_valid_task(self):
-        task = _fallback_developer_task("feat-99")
-        assert task.feature_id == "feat-99"
-        assert task.agent_role == "developer"
-        assert task.output_artifact.endswith(".r1.md")
 
 
 class TestFeatureStateHelpers:

@@ -6,15 +6,16 @@ import asyncio
 import logging
 import os
 import socket
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
 from azure.storage.blob.aio import BlobServiceClient
 
 from agentharness.agent_runner import AgentExecutionError, run_agent
-from agentharness.config import Config
+from agentharness.config import Config, ConfigError
 from agentharness.context_files import ContextFileResult, resolve_context_files
-from agentharness.dispatcher import dispatch_after_completion
+from agentharness.dispatcher import dispatch_after_completion, run_terminal_cleanup
 from agentharness.models import (
     FeatureStatus,
     PhaseInfo,
@@ -25,10 +26,75 @@ from agentharness.models import (
 from agentharness.prompt_builder import artifact_label, build_prompt, load_agent_definition
 from agentharness.state_manager import StateManager
 from agentharness.storage import ArtifactStore, PipelineQueue
+from agentharness.worktree_manager import VALID_FEATURE_ID_RE, WorktreeCreationError, create_worktree
+
+_MIN_GIT_VERSION = (2, 5)
 
 log = logging.getLogger(__name__)
 
 WORKER_ID = f"{socket.gethostname()}-{os.getpid()}"
+
+
+def check_worktree_startup_probes() -> None:
+    """Validate that the environment supports git worktrees.
+
+    Raises ConfigError if:
+    - Running on Windows (POSIX-only feature)
+    - git is not found or is below version 2.5
+    - Not inside a git repository
+    """
+    if os.name == "nt":
+        raise ConfigError(
+            "Git worktrees are not supported on Windows. "
+            "Set use_worktrees=false in your pipeline config or run on a POSIX system."
+        )
+
+    version_result = subprocess.run(
+        ["git", "--version"],
+        shell=False,
+        capture_output=True,
+        text=True,
+    )
+    if version_result.returncode != 0:
+        raise ConfigError(
+            f"'git --version' failed (returncode {version_result.returncode}). "
+            "Ensure git is installed and on PATH."
+        )
+
+    parsed = _parse_git_version(version_result.stdout.strip())
+    if parsed is None or parsed < _MIN_GIT_VERSION:
+        raise ConfigError(
+            f"git >= 2.5 is required for worktree support, but found: {version_result.stdout.strip()!r}. "
+            "Upgrade git or set use_worktrees=false."
+        )
+
+    repo_result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        shell=False,
+        capture_output=True,
+        text=True,
+    )
+    if repo_result.returncode != 0:
+        raise ConfigError(
+            "Not inside a git repo. git worktrees require the worker to run "
+            "from within a git repository. Set use_worktrees=false or fix the working directory."
+        )
+
+
+def _parse_git_version(version_str: str) -> tuple[int, int] | None:
+    """Extract (major, minor) from 'git version X.Y.Z'. Returns None on parse failure."""
+    # Example: "git version 2.40.1"
+    parts = version_str.split()
+    if len(parts) < 3:
+        return None
+    version_part = parts[2]
+    segments = version_part.split(".")
+    if len(segments) < 2:
+        return None
+    try:
+        return (int(segments[0]), int(segments[1]))
+    except ValueError:
+        return None
 
 
 class Worker:
@@ -78,6 +144,15 @@ class Worker:
     async def _process_task(self, task: TaskMessage, agent_def) -> None:
         log.info("[%s] Starting task %s", WORKER_ID, task.task_id)
 
+        # Validate feature_id before any worktree or state operation
+        if self._config.use_worktrees and not VALID_FEATURE_ID_RE.match(task.feature_id):
+            log.error(
+                "[%s] Rejecting task %s: invalid feature_id %r",
+                WORKER_ID, task.task_id, task.feature_id,
+            )
+            await self._mark_feature_failed(task, f"invalid_feature_id: {task.feature_id!r}")
+            return
+
         # Guard against stale queue messages from previous pipeline runs
         current_state = await self._state.get(task.feature_id)
         if current_state.status.value != agent_def.phase:
@@ -86,6 +161,14 @@ class Worker:
                 WORKER_ID, task.task_id, current_state.status.value, agent_def.phase,
             )
             return
+
+        # Create a git worktree for this feature on the first task (when enabled)
+        if self._config.use_worktrees and current_state.worktree_path is None:
+            created_path = await self._create_worktree_for_feature(task)
+            if created_path is None:
+                return  # feature marked failed inside helper
+            await self._state.set_worktree_path(task.feature_id, created_path)
+            current_state = await self._state.get(task.feature_id)
 
         # Prepare per-task log file
         log_dir = Path("logs")
@@ -121,7 +204,13 @@ class Worker:
 
         # Build prompt and run agent
         prompt = build_prompt(agent_def, task, artifact_contents, context_result)
-        output = await run_agent(agent_def, prompt, work_dir=work_dir, log_file=task_log_file)
+        output = await run_agent(
+            agent_def,
+            prompt,
+            work_dir=work_dir,
+            log_file=task_log_file,
+            worktree_path=current_state.worktree_path,
+        )
 
         # Upload output artifact
         await self._store.upload(task.output_artifact, output)
@@ -138,10 +227,43 @@ class Worker:
             updated_state, task, output, self._config, self._all_queues
         )
         if next_state is not None:
-            await self._state.update(task.feature_id, lambda _: next_state)
+            persisted = await self._state.update(task.feature_id, lambda _: next_state)
+            await run_terminal_cleanup(persisted, self._state)
 
         # Task completed successfully — release cached context for this task
         self._context_cache.pop(task.task_id, None)
+
+    async def _create_worktree_for_feature(self, task: TaskMessage) -> str | None:
+        """Create a git worktree for the feature. Returns the path on success, None on failure.
+
+        On WorktreeCreationError the feature is transitioned to failed and None is returned
+        so _process_task can return early without running the agent.
+        """
+        log.info("[%s] Creating worktree for feature %s", WORKER_ID, task.feature_id)
+        try:
+            path = await asyncio.to_thread(
+                create_worktree,
+                task.feature_id,
+                self._config.worktree_base_branch,
+                self._config.worktree_base_dir,
+            )
+            log.info("[%s] Worktree created at %s", WORKER_ID, path)
+            return path
+        except WorktreeCreationError as exc:
+            log.error(
+                "[%s] Worktree creation failed for %s: %s",
+                WORKER_ID, task.feature_id, exc,
+            )
+            error_details = f"worktree_creation: {str(exc)}"[:200]
+            await self._state.update(
+                task.feature_id,
+                lambda s: s.with_status(FeatureStatus.failed).with_event(
+                    "feature_failed",
+                    task_id=task.task_id,
+                    details=error_details,
+                ),
+            )
+            return None
 
     def _resolve_context_files_cached(self, task_id: str) -> ContextFileResult | None:
         """Return the ContextFileResult for this task, reading files only on first call."""
@@ -226,6 +348,10 @@ async def start_workers(queue_name: str, config: Config, concurrency: int = 1) -
     )
     logging.getLogger("azure").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+    if config.use_worktrees:
+        check_worktree_startup_probes()
+
     conn_str = config.storage.connection_string
     blob_service = BlobServiceClient.from_connection_string(conn_str)
     store = ArtifactStore(blob_service, config.storage.container)

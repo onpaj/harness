@@ -24,14 +24,19 @@ async def run_agent(
     work_dir: Path | None = None,
     timeout_seconds: float | None = None,
     log_file: Path | None = None,
+    worktree_path: str | None = None,
 ) -> str:
     """Run claude CLI non-interactively and return stdout.
 
     For agents with allowed_tools, passes --allowedTools flag.
     For agents without tools, runs in simple -p mode.
+    When worktree_path is set it overrides the subprocess cwd; work_dir is
+    still used for artifact placement but not as the git working directory.
     """
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix=f"agent-{agent_def.id}-"))
+
+    subprocess_cwd = worktree_path if worktree_path is not None else str(work_dir)
 
     cmd = _build_command(agent_def, prompt)
     effective_timeout = timeout_seconds or agent_def.visibility_timeout
@@ -42,7 +47,7 @@ async def run_agent(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(work_dir),
+            cwd=subprocess_cwd,
             env={**os.environ},
         )
 
