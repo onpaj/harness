@@ -2,7 +2,7 @@
 
 Each task is represented as a GitHub Issue with labels for queue routing,
 state, and worker claim. Workers claim issues by swapping state:queued →
-state:in-progress and posting a heartbeat comment.
+state:in-progress.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import json
 import os
 import re
 import socket
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from agentharness.github_labels import (
@@ -38,6 +37,15 @@ if TYPE_CHECKING:
 _TASK_FENCE = "agentharness-task"
 _RECLAIM_MARKER = "⚠️ Reclaimed"
 
+_QUEUE_TO_PHASE: dict[str, str] = {
+    "analyst-queue": "analyzing",
+    "architect-queue": "architecting",
+    "designer-queue": "designing",
+    "planner-queue": "planning",
+    "developer-queue": "developing",
+    "review-queue": "reviewing",
+}
+
 
 def _default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
@@ -57,10 +65,6 @@ def _parse_task_from_body(body: str) -> TaskMessage:
     if not match:
         raise ValueError(f"No {_TASK_FENCE} fenced block found in issue body")
     return TaskMessage.model_validate_json(match.group(1).strip())
-
-
-def _iso_utc_now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _count_reclaims(comments: list[dict]) -> int:
@@ -100,9 +104,22 @@ class GitHubTaskQueue:
         """Create a GitHub issue representing the enqueued task."""
         state_label = STATE_BLOCKED if visibility_timeout > 0 else STATE_QUEUED
         labels = [self._queue_label, state_label, FEATURE_MARKER]
-        title = f"[{self._queue_name}] {task.task_id}"
+        phase = _QUEUE_TO_PHASE.get(self._queue_name, self._queue_name)
+        title = f"subtask-{task.feature_id}-{phase}"
         body = _build_issue_body(task)
-        await self._client.create_issue(title=title, body=body, labels=labels)
+        issue = await self._client.create_issue(title=title, body=body, labels=labels)
+        await self._link_to_feature(issue["number"], task.feature_id)
+
+    async def _link_to_feature(self, issue_number: int, feature_id: str) -> None:
+        """Add the task issue as a sub-issue of the parent feature issue."""
+        try:
+            results = await self._client.search_issues(
+                f"label:feature:{feature_id} repo:{self._client.owner}/{self._client.repo}"
+            )
+            if results:
+                await self._client.add_sub_issue(results[0]["number"], issue_number)
+        except Exception:
+            pass  # sub-issue linking is best-effort
 
     # ------------------------------------------------------------------
     # Receive
@@ -133,24 +150,31 @@ class GitHubTaskQueue:
             number, [STATE_IN_PROGRESS, claimed_by_label(self._worker_id)]
         )
 
-        # Post heartbeat comment
-        timestamp = _iso_utc_now()
-        heartbeat_body = (
-            f"⏱ Heartbeat: {timestamp}\n\nWorker: {self._worker_id}"
+        task = _parse_task_from_body(raw_body)
+        raw = RawMessage(
+            id=str(number),
+            pop_receipt="",
+            content=raw_body,
+            dequeue_count=0,
         )
-        comment = await self._client.create_comment(number, heartbeat_body)
-        comment_id: int = comment["id"]
+        return task, raw
 
-        # Count prior reclaims to approximate dequeue_count
-        all_comments: list[dict] = issue.get("comments", [])
-        reclaim_count = _count_reclaims(all_comments)
+    async def claim_issue(self, issue: dict) -> tuple[TaskMessage, RawMessage]:
+        """Claim a pre-fetched issue dict (skips the search step)."""
+        number: int = issue["number"]
+        raw_body: str = issue.get("body") or ""
+
+        await self._client.remove_label(number, STATE_QUEUED)
+        await self._client.add_labels(
+            number, [STATE_IN_PROGRESS, claimed_by_label(self._worker_id)]
+        )
 
         task = _parse_task_from_body(raw_body)
         raw = RawMessage(
             id=str(number),
-            pop_receipt=str(comment_id),
+            pop_receipt="",
             content=raw_body,
-            dequeue_count=reclaim_count,
+            dequeue_count=0,
         )
         return task, raw
 
@@ -159,13 +183,7 @@ class GitHubTaskQueue:
     # ------------------------------------------------------------------
 
     async def extend_visibility(self, raw: RawMessage, timeout: int) -> RawMessage:
-        """Update the heartbeat comment with a fresh timestamp."""
-        comment_id = int(raw.pop_receipt)
-        timestamp = _iso_utc_now()
-        new_body = (
-            f"⏱ Heartbeat: {timestamp}\n\nWorker: {self._worker_id}"
-        )
-        await self._client.update_comment(comment_id, new_body)
+        """No-op for GitHub: issues don't expire, no renewal needed."""
         return raw
 
     # ------------------------------------------------------------------

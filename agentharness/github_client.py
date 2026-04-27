@@ -126,6 +126,18 @@ class GitHubClient:
             json={"body": body},
         )
 
+    async def list_comments(self, number: int) -> list[dict]:
+        response = await self._client.get(
+            self._repo_url(f"/issues/{number}/comments"),
+        )
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("message", response.text)
+            except Exception:
+                detail = response.text
+            raise GitHubApiError(response.status_code, detail)
+        return response.json()
+
     async def update_comment(self, comment_id: int, body: str) -> None:
         await self._request(
             "PATCH",
@@ -157,6 +169,13 @@ class GitHubClient:
     # ------------------------------------------------------------------
     # Refs / branches
     # ------------------------------------------------------------------
+
+    async def get_repo(self) -> dict:
+        return await self._request("GET", self._repo_url(""))
+
+    async def get_default_branch(self) -> str:
+        repo = await self.get_repo()
+        return repo["default_branch"]
 
     async def get_ref(self, ref: str) -> dict:
         return await self._request("GET", self._repo_url(f"/git/ref/{ref}"))

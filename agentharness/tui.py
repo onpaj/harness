@@ -120,11 +120,14 @@ def _fmt_duration(started_at: datetime | None, completed_at: datetime | None = N
     return f"{m}m {s}s"
 
 
+def _fmt_num(n: int) -> str:
+    return f"{n // 1000}k" if n >= 1000 else str(n)
+
+
 def _fmt_tokens(tokens: TokenUsage | None) -> str:
     if not tokens or tokens.total == 0:
         return "—"
-    total = tokens.total
-    return f"{total // 1000}k" if total >= 1000 else str(total)
+    return f"↑{_fmt_num(tokens.input_tokens)} ↓{_fmt_num(tokens.output_tokens)}"
 
 
 def _fmt_age(dt: datetime | None) -> str:
@@ -427,7 +430,7 @@ class ConfirmScreen(ModalScreen[bool]):
 class StatusBar(Static):
     """Bottom status line with last-refresh time and queue depths."""
 
-    def update_time(self, queue_depths: dict[str, int] | None = None) -> None:
+    def update_time(self, queue_depths: dict[str, int] | None = None, refresh_seconds: float = _REFRESH_SECONDS) -> None:
         now = datetime.now(UTC).strftime("%H:%M:%S UTC")
         if queue_depths:
             active = {q: n for q, n in queue_depths.items() if n > 0}
@@ -437,7 +440,7 @@ class StatusBar(Static):
             queues_part = ""
         pid = _observer_pid()
         observer_part = f"  |  [green]observer pid:{pid}[/green]" if pid else "  |  [red]observer off[/red]"
-        self.update(f"[dim]Last refresh: {now}  |  Refreshing every {_REFRESH_SECONDS:.0f}s{queues_part}{observer_part}[/dim]")
+        self.update(f"[dim]Last refresh: {now}  |  Refreshing every {refresh_seconds:.0f}s{queues_part}{observer_part}[/dim]")
 
 
 class PipelineMonitor(App):
@@ -500,6 +503,7 @@ class PipelineMonitor(App):
         super().__init__()
         self._config = config
         self._states: list[FeatureState] = []
+        self._refresh_seconds = _REFRESH_SECONDS
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -514,7 +518,7 @@ class PipelineMonitor(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.set_interval(_REFRESH_SECONDS, self._refresh_data)
+        self.set_interval(self._refresh_seconds, self._refresh_data)
         self.call_after_refresh(self._refresh_data)
 
     async def _refresh_data(self) -> None:
@@ -525,7 +529,7 @@ class PipelineMonitor(App):
         self._states = states
         feature_list = self.query_one(FeatureList)
         await feature_list.update_features(states)
-        self.query_one(StatusBar).update_time(queue_depths)
+        self.query_one(StatusBar).update_time(queue_depths, self._refresh_seconds)
         self.query_one(WorkerLogPanel).refresh_logs()
         self._update_detail_panels()
 
@@ -785,7 +789,7 @@ class PipelineMonitor(App):
 
 async def _load_all_states(config: Config) -> list[FeatureState]:
     if config.storage_backend == "github":
-        return await _load_states_github(config)
+        return _load_states_from_cache()
     return await _load_states_azure(config)
 
 
@@ -819,18 +823,17 @@ async def _load_states_azure(config: Config) -> list[FeatureState]:
     return sorted(states, key=sort_key)
 
 
-async def _load_states_github(config: Config) -> list[FeatureState]:
-    from agentharness.github_state import GitHubStateManager
+def _load_states_from_cache() -> list[FeatureState]:
+    import json
+    from agentharness.observer import STATE_CACHE_PATH
 
-    mgr = GitHubStateManager.from_config(config)
-    features = await mgr.list_features()
-    states: list[FeatureState] = []
-    for feature_id, _ in features:
-        try:
-            state = await mgr.get(feature_id)
-            states.append(state)
-        except Exception:
-            pass
+    if not STATE_CACHE_PATH.exists():
+        return []
+    try:
+        raw = json.loads(STATE_CACHE_PATH.read_text())
+        states = [FeatureState.model_validate(s) for s in raw]
+    except Exception:
+        return []
 
     def sort_key(s: FeatureState):
         active = s.status not in (FeatureStatus.done, FeatureStatus.failed)
@@ -841,7 +844,7 @@ async def _load_states_github(config: Config) -> list[FeatureState]:
 
 async def _load_queue_depths(config: Config) -> dict[str, int]:
     if config.storage_backend == "github":
-        return await _load_depths_github(config)
+        return _derive_depths_from_cache()
     return await _load_depths_azure(config)
 
 
@@ -860,17 +863,41 @@ async def _load_depths_azure(config: Config) -> dict[str, int]:
     return depths
 
 
-async def _load_depths_github(config: Config) -> dict[str, int]:
-    from agentharness.storage import create_task_queue
+_PHASE_TO_QUEUE = {
+    "analyzing": "analyst-queue",
+    "architecting": "architect-queue",
+    "designing": "designer-queue",
+    "planning": "planner-queue",
+    "developing": "developer-queue",
+    "reviewing": "review-queue",
+}
 
-    depths: dict[str, int] = {}
-    for queue_name in config.queue_names():
-        try:
-            q = create_task_queue(config, queue_name)
-            depths[queue_name] = await q.get_depth()
-            await q.close()
-        except Exception:
-            depths[queue_name] = 0
+
+def _derive_depths_from_cache() -> dict[str, int]:
+    from agentharness.models import PhaseStatus, TaskStatus
+    from agentharness.observer import STATE_CACHE_PATH
+    import json
+
+    if not STATE_CACHE_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(STATE_CACHE_PATH.read_text())
+        states = [FeatureState.model_validate(s) for s in raw]
+    except Exception:
+        return {}
+
+    depths: dict[str, int] = {q: 0 for q in _PHASE_TO_QUEUE.values()}
+    active_phase_statuses = {PhaseStatus.pending, PhaseStatus.in_progress}
+    for state in states:
+        for phase, queue in _PHASE_TO_QUEUE.items():
+            info = state.phases.get(phase)
+            if info and info.status in active_phase_statuses:
+                depths[queue] += 1
+        for task in state.tasks:
+            if task.status in (TaskStatus.queued, TaskStatus.in_progress):
+                queue = _PHASE_TO_QUEUE.get(task.phase or "developing")
+                if queue:
+                    depths[queue] += 1
     return depths
 
 

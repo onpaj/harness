@@ -120,11 +120,8 @@ def _build_command(agent_def: AgentDefinition, prompt: str) -> list[str]:
         "--output-format", "json",
     ]
 
-    if agent_def.allowed_tools is not None:
-        if agent_def.allowed_tools:
-            cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
-        else:
-            cmd.extend(["--tools", ""])
+    if agent_def.allowed_tools:
+        cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
 
     if agent_def.max_turns > 1:
         cmd.extend(["--max-turns", str(agent_def.max_turns)])

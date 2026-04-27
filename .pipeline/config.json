@@ -1,4 +1,5 @@
 {
+  "storage_backend": "github",
   "storage": {
     "connection_string_env": "AZURE_STORAGE_CONNECTION_STRING",
     "container": "pipeline-artifacts"
