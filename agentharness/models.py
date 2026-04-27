@@ -37,12 +37,32 @@ class PhaseStatus(str, Enum):
     failed = "failed"
 
 
+class TokenUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_creation_tokens=self.cache_creation_tokens + other.cache_creation_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+        )
+
+
 class PhaseInfo(BaseModel):
     status: PhaseStatus = PhaseStatus.pending
     started_at: datetime | None = None
     completed_at: datetime | None = None
     agent: str | None = None
     revision: int = 1
+    tokens_used: TokenUsage | None = None
 
 
 class TaskEntry(BaseModel):
@@ -58,6 +78,7 @@ class TaskEntry(BaseModel):
     log_file: str | None = None
     queued_message: dict | None = None
     pid: int | None = None
+    tokens_used: TokenUsage | None = None
 
 
 class HistoryEvent(BaseModel):
@@ -127,6 +148,16 @@ class FeatureState(BaseModel):
         return self.model_copy(
             update={"tasks": [*self.tasks, *new_tasks], "updated_at": datetime.now(UTC)}
         )
+
+    def total_tokens_used(self) -> TokenUsage:
+        result = TokenUsage()
+        for phase_info in self.phases.values():
+            if phase_info.tokens_used:
+                result = result + phase_info.tokens_used
+        for task in self.tasks:
+            if task.tokens_used:
+                result = result + task.tokens_used
+        return result
 
     def tasks_for_phase(self, phase: str) -> list[TaskEntry]:
         return [t for t in self.tasks if t.phase == phase]

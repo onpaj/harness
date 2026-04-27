@@ -22,7 +22,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Label, ListItem, ListView, RichLog, Static
 
 from agentharness.config import Config
-from agentharness.models import FeatureState, FeatureStatus, TaskStatus
+from agentharness.models import FeatureState, FeatureStatus, TaskStatus, TokenUsage
 from agentharness.storage import PipelineQueue
 
 _REFRESH_SECONDS = 2.0
@@ -120,6 +120,13 @@ def _fmt_duration(started_at: datetime | None, completed_at: datetime | None = N
     return f"{m}m {s}s"
 
 
+def _fmt_tokens(tokens: TokenUsage | None) -> str:
+    if not tokens or tokens.total == 0:
+        return "—"
+    total = tokens.total
+    return f"{total // 1000}k" if total >= 1000 else str(total)
+
+
 def _fmt_age(dt: datetime | None) -> str:
     if not dt:
         return "—"
@@ -171,7 +178,9 @@ class FeatureList(ListView):
         summary = _task_summary(state) or state.status.value
         color = _STATUS_COLORS.get(state.status, "white")
         short_id = state.feature_id.removeprefix("feat-")
-        return f"[{color}]{icon}[/]  {short_id}  [{color}]{bar}[/]  [dim]{summary}[/dim]"
+        total = _fmt_tokens(state.total_tokens_used())
+        token_part = f"  [dim cyan]{total}[/dim cyan]" if total != "—" else ""
+        return f"[{color}]{icon}[/]  {short_id}  [{color}]{bar}[/]  [dim]{summary}[/dim]{token_part}"
 
     def selected_feature_id(self) -> str | None:
         idx = self.index
@@ -190,10 +199,12 @@ class TaskPanel(DataTable):
         self._row_task_ids: list[str] = []
 
     def on_mount(self) -> None:
-        self.add_columns("Task", "Status", "Agent", "Rev", "Running")
+        self.add_columns("Task", "Status", "Agent", "Rev", "Running", "Tokens")
         self.cursor_type = "row"
 
     def update_tasks(self, state: FeatureState) -> None:
+        total = _fmt_tokens(state.total_tokens_used())
+        self.border_title = f"Tasks  —  total: {total}" if total != "—" else "Tasks"
         new_rows, new_ids = self._build_task_rows(state)
         if new_ids == self._row_task_ids:
             for row_idx, row_data in enumerate(new_rows):
@@ -217,12 +228,19 @@ class TaskPanel(DataTable):
             if not info:
                 continue
             color = _phase_colors.get(info.status.value, "dim")
+            phase_tasks = state.tasks_for_phase(phase)
+            phase_tokens = (
+                sum((t.tokens_used for t in phase_tasks if t.tokens_used), TokenUsage())
+                if phase_tasks
+                else info.tokens_used
+            )
             rows.append((
                 f"[{color}]{phase}[/]",
                 f"[{color}]{info.status.value}[/]",
                 info.agent or "—",
                 str(info.revision),
                 _fmt_duration(info.started_at, info.completed_at),
+                _fmt_tokens(phase_tokens),
             ))
             ids.append(phase)
         for task in state.tasks:
@@ -233,6 +251,7 @@ class TaskPanel(DataTable):
                 task.worker_id or "—",
                 str(task.revision),
                 _fmt_duration(task.started_at, task.completed_at),
+                _fmt_tokens(task.tokens_used),
             ))
             ids.append(task.task_id)
         return rows, ids

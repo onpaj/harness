@@ -133,7 +133,14 @@ async def _run_subprocess(
         except Exception as exc:
             log.error("Could not delete message for %s: %s", task.task_id, exc)
     else:
-        log.error("Task %s failed (exit %d) — message will reappear", task.task_id, proc.returncode)
+        log.error(
+            "Task %s failed (exit %d) — logs: %s — deleting message (no retry)",
+            task.task_id, proc.returncode, log_file,
+        )
+        try:
+            await queue._client.delete_message(raw_msg.id, pop_receipt=current_pop_receipt)
+        except Exception as exc:
+            log.warning("Could not delete failed message for %s: %s", task.task_id, exc)
 
 
 async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: object, queue: PipelineQueue) -> str:

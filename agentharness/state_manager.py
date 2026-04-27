@@ -46,7 +46,7 @@ class StateManager:
     async def create(self, state: FeatureState) -> None:
         """Write initial state (no lease needed — blob doesn't exist yet)."""
         blob = self._blob_client(state.feature_id)
-        await blob.upload_blob(state.model_dump_json(), overwrite=True)
+        await blob.upload_blob(state.model_dump_json(), overwrite=False)
 
     async def update(
         self,

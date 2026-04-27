@@ -135,5 +135,9 @@ def phase_artifact_path(feature_id: str, phase_name: str, revision: int) -> str:
     return f"artifacts/{feature_id}/{phase_name}.r{revision}.md"
 
 
+def task_context_artifact_path(feature_id: str, task_name: str) -> str:
+    return f"artifacts/{feature_id}/task-context/{task_name}.md"
+
+
 def state_blob_path(feature_id: str) -> str:
     return f"artifacts/{feature_id}/state.json"

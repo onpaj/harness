@@ -22,9 +22,10 @@ Developer colleagues don't know AgentHarness exists or what it can do for them. 
 - Readable on desktop (primary target); mobile acceptable but not priority
 
 ## Technical Constraints
-- Single `index.html` file (inline CSS, no separate stylesheets required)
+- Single `index.html` file with inline or embedded CSS and JS
 - No backend, no build pipeline
-- Can reference CDN fonts (e.g. Google Fonts) for typography
+- Can reference CDN resources: Google Fonts, GSAP, Three.js, anime.js, or similar for animations
+- No heavy frameworks (no React/Vue) — vanilla JS or lightweight animation libraries only
 
 ## Out of Scope
 - Authentication or gating
@@ -38,4 +39,4 @@ Developer colleagues don't know AgentHarness exists or what it can do for them. 
 - The page communicates autonomy: describe → submit → sleep → wake up to a PR
 
 ## Additional Context
-Design direction: dark background, deep blue accent color, bold modern typography, high contrast. Tone: confident, concise, developer-native — no fluff. Think of it as a pitch from one engineer to another.
+Design direction: dark background, deep blue accent color, bold modern typography, high contrast. Animations and interactivity are encouraged — scroll-triggered reveals, smooth transitions, a animated pipeline diagram or step-by-step flow, subtle particle or gradient effects. Think Vercel/Linear aesthetic: premium, fast, developer-native. Tone: confident, concise — no fluff. A pitch from one engineer to another, but visually impressive.

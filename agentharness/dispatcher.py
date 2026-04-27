@@ -22,6 +22,7 @@ from agentharness.storage import (
     PipelineQueue,
     impl_artifact_path,
     phase_artifact_path,
+    task_context_artifact_path,
     task_review_artifact_path,
 )
 
@@ -290,18 +291,18 @@ async def _dispatch_review_result(
     output_artifact = impl_artifact_path(feature_id, task_name, new_revision)
     task_id = f"{feature_id}-dev-{task_name}-r{new_revision}"
 
+    prev_revision = completed_task.revision
     task_msg = TaskMessage(
         feature_id=feature_id,
         task_id=task_id,
         input_artifacts=[
-            phase_artifact_path(feature_id, "spec", 1),
-            phase_artifact_path(feature_id, "arch-review", 1),
-            phase_artifact_path(feature_id, "design", 1),
-            phase_artifact_path(feature_id, "task-plan", 1),
+            task_context_artifact_path(feature_id, task_name),
+            impl_artifact_path(feature_id, task_name, prev_revision),
+            task_review_artifact_path(feature_id, task_name, prev_revision),
         ],
         output_artifact=output_artifact,
         agent_role="developer",
-        context=f"Revise task: {task_name}",
+        context=task_name,
         revision=new_revision,
         review_feedback=feedback,
         work_dir=_impl_work_dir(feature_id),
