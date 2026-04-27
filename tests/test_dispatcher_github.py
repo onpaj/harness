@@ -89,6 +89,7 @@ class TestOpenFeaturePr:
         config = _make_github_config()
 
         mock_client = AsyncMock()
+        mock_client.get_default_branch = AsyncMock(return_value="main")
         mock_client.create_pull_request = AsyncMock(return_value={"number": 42})
         mock_client.close = AsyncMock()
 

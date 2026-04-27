@@ -34,15 +34,15 @@ agentharness/       Python package
   azure_queue.py              Azure Storage Queue backend
   github_client.py            httpx async GitHub REST API wrapper
   github_labels.py            GitHub label name constants and utilities
-  github_queue.py             GitHub Issues as task queue backend
+  github_queue.py             GitHub Issues as task queue backend (claim/delete operations)
   github_artifacts.py         Git branch artifact storage backend
-  github_state.py             GitHub issue label + JSON body state manager
+  github_state.py             GitHub issue label + JSON body state manager, parse_state_from_issue helper
   state_manager.py  Lease-based atomic state updates (abstracts over backends)
   context_files.py  Per-agent context file resolution and prompt injection
   prompt_builder.py Assemble prompt from agent MD + downloaded artifacts + context files
   agent_runner.py   Subprocess wrapper for `claude -p ...`
   dispatcher.py     State machine transitions, serial task dispatch, per-task review loop
-  observer.py       Primary runner: polls all queues, spawns run_task subprocess per message
+  observer.py       Primary runner: concurrent queue polling (Azure) or unified GitHub polling, spawns run_task subprocess per message
   run_task.py       Single-task runner invoked by observer (reads TaskMessage from stdin)
   worker.py         Legacy async worker loop (in-process execution)
   brainstorm.py     Brief upload + analyst enqueue (called by CLI + skill)
@@ -91,7 +91,7 @@ agentharness _run_task                          # single-task runner (reads JSON
 
 ## Execution modes
 
-**Observer mode (primary):** `agentharness observe` — a single process polls all queues concurrently and spawns `agentharness _run_task` as an isolated subprocess per message. The observer manages visibility renewal (60s interval, 150s timeout) and handles SIGTERM/SIGINT gracefully.
+**Observer mode (primary):** `agentharness observe` — a single process polls all queues and spawns `agentharness _run_task` as an isolated subprocess per message. For Azure backends, each queue is polled concurrently with visibility renewal (60s interval, 150s timeout). For GitHub backends, a single unified poller fetches all open issues (one API call per cycle) and handles task dispatch, stale-claim sweeping, and state cache writing. The observer handles SIGTERM/SIGINT gracefully.
 
 **Legacy worker mode:** `agentharness worker {queue-name}` — async loop that processes tasks in-process. Useful for debugging a single queue.
 
@@ -183,7 +183,7 @@ Planner output is parsed for `### task: {name}` headers. All tasks are written t
 
 **Azure backend:** `state_manager.StateManager.update()` acquires an Azure blob lease (30s) before read-modify-write. Only `HttpResponseError` with lease contention error codes trigger retry with exponential backoff.
 
-**GitHub backend:** Issue state updates are atomic; GitHub prevents simultaneous writes via optimistic locking. The observer runs a `_sweep_stale_claims()` sweeper to clean up abandoned task claims (claims older than `visibility_timeout`).
+**GitHub backend:** Issue state updates are atomic; GitHub prevents simultaneous writes via optimistic locking. The unified poller sweeps abandoned task claims by checking `updated_at` timestamps and reclaiming issues idle longer than `visibility_timeout` (150s).
 
 All other errors propagate immediately.
 

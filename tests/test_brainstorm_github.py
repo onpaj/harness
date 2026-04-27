@@ -38,6 +38,7 @@ def _make_config(
 def _make_gh_client() -> MagicMock:
     client = MagicMock()
     for method in (
+        "get_default_branch",
         "get_ref",
         "create_ref",
         "put_content",
@@ -47,6 +48,8 @@ def _make_gh_client() -> MagicMock:
         "close",
     ):
         setattr(client, method, AsyncMock())
+    # get_default_branch returns "main"
+    client.get_default_branch.return_value = "main"
     # get_ref returns the main-branch SHA payload
     client.get_ref.return_value = {"object": {"sha": _MAIN_SHA}}
     # create_issue returns a minimal issue dict

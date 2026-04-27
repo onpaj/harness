@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,10 +17,12 @@ from agentharness.github_labels import (
 )
 from agentharness.github_state import (
     GitHubStateManager,
-    _build_state_comment,
+    _build_state_block,
     _extract_state_json,
     _feature_label,
     _feature_issue_title,
+    _replace_state_block,
+    parse_state_from_issue,
 )
 from agentharness.models import FeatureState, FeatureStatus
 
@@ -48,23 +50,15 @@ def _make_issue(
     brief_content: str = "",
     extra_labels: list[str] | None = None,
 ) -> dict:
-    """Build a minimal GitHub issue dict from a FeatureState.
-
-    The brief content is the issue body; state JSON lives in a comment.
-    """
+    """Build a minimal GitHub issue dict with state embedded in the body."""
     feat_lbl = _feature_label(state.feature_id)
     status_lbl = FEATURE_STATUS_TO_LABEL[state.status]
     label_names = [FEATURE_MARKER, feat_lbl, status_lbl] + (extra_labels or [])
     return {
         "number": number,
-        "body": brief_content,
+        "body": _replace_state_block(brief_content, state),
         "labels": [{"name": n} for n in label_names],
     }
-
-
-def _make_state_comment(state: FeatureState, comment_id: int = 1) -> dict:
-    """Build a minimal comment dict holding the FeatureState JSON."""
-    return {"id": comment_id, "body": _build_state_comment(state)}
 
 
 def _mock_client(owner: str = "acme", repo: str = "runs") -> AsyncMock:
@@ -75,14 +69,14 @@ def _mock_client(owner: str = "acme", repo: str = "runs") -> AsyncMock:
 
 
 # ---------------------------------------------------------------------------
-# _extract_state_json / _build_state_comment helpers
+# _extract_state_json / _build_state_block / _replace_state_block helpers
 # ---------------------------------------------------------------------------
 
 
-def test_build_state_comment_round_trip():
+def test_build_state_block_round_trip():
     state = _make_state()
-    comment_body = _build_state_comment(state)
-    extracted = _extract_state_json(comment_body)
+    block = _build_state_block(state)
+    extracted = _extract_state_json(block)
     parsed = FeatureState.model_validate_json(extracted)
     assert parsed.feature_id == state.feature_id
     assert parsed.status == state.status
@@ -91,6 +85,37 @@ def test_build_state_comment_round_trip():
 def test_extract_state_json_raises_when_block_missing():
     with pytest.raises(ValueError, match="No agentharness-state fenced block"):
         _extract_state_json("Some body without a fenced block")
+
+
+def test_replace_state_block_appends_when_absent():
+    state = _make_state()
+    result = _replace_state_block("# Brief\n\nSome text.", state)
+    assert "# Brief" in result
+    parsed = parse_state_from_issue({"body": result})
+    assert parsed is not None
+    assert parsed.feature_id == state.feature_id
+
+
+def test_replace_state_block_replaces_existing():
+    state_v1 = _make_state(status=FeatureStatus.analyzing)
+    state_v2 = _make_state(status=FeatureStatus.planning)
+    body = _replace_state_block("", state_v1)
+    body = _replace_state_block(body, state_v2)
+    # Only one block should remain
+    assert body.count("```agentharness-state") == 1
+    parsed = parse_state_from_issue({"body": body})
+    assert parsed is not None
+    assert parsed.status == FeatureStatus.planning
+
+
+def test_parse_state_from_issue_returns_none_when_no_block():
+    result = parse_state_from_issue({"body": "No state block here"})
+    assert result is None
+
+
+def test_parse_state_from_issue_returns_none_on_empty_body():
+    result = parse_state_from_issue({"body": ""})
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +149,10 @@ async def test_create_calls_ensure_label_and_create_issue():
 
 
 @pytest.mark.asyncio
-async def test_create_body_is_brief_content():
+async def test_create_embeds_state_json_in_issue_body():
     # Arrange
     state = _make_state()
-    brief = "# Feature Brief: My Feature\n\nSome description."
+    brief = "# Feature Brief\n\nSome description."
     client = _mock_client()
     client.create_issue.return_value = {"number": 42}
     mgr = GitHubStateManager(client)
@@ -135,13 +160,17 @@ async def test_create_body_is_brief_content():
     # Act
     await mgr.create(state, brief_content=brief)
 
-    # Assert — issue body is the brief text
+    # Assert — issue body contains brief and state block
     _, kwargs = client.create_issue.call_args
-    assert kwargs["body"] == brief
+    body = kwargs["body"]
+    assert "# Feature Brief" in body
+    parsed = parse_state_from_issue({"body": body})
+    assert parsed is not None
+    assert parsed.feature_id == state.feature_id
 
 
 @pytest.mark.asyncio
-async def test_create_posts_state_as_first_comment():
+async def test_create_does_not_create_comment():
     # Arrange
     state = _make_state()
     client = _mock_client()
@@ -151,13 +180,8 @@ async def test_create_posts_state_as_first_comment():
     # Act
     await mgr.create(state)
 
-    # Assert — state JSON posted as a comment on the created issue
-    client.create_comment.assert_awaited_once()
-    call_args = client.create_comment.call_args
-    assert call_args.args[0] == 42
-    extracted = _extract_state_json(call_args.args[1])
-    parsed = FeatureState.model_validate_json(extracted)
-    assert parsed.feature_id == state.feature_id
+    # Assert — no comment created (state is in body now)
+    client.create_comment.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -170,10 +194,8 @@ async def test_get_reconstructs_feature_state():
     # Arrange
     state = _make_state()
     issue = _make_issue(state)
-    comment = _make_state_comment(state)
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -185,24 +207,35 @@ async def test_get_reconstructs_feature_state():
 
 
 @pytest.mark.asyncio
+async def test_get_does_not_call_list_comments_when_body_has_state():
+    # Arrange
+    state = _make_state()
+    issue = _make_issue(state)
+    client = _mock_client()
+    client.search_issues.return_value = [issue]
+    mgr = GitHubStateManager(client)
+
+    # Act
+    await mgr.get(state.feature_id)
+
+    # Assert — no comment fetch needed
+    client.list_comments.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_overrides_status_from_label():
     """Status in the JSON blob is overridden by the feat:* label on the issue."""
     # Arrange
     state = _make_state(status=FeatureStatus.analyzing)
-    # Issue label says "developing" but comment JSON says "analyzing"
-    issue = {
-        "number": 7,
-        "body": "",
-        "labels": [
-            {"name": FEATURE_MARKER},
-            {"name": _feature_label(state.feature_id)},
-            {"name": FEAT_DEVELOPING},  # label is authoritative
-        ],
-    }
-    comment = _make_state_comment(state)
+    issue = _make_issue(state, number=7)
+    # Override label to say developing
+    issue["labels"] = [
+        {"name": FEATURE_MARKER},
+        {"name": _feature_label(state.feature_id)},
+        {"name": FEAT_DEVELOPING},
+    ]
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -210,6 +243,34 @@ async def test_get_overrides_status_from_label():
 
     # Assert — label wins over JSON
     assert result.status == FeatureStatus.developing
+
+
+@pytest.mark.asyncio
+async def test_get_falls_back_to_comment_for_legacy_issues():
+    """Issues without state in body fall back to reading the first comment."""
+    # Arrange
+    state = _make_state()
+    legacy_issue = {
+        "number": 99,
+        "body": "# Brief only — no state block",
+        "labels": [
+            {"name": FEATURE_MARKER},
+            {"name": _feature_label(state.feature_id)},
+            {"name": FEATURE_STATUS_TO_LABEL[state.status]},
+        ],
+    }
+    comment = {"id": 1, "body": _build_state_block(state)}
+    client = _mock_client()
+    client.search_issues.return_value = [legacy_issue]
+    client.list_comments.return_value = [comment]
+    mgr = GitHubStateManager(client)
+
+    # Act
+    result = await mgr.get(state.feature_id)
+
+    # Assert
+    assert result.feature_id == state.feature_id
+    client.list_comments.assert_awaited_once_with(99)
 
 
 @pytest.mark.asyncio
@@ -230,14 +291,12 @@ async def test_get_raises_key_error_when_not_found():
 
 
 @pytest.mark.asyncio
-async def test_update_rewrites_comment_without_label_swap_when_status_unchanged():
+async def test_update_rewrites_issue_body_without_label_swap_when_status_unchanged():
     # Arrange
     state = _make_state(status=FeatureStatus.analyzing)
     issue = _make_issue(state, number=10)
-    comment = _make_state_comment(state, comment_id=99)
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     worktree = "/tmp/wt"
@@ -246,10 +305,11 @@ async def test_update_rewrites_comment_without_label_swap_when_status_unchanged(
         lambda s: s.with_worktree_path(worktree),
     )
 
-    # Assert — state comment updated, not issue body
-    client.update_comment.assert_awaited_once()
-    call_args = client.update_comment.call_args
-    assert call_args.args[0] == 99  # comment_id
+    # Assert — issue body updated (not a comment)
+    client.update_issue.assert_awaited_once()
+    call_kwargs = client.update_issue.call_args[1]
+    assert call_kwargs["body"]  # non-empty
+    client.update_comment.assert_not_awaited()
 
     # Assert — no label ops since status is unchanged
     client.add_labels.assert_not_awaited()
@@ -259,14 +319,33 @@ async def test_update_rewrites_comment_without_label_swap_when_status_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_update_body_preserves_brief_and_embeds_new_state():
+    # Arrange
+    state = _make_state(status=FeatureStatus.analyzing)
+    brief = "# My Brief\n\nImportant text."
+    issue = _make_issue(state, number=10, brief_content=brief)
+    client = _mock_client()
+    client.search_issues.return_value = [issue]
+    mgr = GitHubStateManager(client)
+
+    new_state = await mgr.update(state.feature_id, lambda s: s.with_status(FeatureStatus.planning))
+
+    # Assert — updated body contains brief and new state
+    call_kwargs = client.update_issue.call_args[1]
+    updated_body = call_kwargs["body"]
+    assert "# My Brief" in updated_body
+    parsed = parse_state_from_issue({"body": updated_body})
+    assert parsed is not None
+    assert parsed.status == FeatureStatus.planning
+
+
+@pytest.mark.asyncio
 async def test_update_swaps_feat_labels_when_status_changes():
     # Arrange
     state = _make_state(status=FeatureStatus.analyzing)
     issue = _make_issue(state, number=11)
-    comment = _make_state_comment(state, comment_id=55)
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     # Act — bump status to done
@@ -279,8 +358,9 @@ async def test_update_swaps_feat_labels_when_status_changes():
     client.add_labels.assert_awaited_once_with(11, [FEAT_DONE])
     client.remove_label.assert_awaited_once_with(11, FEAT_ANALYZING)
 
-    # Assert — comment updated with new state
-    client.update_comment.assert_awaited_once()
+    # Assert — issue body updated (not a comment)
+    client.update_issue.assert_awaited_once()
+    client.update_comment.assert_not_awaited()
 
     assert new_state.status == FeatureStatus.done
 
@@ -290,10 +370,8 @@ async def test_update_returns_new_state():
     # Arrange
     state = _make_state()
     issue = _make_issue(state, number=5)
-    comment = _make_state_comment(state, comment_id=10)
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -313,21 +391,18 @@ async def test_set_worktree_path_calls_update():
     # Arrange
     state = _make_state()
     issue = _make_issue(state, number=3)
-    comment = _make_state_comment(state, comment_id=7)
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     # Act
     await mgr.set_worktree_path(state.feature_id, "/some/path")
 
-    # Assert — state comment was updated
-    client.update_comment.assert_awaited_once()
-    call_args = client.update_comment.call_args
-    new_comment_body = call_args.args[1]
-    persisted_json = _extract_state_json(new_comment_body)
-    persisted = FeatureState.model_validate_json(persisted_json)
+    # Assert — issue body updated
+    client.update_issue.assert_awaited_once()
+    call_kwargs = client.update_issue.call_args[1]
+    persisted = parse_state_from_issue({"body": call_kwargs["body"]})
+    assert persisted is not None
     assert persisted.worktree_path == "/some/path"
 
 
@@ -341,21 +416,18 @@ async def test_set_cleanup_warning_calls_update():
     # Arrange
     state = _make_state()
     issue = _make_issue(state, number=4)
-    comment = _make_state_comment(state, comment_id=8)
     client = _mock_client()
     client.search_issues.return_value = [issue]
-    client.list_comments.return_value = [comment]
     mgr = GitHubStateManager(client)
 
     # Act
     await mgr.set_cleanup_warning(state.feature_id, "disk full")
 
-    # Assert
-    client.update_comment.assert_awaited_once()
-    call_args = client.update_comment.call_args
-    new_comment_body = call_args.args[1]
-    persisted_json = _extract_state_json(new_comment_body)
-    persisted = FeatureState.model_validate_json(persisted_json)
+    # Assert — issue body updated with warning
+    client.update_issue.assert_awaited_once()
+    call_kwargs = client.update_issue.call_args[1]
+    persisted = parse_state_from_issue({"body": call_kwargs["body"]})
+    assert persisted is not None
     assert persisted.cleanup_warning == "disk full"
 
 

@@ -37,16 +37,6 @@ if TYPE_CHECKING:
 _TASK_FENCE = "agentharness-task"
 _RECLAIM_MARKER = "⚠️ Reclaimed"
 
-_QUEUE_TO_PHASE: dict[str, str] = {
-    "analyst-queue": "analyzing",
-    "architect-queue": "architecting",
-    "designer-queue": "designing",
-    "planner-queue": "planning",
-    "developer-queue": "developing",
-    "review-queue": "reviewing",
-}
-
-
 def _default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
@@ -67,8 +57,6 @@ def _parse_task_from_body(body: str) -> TaskMessage:
     return TaskMessage.model_validate_json(match.group(1).strip())
 
 
-def _count_reclaims(comments: list[dict]) -> int:
-    return sum(1 for c in comments if _RECLAIM_MARKER in c.get("body", ""))
 
 
 class GitHubTaskQueue:
@@ -104,8 +92,7 @@ class GitHubTaskQueue:
         """Create a GitHub issue representing the enqueued task."""
         state_label = STATE_BLOCKED if visibility_timeout > 0 else STATE_QUEUED
         labels = [self._queue_label, state_label, FEATURE_MARKER]
-        phase = _QUEUE_TO_PHASE.get(self._queue_name, self._queue_name)
-        title = f"subtask-{task.feature_id}-{phase}"
+        title = f"[{self._queue_name}] {task.task_id}"
         body = _build_issue_body(task)
         issue = await self._client.create_issue(title=title, body=body, labels=labels)
         await self._link_to_feature(issue["number"], task.feature_id)
@@ -179,11 +166,10 @@ class GitHubTaskQueue:
         return task, raw
 
     # ------------------------------------------------------------------
-    # Extend visibility (heartbeat update)
     # ------------------------------------------------------------------
 
     async def extend_visibility(self, raw: RawMessage, timeout: int) -> RawMessage:
-        """No-op for GitHub: issues don't expire, no renewal needed."""
+        """No-op for GitHub: issues don't expire."""
         return raw
 
     # ------------------------------------------------------------------

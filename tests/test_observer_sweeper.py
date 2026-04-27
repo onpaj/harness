@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentharness.observer import (
-    _parse_heartbeat_timestamp,
-    _reclaim_issue,
-    _sweep_stale_claims,
-)
+from agentharness.observer import _reclaim_issue
 from agentharness.github_labels import (
     CLAIMED_BY_PREFIX,
     STATE_IN_PROGRESS,
@@ -21,12 +16,6 @@ from agentharness.github_labels import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_config(storage_backend: str = "github") -> MagicMock:
-    config = MagicMock()
-    config.storage_backend = storage_backend
-    return config
 
 
 def _make_client(owner: str = "test-owner", repo: str = "test-repo") -> MagicMock:
@@ -51,60 +40,6 @@ def _make_issue(
         "body": body,
         "labels": [{"name": lbl} for lbl in (labels or [])],
     }
-
-
-# ---------------------------------------------------------------------------
-# _sweep_stale_claims — azure backend is a no-op
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_sweep_stale_claims_noop_for_azure() -> None:
-    """_sweep_stale_claims returns immediately when storage_backend is not 'github'."""
-    config = _make_config(storage_backend="azure")
-    # GitHubClient is lazily imported inside the function; patch it on the module it lives in
-    with patch("agentharness.github_client.GitHubClient") as mock_cls:
-        await _sweep_stale_claims(config)
-    # The client constructor must never have been called
-    mock_cls.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _parse_heartbeat_timestamp
-# ---------------------------------------------------------------------------
-
-
-def test_parse_heartbeat_timestamp_valid() -> None:
-    """Returns a UTC datetime for a well-formed heartbeat line."""
-    ts = "2026-04-27T12:34:56"
-    issue = _make_issue(body=f"Some text\n⏱ Heartbeat: {ts}\nMore text")
-    result = _parse_heartbeat_timestamp(issue)
-    assert result is not None
-    assert result == datetime(2026, 4, 27, 12, 34, 56, tzinfo=UTC)
-
-
-def test_parse_heartbeat_timestamp_missing() -> None:
-    """Returns None when the issue body contains no heartbeat marker."""
-    issue = _make_issue(body="No heartbeat here at all")
-    assert _parse_heartbeat_timestamp(issue) is None
-
-
-def test_parse_heartbeat_timestamp_malformed() -> None:
-    """Returns None when the timestamp string cannot be parsed as ISO datetime."""
-    issue = _make_issue(body="⏱ Heartbeat: not-a-date")
-    assert _parse_heartbeat_timestamp(issue) is None
-
-
-def test_parse_heartbeat_timestamp_empty_body() -> None:
-    """Returns None when body is empty string."""
-    issue = _make_issue(body="")
-    assert _parse_heartbeat_timestamp(issue) is None
-
-
-def test_parse_heartbeat_timestamp_none_body() -> None:
-    """Returns None when body key is absent from the issue dict."""
-    issue = {"number": 1, "labels": []}
-    assert _parse_heartbeat_timestamp(issue) is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +93,7 @@ async def test_reclaim_issue_posts_reclaimed_comment() -> None:
 
     client.create_comment.assert_awaited_once()
     comment_body = client.create_comment.await_args.args[1]
-    assert "Reclaimed" in comment_body
+    assert "Reclaimed" in comment_body  # exact wording may vary
 
 
 @pytest.mark.asyncio
@@ -168,7 +103,6 @@ async def test_reclaim_issue_tolerates_remove_label_error() -> None:
     client.remove_label = AsyncMock(side_effect=Exception("network error"))
     issue = _make_issue(number=9, labels=[STATE_IN_PROGRESS])
 
-    # Should not raise; still proceeds to add_labels and create_comment
     await _reclaim_issue(client, issue)
 
     client.add_labels.assert_awaited_once()

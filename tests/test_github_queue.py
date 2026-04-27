@@ -156,11 +156,9 @@ async def test_receive_task_claims_issue_and_returns_task_and_raw() -> None:
         {
             "number": 7,
             "body": body,
-            "comments": [],
             "labels": [{"name": STATE_QUEUED}, {"name": _QUEUE_LABEL}],
         }
     ]
-    client.create_comment.return_value = {"id": 999}
 
     queue = _make_queue(client)
     result = await queue.receive_task()
@@ -173,7 +171,7 @@ async def test_receive_task_claims_issue_and_returns_task_and_raw() -> None:
 
     # RawMessage populated correctly
     assert raw.id == "7"
-    assert raw.pop_receipt == "999"
+    assert raw.pop_receipt == ""
     assert raw.dequeue_count == 0
 
     # Labels transitioned correctly
@@ -182,40 +180,6 @@ async def test_receive_task_claims_issue_and_returns_task_and_raw() -> None:
     assert STATE_IN_PROGRESS in add_call_labels
     assert any(lbl.startswith("claimed-by:") for lbl in add_call_labels)
 
-    # Heartbeat comment posted
-    client.create_comment.assert_called_once()
-    comment_body: str = client.create_comment.call_args[0][1]
-    assert "⏱ Heartbeat:" in comment_body
-    assert _WORKER_ID in comment_body
-
-
-@pytest.mark.asyncio
-async def test_receive_task_counts_reclaims_in_dequeue_count() -> None:
-    task = _make_task()
-    body = _build_issue_body(task)
-
-    client = _make_client()
-    client.search_issues.return_value = [
-        {
-            "number": 10,
-            "body": body,
-            "comments": [
-                {"body": "⚠️ Reclaimed: stale heartbeat"},
-                {"body": "⚠️ Reclaimed: stale heartbeat"},
-                {"body": "some other comment"},
-            ],
-            "labels": [],
-        }
-    ]
-    client.create_comment.return_value = {"id": 55}
-
-    queue = _make_queue(client)
-    result = await queue.receive_task()
-
-    assert result is not None
-    _, raw = result
-    assert raw.dequeue_count == 2
-
 
 # ---------------------------------------------------------------------------
 # extend_visibility
@@ -223,21 +187,14 @@ async def test_receive_task_counts_reclaims_in_dequeue_count() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extend_visibility_calls_update_comment() -> None:
+async def test_extend_visibility_is_noop() -> None:
     client = _make_client()
     queue = _make_queue(client)
-    raw = RawMessage(id="7", pop_receipt="999", content="body")
+    raw = RawMessage(id="7", pop_receipt="", content="body")
 
     returned_raw = await queue.extend_visibility(raw, timeout=60)
 
-    client.update_comment.assert_called_once()
-    call_args = client.update_comment.call_args[0]
-    assert call_args[0] == 999
-    comment_body: str = call_args[1]
-    assert "⏱ Heartbeat:" in comment_body
-    assert _WORKER_ID in comment_body
-
-    # raw is returned unchanged
+    client.update_comment.assert_not_called()
     assert returned_raw is raw
 
 

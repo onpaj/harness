@@ -65,7 +65,7 @@ def test_from_config_builds_correct_paths() -> None:
 
 def test_get_work_dir_returns_implementation_subdir() -> None:
     store = _make_store()
-    expected = _CLONE_ROOT / "implementation"
+    expected = _CLONE_ROOT / "artifacts" / _FEATURE_ID
     assert store.get_work_dir() == expected
 
 

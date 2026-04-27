@@ -51,10 +51,29 @@ def _extract_state_json(body: str) -> str:
     return match.group(1).strip()
 
 
-def _build_state_comment(state: FeatureState) -> str:
-    """Build the comment body containing the serialized FeatureState JSON."""
+def parse_state_from_issue(issue: dict) -> FeatureState | None:
+    """Parse a FeatureState from a GitHub issue dict, or return None on failure."""
+    import json as _json
+
+    body = issue.get("body") or ""
+    try:
+        raw = _extract_state_json(body)
+        return FeatureState.model_validate(_json.loads(raw))
+    except Exception:
+        return None
+
+
+def _build_state_block(state: FeatureState) -> str:
     json_blob = state.model_dump_json()
-    return f"{_STATE_FENCE_OPEN}\n{json_blob}\n{_STATE_FENCE_CLOSE}\n"
+    return f"{_STATE_FENCE_OPEN}\n{json_blob}\n{_STATE_FENCE_CLOSE}"
+
+
+def _replace_state_block(body: str, state: FeatureState) -> str:
+    """Replace the state block in *body*, or append it if absent."""
+    new_block = _build_state_block(state)
+    if _STATE_BLOCK_RE.search(body):
+        return _STATE_BLOCK_RE.sub(new_block, body)
+    return f"{body}\n\n{new_block}\n"
 
 
 def _feature_label(feature_id: str) -> str:
@@ -134,16 +153,17 @@ class GitHubStateManager:
         return comments[0]
 
     async def _state_from_issue(self, issue: dict) -> FeatureState:
-        """Parse a FeatureState from the issue's first comment, overriding status from labels."""
-        comment = await self._get_state_comment(issue["number"])
-        json_str = _extract_state_json(comment["body"])
-        state = FeatureState.model_validate_json(json_str)
+        """Parse FeatureState from issue body; fall back to first comment for legacy issues."""
+        state = parse_state_from_issue(issue)
+        if state is None:
+            # Legacy: state stored in first comment
+            comment = await self._get_state_comment(issue["number"])
+            json_str = _extract_state_json(comment["body"])
+            state = FeatureState.model_validate_json(json_str)
 
-        # Labels are the authoritative source of truth for status.
         status_from_label = _status_from_issue_labels(issue)
         if status_from_label is not None and status_from_label != state.status:
             state = state.model_copy(update={"status": status_from_label})
-
         return state
 
     # ------------------------------------------------------------------
@@ -162,12 +182,12 @@ class GitHubStateManager:
         status_label = FEATURE_STATUS_TO_LABEL[state.status]
         title = _feature_issue_title(state.feature_id)
 
+        body = _replace_state_block(brief_content, state)
         issue = await self._client.create_issue(
             title=title,
-            body=brief_content,
+            body=body,
             labels=[FEATURE_MARKER, feat_label, status_label],
         )
-        await self._client.create_comment(issue["number"], _build_state_comment(state))
         log.debug("Created state issue for feature %s", state.feature_id)
 
     async def get(self, feature_id: str) -> FeatureState:
@@ -189,15 +209,14 @@ class GitHubStateManager:
         current = await self._state_from_issue(issue)
         new_state = updater(current)
 
-        # Swap status labels only when the status actually changed.
         if new_state.status != current.status:
             old_label = FEATURE_STATUS_TO_LABEL[current.status]
             new_label = FEATURE_STATUS_TO_LABEL[new_state.status]
             await self._client.add_labels(issue_number, [new_label])
             await self._client.remove_label(issue_number, old_label)
 
-        comment = await self._get_state_comment(issue_number)
-        await self._client.update_comment(comment["id"], _build_state_comment(new_state))
+        new_body = _replace_state_block(issue.get("body") or "", new_state)
+        await self._client.update_issue(issue_number, body=new_body)
 
         log.debug(
             "Updated state issue for feature %s (status: %s → %s)",
