@@ -46,6 +46,7 @@ class GitHubConfig(BaseModel):
     token_env: str = "GITHUB_TOKEN"
     owner_env: str = "GITHUB_OWNER"
     runs_repo_env: str = "GITHUB_RUNS_REPO"
+    clone_dir: str = ".runs-cache"
 
     @property
     def token(self) -> str:
