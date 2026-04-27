@@ -1,9 +1,9 @@
 """Unit tests for run_task helpers — task section parsing and context upload."""
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from agentharness.run_task import _parse_task_sections, _upload_task_contexts
+from agentharness.run_task import _parse_task_sections, _upload_task_contexts, run_task
 
 
 class TestParseTaskSections:
@@ -95,3 +95,66 @@ class TestUploadTaskContexts:
 
         store.upload.assert_not_awaited()
         assert paths == {}
+
+
+@pytest.mark.asyncio
+class TestRunTaskUsesStorageFactory:
+    """Verify run_task uses factory functions and not BlobServiceClient directly."""
+
+    async def test_uses_create_artifact_store(self):
+        """run_task calls create_artifact_store, not BlobServiceClient."""
+        task_json = (
+            '{"task_id": "t1", "feature_id": "feat-01", "queue_name": "dev-queue",'
+            ' "input_artifacts": [], "output_artifact": "artifacts/feat-01/out.md",'
+            ' "agent_role": "developer", "work_dir": null, "revision": 1}'
+        )
+        config = MagicMock()
+        config.storage_backend = "azure"
+        config.queue_names.return_value = []
+        config.agent_path_for_queue.return_value = MagicMock()
+
+        mock_store = AsyncMock()
+        mock_store.upload = AsyncMock()
+        mock_store.close = AsyncMock()
+
+        mock_state_mgr = AsyncMock()
+        mock_state = MagicMock()
+        mock_state.worktree_path = None
+        mock_state_mgr.update = AsyncMock(return_value=mock_state)
+
+        mock_agent_def = MagicMock()
+        mock_agent_def.allowed_tools = []
+        mock_agent_def.system_prompt = "You are a developer agent."
+        mock_agent_def.context_files = []
+
+        mock_run_result = MagicMock()
+        mock_run_result.output = "## Status: DONE"
+        mock_run_result.tokens = None
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store) as mock_cas,
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr) as mock_csm,
+            patch("agentharness.run_task.create_task_queue") as mock_ctq,
+            patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
+            patch("agentharness.run_task.run_agent", return_value=mock_run_result),
+            patch("agentharness.run_task.dispatch_after_completion", return_value=None),
+        ):
+            await run_task("dev-queue", task_json, config)
+
+        mock_cas.assert_called_once_with(config, feature_id="feat-01")
+        mock_csm.assert_called_once_with(config)
+        # BlobServiceClient must NOT be imported at module level in run_task
+        import agentharness.run_task as rt_module
+        assert not hasattr(rt_module, "BlobServiceClient"), (
+            "BlobServiceClient should not be imported in run_task module"
+        )
+
+    async def test_no_direct_blob_service_client_import(self):
+        """run_task module must not import BlobServiceClient at module level."""
+        import agentharness.run_task as rt_module
+        import sys
+
+        # The module should not hold a direct reference to BlobServiceClient
+        assert "BlobServiceClient" not in dir(rt_module), (
+            "BlobServiceClient was found in run_task module namespace — remove the direct import"
+        )

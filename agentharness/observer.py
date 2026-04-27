@@ -10,27 +10,23 @@ from pathlib import Path
 
 from agentharness.config import Config
 from agentharness.models import TaskMessage
-from agentharness.storage import ArtifactStore, PipelineQueue
-from agentharness.storage_protocol import RawMessage
+from agentharness.storage import create_task_queue
+from agentharness.storage_protocol import RawMessage, TaskQueue
 
 log = logging.getLogger(__name__)
 
 _RENEWAL_INTERVAL = 60      # seconds between visibility renewals
 _VISIBILITY_TIMEOUT = 150   # seconds of visibility granted per renewal
 
+_STALE_CLAIM_TIMEOUT = 150  # seconds before a claimed task is reclaimed
+_SWEEP_INTERVAL = 60        # seconds between sweeps
+
 
 async def observe(config: Config) -> None:
     """Poll all queues and spawn a subprocess per message."""
-    conn_str = config.storage.connection_string
-
-    from azure.storage.blob.aio import BlobServiceClient
-    blob_service = BlobServiceClient.from_connection_string(conn_str)
-    store = ArtifactStore(blob_service, config.storage.container)
-    await store.ensure_container_exists()
-
-    queues: dict[str, PipelineQueue] = {}
+    queues: dict[str, TaskQueue] = {}
     for q_name in config.queue_names():
-        q = PipelineQueue.from_connection_string(conn_str, q_name)
+        q = create_task_queue(config, q_name)
         await q.ensure_exists()
         queues[q_name] = q
 
@@ -56,21 +52,20 @@ async def observe(config: Config) -> None:
     loop.add_signal_handler(signal.SIGINT, _shutdown)
 
     try:
-        await asyncio.gather(*[
-            _poll_queue(q_name, q, config, exe, active_procs)
-            for q_name, q in queues.items()
-        ])
+        await asyncio.gather(
+            *[_poll_queue(q_name, q, config, exe, active_procs) for q_name, q in queues.items()],
+            _sweep_stale_claims(config),
+        )
     except asyncio.CancelledError:
         pass
     finally:
         for q in queues.values():
             await q.close()
-        await blob_service.close()
 
 
 async def _poll_queue(
     queue_name: str,
-    queue: PipelineQueue,
+    queue: TaskQueue,
     config: Config,
     exe: str,
     active_procs: dict[str, asyncio.Process],
@@ -93,7 +88,7 @@ async def _run_subprocess(
     queue_name: str,
     task: TaskMessage,
     raw_msg: RawMessage,
-    queue: PipelineQueue,
+    queue: TaskQueue,
     exe: str,
     active_procs: dict[str, asyncio.Process],
 ) -> None:
@@ -144,7 +139,7 @@ async def _run_subprocess(
             log.warning("Could not delete failed message for %s: %s", task.task_id, exc)
 
 
-async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: RawMessage, queue: PipelineQueue) -> RawMessage:
+async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: RawMessage, queue: TaskQueue) -> RawMessage:
     """Wait for subprocess, renewing queue message visibility every _RENEWAL_INTERVAL seconds.
 
     Returns the latest RawMessage (with updated pop_receipt) for deletion.
@@ -165,3 +160,65 @@ async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: RawMe
                     log.debug("Message for %s already deleted — task completed before renewal", task_id)
                     return current
                 log.warning("Could not renew visibility for %s: %s — message may be re-queued", task_id, exc)
+
+
+async def _sweep_stale_claims(config: Config) -> None:
+    """Periodically reclaim in-progress issues whose heartbeat has gone stale. GitHub backend only."""
+    if config.storage_backend != "github":
+        return
+    from datetime import UTC, datetime
+    from agentharness.github_client import GitHubClient, GitHubApiError
+    from agentharness.github_labels import STATE_IN_PROGRESS, STATE_QUEUED, is_claimed_by_label
+
+    client = GitHubClient.from_config(config)
+    try:
+        while True:
+            await asyncio.sleep(_SWEEP_INTERVAL)
+            try:
+                issues = await client.search_issues(
+                    f"is:open+label:{STATE_IN_PROGRESS}+repo:{client.owner}/{client.repo}"
+                )
+                now = datetime.now(UTC)
+                for issue in issues:
+                    ts = _parse_heartbeat_timestamp(issue)
+                    if ts and (now - ts).total_seconds() > _STALE_CLAIM_TIMEOUT:
+                        await _reclaim_issue(client, issue)
+            except Exception as exc:
+                log.warning("Sweeper error: %s", exc)
+    finally:
+        await client.close()
+
+
+def _parse_heartbeat_timestamp(issue: dict) -> "datetime | None":
+    """Extract the most recent heartbeat timestamp from an issue's body or latest comment.
+
+    Heartbeat comments contain: '⏱ Heartbeat: {ISO_TIMESTAMP}'
+    """
+    import re
+    from datetime import UTC, datetime
+    text = issue.get("body", "") or ""
+    match = re.search(r"⏱ Heartbeat: (\S+)", text)
+    if match:
+        try:
+            return datetime.fromisoformat(match.group(1)).replace(tzinfo=UTC)
+        except ValueError:
+            pass
+    return None
+
+
+async def _reclaim_issue(client, issue: dict) -> None:
+    """Remove stale claim labels and requeue the issue."""
+    from agentharness.github_labels import STATE_IN_PROGRESS, STATE_QUEUED, is_claimed_by_label
+    number = issue["number"]
+    labels_to_remove = [
+        lbl["name"] for lbl in issue.get("labels", [])
+        if is_claimed_by_label(lbl["name"]) or lbl["name"] == STATE_IN_PROGRESS
+    ]
+    for label in labels_to_remove:
+        try:
+            await client.remove_label(number, label)
+        except Exception:
+            pass
+    await client.add_labels(number, [STATE_QUEUED])
+    await client.create_comment(number, "⚠️ Reclaimed: stale heartbeat (observer restart or crash)")
+    log.info("Reclaimed stale issue #%d", number)

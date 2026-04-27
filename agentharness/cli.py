@@ -231,7 +231,15 @@ def init_project(target_dir: str, force: bool) -> None:
 
     env_example = target / ".env.example"
     if not env_example.exists() or force:
-        env_example.write_text("AZURE_STORAGE_CONNECTION_STRING=\n")
+        env_example.write_text(
+            "AZURE_STORAGE_CONNECTION_STRING=\n"
+            "\n"
+            "# GitHub backend (set STORAGE_BACKEND=github to use)\n"
+            "GITHUB_TOKEN=\n"
+            "GITHUB_OWNER=\n"
+            "GITHUB_RUNS_REPO=\n"
+            "STORAGE_BACKEND=azure\n"
+        )
         console.print(f"[green]wrote[/green] .env.example")
 
     console.print("\n[bold]Done.[/bold] Copy .env.example → .env and fill in your connection string.")

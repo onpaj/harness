@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from agentharness.config import Config
 from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
@@ -142,6 +145,10 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
 
     Does NOT enqueue any pipeline tasks — call enqueue_planner() separately.
     """
+    if config.storage_backend == "github":
+        await _upload_brief_github(feature_id, brief_content, config)
+        return
+
     from azure.storage.blob.aio import BlobServiceClient
 
     conn_str = config.storage.connection_string
@@ -166,8 +173,53 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
         await blob_service.close()
 
 
+async def _upload_brief_github(feature_id: str, brief_content: str, config: Config) -> None:
+    """GitHub-backend implementation of upload_brief."""
+    import base64
+    from datetime import UTC, datetime
+
+    from agentharness.github_client import GitHubClient
+    from agentharness.github_state import GitHubStateManager
+
+    client = GitHubClient.from_config(config)
+    try:
+        # 1. Create feature branch from main
+        main_sha = (await client.get_ref("heads/main"))["object"]["sha"]
+        await client.create_ref(f"refs/heads/{feature_id}", main_sha)
+
+        # 2. Commit brief.md to the feature branch
+        brief_path = f"artifacts/{feature_id}/brief.md"
+        await client.put_content(
+            path=brief_path,
+            message=f"feat: add brief for {feature_id}",
+            content=base64.b64encode(brief_content.encode()).decode(),
+            sha=None,
+            branch=feature_id,
+        )
+
+        # 3. Create initial FeatureState and persist as parent issue
+        now = datetime.now(UTC)
+        state = FeatureState(
+            feature_id=feature_id,
+            status=FeatureStatus.analyzing,
+            created_at=now,
+            updated_at=now,
+            config=PipelineConfig(
+                max_revisions=config.defaults.max_revisions,
+            ),
+        )
+        mgr = GitHubStateManager(client)
+        await mgr.create(state)
+    finally:
+        await client.close()
+
+
 async def enqueue_planner(feature_id: str, config: Config) -> None:
     """Enqueue the analyst task, transitioning feature to 'analyzing' status."""
+    if config.storage_backend == "github":
+        await _enqueue_planner_github(feature_id, config)
+        return
+
     from azure.storage.blob.aio import BlobServiceClient
     from agentharness.models import TaskMessage
     from agentharness.storage import phase_artifact_path
@@ -198,6 +250,28 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
         )
     finally:
         await blob_service.close()
+
+
+async def _enqueue_planner_github(feature_id: str, config: Config) -> None:
+    """GitHub-backend implementation of enqueue_planner."""
+    from agentharness.models import TaskMessage
+    from agentharness.storage import artifact_path as _artifact_path
+    from agentharness.storage import create_task_queue, phase_artifact_path
+
+    queue = create_task_queue(config, "analyst-queue")
+    try:
+        task = TaskMessage(
+            feature_id=feature_id,
+            task_id=f"{feature_id}-analyst",
+            input_artifacts=[_artifact_path(feature_id, "brief.md")],
+            output_artifact=phase_artifact_path(feature_id, "spec", 1),
+            agent_role="analyst",
+        )
+        await queue.ensure_exists()
+        await queue.send_task(task)
+        log.info("Enqueued analyst task for %s", feature_id)
+    finally:
+        await queue.close()
 
 
 async def upload_brief_file(brief_path: Path, config: Config) -> str:

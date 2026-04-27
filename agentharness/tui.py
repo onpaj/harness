@@ -784,6 +784,12 @@ class PipelineMonitor(App):
 
 
 async def _load_all_states(config: Config) -> list[FeatureState]:
+    if config.storage_backend == "github":
+        return await _load_states_github(config)
+    return await _load_states_azure(config)
+
+
+async def _load_states_azure(config: Config) -> list[FeatureState]:
     from azure.storage.blob.aio import BlobServiceClient
     from agentharness.state_manager import StateManager
 
@@ -813,7 +819,33 @@ async def _load_all_states(config: Config) -> list[FeatureState]:
     return sorted(states, key=sort_key)
 
 
+async def _load_states_github(config: Config) -> list[FeatureState]:
+    from agentharness.github_state import GitHubStateManager
+
+    mgr = GitHubStateManager.from_config(config)
+    features = await mgr.list_features()
+    states: list[FeatureState] = []
+    for feature_id, _ in features:
+        try:
+            state = await mgr.get(feature_id)
+            states.append(state)
+        except Exception:
+            pass
+
+    def sort_key(s: FeatureState):
+        active = s.status not in (FeatureStatus.done, FeatureStatus.failed)
+        return (not active, -(s.updated_at.timestamp() if s.updated_at else 0))
+
+    return sorted(states, key=sort_key)
+
+
 async def _load_queue_depths(config: Config) -> dict[str, int]:
+    if config.storage_backend == "github":
+        return await _load_depths_github(config)
+    return await _load_depths_azure(config)
+
+
+async def _load_depths_azure(config: Config) -> dict[str, int]:
     from agentharness.storage import PipelineQueue
 
     conn_str = config.storage.connection_string
@@ -821,8 +853,21 @@ async def _load_queue_depths(config: Config) -> dict[str, int]:
     for queue_name in config.queue_names():
         try:
             q = PipelineQueue.from_connection_string(conn_str, queue_name)
-            props = await q._client.get_queue_properties()
-            depths[queue_name] = props.get("approximate_message_count", 0)
+            depths[queue_name] = await q.get_depth()
+            await q.close()
+        except Exception:
+            depths[queue_name] = 0
+    return depths
+
+
+async def _load_depths_github(config: Config) -> dict[str, int]:
+    from agentharness.storage import create_task_queue
+
+    depths: dict[str, int] = {}
+    for queue_name in config.queue_names():
+        try:
+            q = create_task_queue(config, queue_name)
+            depths[queue_name] = await q.get_depth()
             await q.close()
         except Exception:
             depths[queue_name] = 0
