@@ -6,11 +6,11 @@ A distributed, event-driven pipeline that autonomously processes development tas
 
 ## Key concepts
 
-- **Feature** — a unit of work, identified by `feat-{date}-{hash}`. Lives in `artifacts/{feature_id}/` in Azure Blob Storage.
+- **Feature** — a unit of work, identified by `feat-{date}-{hash}`. Lives in a storage backend (Azure Blob Storage or GitHub branch).
 - **Agent** — a Claude Code CLI subprocess defined by a Markdown file in `.agents/`. Each agent has a model, tools, and a system prompt.
 - **Observer** — the primary execution process: polls all queues, spawns `agentharness _run_task` as a subprocess per message.
 - **Worker** — legacy execution mode: a long-running async process that polls one queue and runs agents in-process.
-- **State** — `artifacts/{feature_id}/state.json` is the source of truth for feature lifecycle. All updates are atomic via Azure blob lease.
+- **State** — feature lifecycle source of truth. Azure backend: `state.json` in blob storage (atomic via blob lease). GitHub backend: issue labels and JSON body (no state.json file).
 
 ## Project layout
 
@@ -27,9 +27,17 @@ A distributed, event-driven pipeline that autonomously processes development tas
 .pipeline/          Runtime config (queue → agent mapping, timeouts)
 agentharness/       Python package
   models.py         Pydantic models — FeatureState, TaskMessage, TaskStatus, AgentDefinition
-  config.py         Load .pipeline/config.json
-  storage.py        Azure Blob + Queue async client wrappers
-  state_manager.py  Lease-based atomic state.json updates
+  config.py         Load .pipeline/config.json, GitHubConfig, StorageConfig
+  storage_protocol.py         Pluggable backend Protocol definitions: ArtifactStorage, TaskQueue, StateBackend
+  storage.py        Factory functions: create_artifact_store, create_task_queue, create_state_manager
+  azure_artifacts.py          Azure Blob Storage artifact backend
+  azure_queue.py              Azure Storage Queue backend
+  github_client.py            httpx async GitHub REST API wrapper
+  github_labels.py            GitHub label name constants and utilities
+  github_queue.py             GitHub Issues as task queue backend
+  github_artifacts.py         Git branch artifact storage backend
+  github_state.py             GitHub issue label + JSON body state manager
+  state_manager.py  Lease-based atomic state updates (abstracts over backends)
   context_files.py  Per-agent context file resolution and prompt injection
   prompt_builder.py Assemble prompt from agent MD + downloaded artifacts + context files
   agent_runner.py   Subprocess wrapper for `claude -p ...`
@@ -38,6 +46,7 @@ agentharness/       Python package
   run_task.py       Single-task runner invoked by observer (reads TaskMessage from stdin)
   worker.py         Legacy async worker loop (in-process execution)
   brainstorm.py     Brief upload + analyst enqueue (called by CLI + skill)
+  worktree_manager.py Git worktree utilities for branch management
   tui.py            Textual real-time monitoring UI
   cli.py            Click entry points
 tests/              Unit tests (pytest-asyncio)
@@ -46,6 +55,7 @@ tests/              Unit tests (pytest-asyncio)
   test_dispatcher.py
   test_prompt_builder.py
   test_worker.py
+  test_run_task.py
   fixtures/context_files/
 ```
 
@@ -53,9 +63,9 @@ tests/              Unit tests (pytest-asyncio)
 
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
-| `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to Azure |
+| `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to configured backend |
 | `/implement {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
-| `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter |
+| `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter (Azure backend only) |
 
 ## CLI commands
 
@@ -171,7 +181,11 @@ Planner output is parsed for `### task: {name}` headers. All tasks are written t
 
 ## Concurrency safety
 
-`state_manager.StateManager.update()` acquires an Azure blob lease (30s) before read-modify-write. Only `HttpResponseError` with lease contention error codes trigger retry with exponential backoff. All other errors propagate immediately.
+**Azure backend:** `state_manager.StateManager.update()` acquires an Azure blob lease (30s) before read-modify-write. Only `HttpResponseError` with lease contention error codes trigger retry with exponential backoff.
+
+**GitHub backend:** Issue state updates are atomic; GitHub prevents simultaneous writes via optimistic locking. The observer runs a `_sweep_stale_claims()` sweeper to clean up abandoned task claims (claims older than `visibility_timeout`).
+
+All other errors propagate immediately.
 
 ## Artifact naming
 
@@ -186,14 +200,53 @@ artifacts/{feature_id}/review/{task}.r1.md
 artifacts/{feature_id}/state.json
 ```
 
-## Environment
+## Backends
+
+AgentHarness supports two pluggable storage backends: **Azure** (default) and **GitHub**.
+
+### Azure backend (default)
+
+**Uses:** Azure Blob Storage for artifacts, Azure Storage Queues for work queue, blob leases for atomic state updates.
+
+**Environment variables:**
+```bash
+STORAGE_BACKEND=azure  # or omit (default)
+AZURE_STORAGE_CONNECTION_STRING=...  # required
+```
+
+### GitHub backend
+
+**Uses:** GitHub Issues (with labels) as work queue, git branches as artifact store, issue state (labels + JSON body) as state manager.
+
+**Environment variables:**
+```bash
+STORAGE_BACKEND=github
+GITHUB_TOKEN=ghp_...  # required
+GITHUB_OWNER=...      # optional (auto-detected from git remote)
+GITHUB_RUNS_REPO=...  # optional (auto-detected from git remote)
+```
+
+### Configuration
 
 ```bash
 cp .env.example .env
-# fill in AZURE_STORAGE_CONNECTION_STRING
+# Set STORAGE_BACKEND to 'azure' or 'github'
+# Set backend-specific variables above
 ```
 
 `.env` is loaded automatically via `python-dotenv` in `config.py`. Never commit `.env` — it's in `.gitignore`.
+
+## Pluggable backend system
+
+The backend system is defined in `storage_protocol.py` and factored in `storage.py`:
+
+- **`storage_protocol.py`** — Protocol definitions: `ArtifactStorage`, `TaskQueue`, `StateBackend`, `RawMessage`
+- **`storage.py`** — Factory functions that return backend implementations based on `config.storage_backend`
+  - `create_artifact_store(config, feature_id)` → Azure or GitHub artifact store
+  - `create_task_queue(config, queue_name)` → Azure or GitHub task queue
+  - `create_state_manager(config)` → Azure or GitHub state manager
+
+Components that use storage (`observer.py`, `run_task.py`, `brainstorm.py`, `dispatcher.py`, `tui.py`) import the factory and use it to get the appropriate backend implementation at runtime.
 
 ## Running tests
 
@@ -209,4 +262,6 @@ Tests use mocked Azure clients — no real storage needed.
 1. Create `.agents/{name}.md` with YAML frontmatter + system prompt
 2. Add queue entry to `.pipeline/config.json`
 3. Add transition logic to `dispatcher.py` (`_LINEAR_TRANSITIONS` or custom handler)
-4. Create the Azure queue: `/azure-storage` → "create queue {name}-queue"
+4. Backend setup:
+   - **Azure:** Use `/azure-storage` skill → "create queue {name}-queue"
+   - **GitHub:** No manual setup needed (issues are created dynamically)

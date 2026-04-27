@@ -20,20 +20,37 @@ Developer ×N  →  impl/{task}.r{N}.md
 Reviewer  →  review/{task}.r{N}.md  →  PASS or REVISION_NEEDED
 ```
 
-Each agent is a Claude Code CLI subprocess. All state lives in Azure Blob Storage. Queues drive execution — no central scheduler.
+Each agent is a Claude Code CLI subprocess. State lives in a pluggable backend (Azure Blob Storage or GitHub). Queues drive execution — no central scheduler.
 
 ## Quickstart
 
+### Setup
+
 ```bash
 pip install -e ".[dev]"
-cp .env.example .env   # add AZURE_STORAGE_CONNECTION_STRING
+cp .env.example .env
+# Choose your backend: set STORAGE_BACKEND to 'azure' (default) or 'github'
+# See Environment section below for required variables
+```
+
+**Azure backend:**
+```bash
+STORAGE_BACKEND=azure
+AZURE_STORAGE_CONNECTION_STRING=...
 agentharness init      # scaffold Azure queues and containers
 ```
 
-Run the pipeline:
+**GitHub backend:**
+```bash
+STORAGE_BACKEND=github
+GITHUB_TOKEN=ghp_...
+# GITHUB_OWNER and GITHUB_RUNS_REPO auto-detected from git remote, or set explicitly
+```
+
+### Run the pipeline
 
 ```bash
-agentharness brainstorm                         # interactive brief → uploads to Azure
+agentharness brainstorm                         # interactive brief → uploads to backend
 agentharness submit brief.md                    # upload existing brief, get feature ID
 agentharness implement feat-20260425-abc123     # enqueue first task, start pipeline
 agentharness observe                            # start observer (primary execution mode)
@@ -171,21 +188,66 @@ artifacts/{feature_id}/state.json
 
 ## Concurrency safety
 
-`StateManager.update()` acquires an Azure blob lease (30s) before read-modify-write. Lease contention retries with exponential backoff. All other errors propagate immediately.
+**Azure backend:** `StateManager.update()` acquires an Azure blob lease (30s) before read-modify-write. Lease contention retries with exponential backoff.
+
+**GitHub backend:** Issue state updates are atomic via GitHub's API. The observer runs a stale claim sweeper to clean up abandoned task claims.
+
+All other errors propagate immediately.
 
 ## Claude Code skills
 
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
-| `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to Azure |
+| `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to configured backend |
 | `/implement {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
-| `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter |
+| `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter (Azure backend only) |
+
+## Backends
+
+AgentHarness supports two pluggable storage backends:
+
+### Azure backend (default)
+
+**Uses:** Azure Blob Storage for artifacts, Azure Storage Queues for work queue, blob leases for atomic state updates.
+
+**Requirements:**
+- Azure Storage account
+- Connection string in `AZURE_STORAGE_CONNECTION_STRING`
+
+**Environment:**
+```bash
+STORAGE_BACKEND=azure
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
+```
+
+**Setup:**
+```bash
+agentharness init      # Creates containers and queues
+```
+
+### GitHub backend
+
+**Uses:** GitHub Issues (with labels) as work queue, git branches as artifact store, issue state (labels + JSON body) as state manager.
+
+**Requirements:**
+- GitHub token with repo read/write and workflow access
+- Repo with CI/CD capable of running `agentharness observe`
+
+**Environment:**
+```bash
+STORAGE_BACKEND=github
+GITHUB_TOKEN=ghp_...
+GITHUB_OWNER=owner          # optional (auto-detected from git remote)
+GITHUB_RUNS_REPO=repo       # optional (auto-detected from git remote)
+```
+
+**No manual setup needed** — issues and branches are created dynamically.
 
 ## Environment
 
 ```bash
 cp .env.example .env
-# fill in AZURE_STORAGE_CONNECTION_STRING
+# Configure storage backend and set backend-specific variables (see above)
 ```
 
 `.env` is loaded automatically via `python-dotenv`. Never commit it — it's in `.gitignore`.
@@ -204,4 +266,6 @@ Tests use mocked Azure clients — no real storage needed.
 1. Create `.agents/{name}.md` with YAML frontmatter + system prompt
 2. Add queue entry to `.pipeline/config.json`
 3. Add transition logic to `dispatcher.py` (`_LINEAR_TRANSITIONS` or custom handler)
-4. Create the Azure queue: `/azure-storage` → "create queue {name}-queue"
+4. Backend setup:
+   - **Azure:** Use `/azure-storage` skill → "create queue {name}-queue"
+   - **GitHub:** No manual setup needed (issues are created dynamically)
