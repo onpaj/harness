@@ -163,6 +163,7 @@ def _make_queues() -> dict:
 
 def _make_config() -> Config:
     cfg = MagicMock(spec=Config)
+    cfg.storage_backend = "azure"
     return cfg
 
 
