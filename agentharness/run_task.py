@@ -15,8 +15,6 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from azure.storage.blob.aio import BlobServiceClient
-
 from agentharness.agent_runner import run_agent
 from agentharness.config import Config
 from agentharness.dispatcher import dispatch_after_completion, run_terminal_cleanup
@@ -29,8 +27,8 @@ from agentharness.models import (
     TokenUsage,
 )
 from agentharness.prompt_builder import artifact_label, build_prompt, load_agent_definition
-from agentharness.state_manager import StateManager
-from agentharness.storage import ArtifactStore, PipelineQueue
+from agentharness.storage import create_artifact_store, create_state_manager, create_task_queue
+from agentharness.storage_protocol import ArtifactStorage, TaskQueue
 
 log = logging.getLogger(__name__)
 
@@ -39,15 +37,14 @@ WORKER_ID = f"{socket.gethostname()}-{os.getpid()}"
 
 async def run_task(queue_name: str, task_json: str, config: Config) -> None:
     task = TaskMessage.model_validate_json(task_json)
-    conn_str = config.storage.connection_string
 
-    blob_service = BlobServiceClient.from_connection_string(conn_str)
-    store = ArtifactStore(blob_service, config.storage.container)
-    state_mgr = StateManager(blob_service, config.storage.container)
+    store = create_artifact_store(config, feature_id=task.feature_id)
+    state_mgr = create_state_manager(config)
 
-    all_queues: dict[str, PipelineQueue] = {}
-    for q_name in config.queue_names():
-        all_queues[q_name] = PipelineQueue.from_connection_string(conn_str, q_name)
+    all_queues: dict[str, TaskQueue] = {
+        q_name: create_task_queue(config, q_name)
+        for q_name in config.queue_names()
+    }
 
     try:
         agent_path = config.agent_path_for_queue(queue_name)
@@ -58,7 +55,10 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         started_state = await state_mgr.update(task.feature_id, lambda s: _mark_started(s, task))
 
         work_dir = None
-        if task.work_dir:
+        if config.storage_backend == "github" and hasattr(store, "get_work_dir"):
+            work_dir = store.get_work_dir()
+            work_dir.mkdir(parents=True, exist_ok=True)
+        elif task.work_dir:
             work_dir = Path(task.work_dir)
             work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,7 +90,6 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         for q in all_queues.values():
             await q.close()
         await store.close()
-        await blob_service.close()
 
 
 def _mark_started(state, task: TaskMessage):
@@ -118,7 +117,7 @@ def _mark_completed(state, task: TaskMessage, tokens: TokenUsage | None = None):
 _ARTIFACT_RETRY_DELAYS = [2, 5, 10]  # seconds between attempts
 
 
-async def _download_with_retry(store: ArtifactStore, blob_path: str) -> str | None:
+async def _download_with_retry(store: ArtifactStorage, blob_path: str) -> str | None:
     for attempt, delay in enumerate([0] + _ARTIFACT_RETRY_DELAYS, start=1):
         if delay:
             await asyncio.sleep(delay)
@@ -152,7 +151,7 @@ def _parse_task_sections(output: str) -> dict[str, str]:
     return sections
 
 
-async def _upload_task_contexts(store: ArtifactStore, feature_id: str, output: str) -> dict[str, str]:
+async def _upload_task_contexts(store: ArtifactStorage, feature_id: str, output: str) -> dict[str, str]:
     """Upload per-task context sections to blob storage, return {name: blob_path}."""
     sections = _parse_task_sections(output)
     paths: dict[str, str] = {}
