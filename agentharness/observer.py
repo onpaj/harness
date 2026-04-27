@@ -11,6 +11,7 @@ from pathlib import Path
 from agentharness.config import Config
 from agentharness.models import TaskMessage
 from agentharness.storage import ArtifactStore, PipelineQueue
+from agentharness.storage_protocol import RawMessage
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ async def _poll_queue(
 async def _run_subprocess(
     queue_name: str,
     task: TaskMessage,
-    raw_msg: object,
+    raw_msg: RawMessage,
     queue: PipelineQueue,
     exe: str,
     active_procs: dict[str, asyncio.Process],
@@ -118,7 +119,7 @@ async def _run_subprocess(
             await proc.stdin.drain()
             proc.stdin.close()
 
-            current_pop_receipt = await _wait_with_renewal(proc, task.task_id, raw_msg, queue)
+            final_raw = await _wait_with_renewal(proc, task.task_id, raw_msg, queue)
 
     except Exception as exc:
         log.error("Subprocess management failed for %s: %s", task.task_id, exc)
@@ -128,7 +129,7 @@ async def _run_subprocess(
 
     if proc.returncode == 0:
         try:
-            await queue._client.delete_message(raw_msg.id, pop_receipt=current_pop_receipt)
+            await queue.delete_message(final_raw)
             log.info("Task %s done — message deleted", task.task_id)
         except Exception as exc:
             log.error("Could not delete message for %s: %s", task.task_id, exc)
@@ -138,35 +139,29 @@ async def _run_subprocess(
             task.task_id, proc.returncode, log_file,
         )
         try:
-            await queue._client.delete_message(raw_msg.id, pop_receipt=current_pop_receipt)
+            await queue.delete_message(final_raw)
         except Exception as exc:
             log.warning("Could not delete failed message for %s: %s", task.task_id, exc)
 
 
-async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: object, queue: PipelineQueue) -> str:
+async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: RawMessage, queue: PipelineQueue) -> RawMessage:
     """Wait for subprocess, renewing queue message visibility every _RENEWAL_INTERVAL seconds.
 
-    Returns the latest pop_receipt (required for deletion after renewals).
+    Returns the latest RawMessage (with updated pop_receipt) for deletion.
     """
-    msg_id = raw_msg.id
-    pop_receipt = raw_msg.pop_receipt
+    current = raw_msg
 
     while True:
         try:
             await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=_RENEWAL_INTERVAL)
-            return pop_receipt  # subprocess finished — return current receipt
+            return current
         except asyncio.TimeoutError:
             try:
-                result = await queue._client.update_message(
-                    msg_id,
-                    pop_receipt=pop_receipt,
-                    visibility_timeout=_VISIBILITY_TIMEOUT,
-                )
-                pop_receipt = result.pop_receipt
+                current = await queue.extend_visibility(current, _VISIBILITY_TIMEOUT)
                 log.debug("Renewed visibility for %s", task_id)
             except Exception as exc:
                 err_str = str(exc)
                 if "MessageNotFound" in err_str:
                     log.debug("Message for %s already deleted — task completed before renewal", task_id)
-                    return pop_receipt
+                    return current
                 log.warning("Could not renew visibility for %s: %s — message may be re-queued", task_id, exc)

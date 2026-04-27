@@ -42,6 +42,33 @@ class StorageConfig(BaseModel):
         return value
 
 
+class GitHubConfig(BaseModel):
+    token_env: str = "GITHUB_TOKEN"
+    owner_env: str = "GITHUB_OWNER"
+    runs_repo_env: str = "GITHUB_RUNS_REPO"
+
+    @property
+    def token(self) -> str:
+        value = os.environ.get(self.token_env)
+        if not value:
+            raise RuntimeError(f"Environment variable {self.token_env!r} is not set.")
+        return value
+
+    @property
+    def owner(self) -> str:
+        value = os.environ.get(self.owner_env)
+        if not value:
+            raise RuntimeError(f"Environment variable {self.owner_env!r} is not set.")
+        return value
+
+    @property
+    def runs_repo(self) -> str:
+        value = os.environ.get(self.runs_repo_env)
+        if not value:
+            raise RuntimeError(f"Environment variable {self.runs_repo_env!r} is not set.")
+        return value
+
+
 class DefaultsConfig(BaseModel):
     dead_letter_threshold: int = 3
     max_revisions: int = 3
@@ -50,6 +77,8 @@ class DefaultsConfig(BaseModel):
 
 class Config(BaseModel):
     storage: StorageConfig = StorageConfig()
+    github: GitHubConfig = GitHubConfig()
+    storage_backend: str = "azure"  # "azure" | "github"
     queues: dict[str, QueueConfig] = {}
     defaults: DefaultsConfig = DefaultsConfig()
     config_dir: Path = Path(".")
