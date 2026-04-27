@@ -67,9 +67,14 @@ class GitHubArtifactStore:
     # ------------------------------------------------------------------
 
     async def _ensure_clone(self) -> None:
-        """Clone the repo if the local clone root does not exist."""
-        if self._clone_root.exists():
+        """Clone the repo if a valid git clone does not exist at clone_root."""
+        if (self._clone_root / ".git").exists():
             return
+        if self._clone_root.exists():
+            # Directory exists but has no .git — wipe and re-clone so git
+            # operations don't fall back to the parent repo's .git.
+            import shutil
+            shutil.rmtree(self._clone_root)
         self._clone_root.parent.mkdir(parents=True, exist_ok=True)
         token = os.environ.get("GITHUB_TOKEN", "")
         clone_url = f"https://{token}@github.com/{self._owner}/{self._repo}.git"
@@ -166,4 +171,4 @@ class GitHubArtifactStore:
 
     def get_work_dir(self) -> Path:
         """Return the local directory where developer agents write code."""
-        return self._clone_root / "implementation"
+        return self._clone_root / "artifacts" / self._feature_id

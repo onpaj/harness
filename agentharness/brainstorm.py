@@ -183,8 +183,9 @@ async def _upload_brief_github(feature_id: str, brief_content: str, config: Conf
 
     client = GitHubClient.from_config(config)
     try:
-        # 1. Create feature branch from main
-        main_sha = (await client.get_ref("heads/main"))["object"]["sha"]
+        # 1. Create feature branch from the repo's default branch
+        default_branch = await client.get_default_branch()
+        main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
         await client.create_ref(f"refs/heads/{feature_id}", main_sha)
 
         # 2. Commit brief.md to the feature branch
@@ -209,7 +210,7 @@ async def _upload_brief_github(feature_id: str, brief_content: str, config: Conf
             ),
         )
         mgr = GitHubStateManager(client)
-        await mgr.create(state)
+        await mgr.create(state, brief_content)
     finally:
         await client.close()
 

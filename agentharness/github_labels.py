@@ -72,6 +72,8 @@ QUEUE_NAME_TO_LABEL: dict[str, str] = {
     "review-queue": QUEUE_REVIEWER,
 }
 
+LABEL_TO_QUEUE_NAME: dict[str, str] = {v: k for k, v in QUEUE_NAME_TO_LABEL.items()}
+
 # ---------------------------------------------------------------------------
 # Marker and claim labels
 # ---------------------------------------------------------------------------

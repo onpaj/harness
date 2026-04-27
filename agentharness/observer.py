@@ -20,6 +20,13 @@ _VISIBILITY_TIMEOUT = 150   # seconds of visibility granted per renewal
 
 _STALE_CLAIM_TIMEOUT = 150  # seconds before a claimed task is reclaimed
 _SWEEP_INTERVAL = 60        # seconds between sweeps
+_STATE_CACHE_INTERVAL = 30  # seconds between local state cache writes (GitHub backend)
+STATE_CACHE_PATH = Path("logs/state-cache.json")
+
+# GitHub search API allows 30 req/min. With N queues staggered evenly across
+# _GITHUB_POLL_INTERVAL, peak rate = N / _GITHUB_POLL_INTERVAL req/s.
+# At 15s and 6 queues: 6/15 = 0.4 req/s = 24 req/min — safely under the limit.
+_GITHUB_POLL_INTERVAL = 15.0
 
 
 async def observe(config: Config) -> None:
@@ -34,6 +41,8 @@ async def observe(config: Config) -> None:
     exe = str(Path(sys.executable).parent / "agentharness")
 
     active_procs: dict[str, asyncio.Process] = {}
+
+    is_github = config.storage_backend == "github"
 
     loop = asyncio.get_running_loop()
 
@@ -52,9 +61,18 @@ async def observe(config: Config) -> None:
     loop.add_signal_handler(signal.SIGINT, _shutdown)
 
     try:
+        if is_github:
+            poll_tasks = [_poll_all_queues_github(queues, config, exe, active_procs)]
+        else:
+            poll_interval = config.defaults.poll_interval_seconds
+            poll_tasks = [
+                _poll_queue(q_name, q, config, exe, active_procs, poll_interval)
+                for q_name, q in queues.items()
+            ]
         await asyncio.gather(
-            *[_poll_queue(q_name, q, config, exe, active_procs) for q_name, q in queues.items()],
+            *poll_tasks,
             _sweep_stale_claims(config),
+            _sync_state_cache(config),
         )
     except asyncio.CancelledError:
         pass
@@ -69,12 +87,13 @@ async def _poll_queue(
     config: Config,
     exe: str,
     active_procs: dict[str, asyncio.Process],
+    poll_interval: float,
 ) -> None:
-    log.info("Polling %s", queue_name)
+    log.info("Polling %s (interval=%.1fs)", queue_name, poll_interval)
     while True:
         result = await queue.receive_task(visibility_timeout=_VISIBILITY_TIMEOUT)
         if result is None:
-            await asyncio.sleep(config.defaults.poll_interval_seconds)
+            await asyncio.sleep(poll_interval)
             continue
         task, raw_msg = result
         log.info("Received task %s from %s", task.task_id, queue_name)
@@ -82,6 +101,62 @@ async def _poll_queue(
             _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs),
             name=f"task-{task.task_id}",
         )
+
+
+async def _poll_all_queues_github(
+    queues: dict[str, TaskQueue],
+    config: Config,
+    exe: str,
+    active_procs: dict[str, asyncio.Process],
+) -> None:
+    """Single-search poller for GitHub backend: one API call per cycle for all queues."""
+    from agentharness.github_client import GitHubClient
+    from agentharness.github_labels import LABEL_TO_QUEUE_NAME, STATE_QUEUED
+    from agentharness.github_queue import GitHubTaskQueue
+
+    client = GitHubClient.from_config(config)
+    log.info("GitHub single-search poller started (interval=%.1fs)", _GITHUB_POLL_INTERVAL)
+    try:
+        while True:
+            try:
+                issues = await client.search_issues(
+                    f"is:open label:{STATE_QUEUED} repo:{client.owner}/{client.repo}",
+                    sort="created",
+                    order="asc",
+                )
+            except Exception as exc:
+                log.warning("GitHub poll search failed: %s", exc)
+                await asyncio.sleep(_GITHUB_POLL_INTERVAL)
+                continue
+
+            # Group by queue label; pick oldest (first) per queue
+            dispatched: set[str] = set()
+            for issue in issues:
+                label_names = {lbl["name"] for lbl in issue.get("labels", [])}
+                queue_name = next(
+                    (LABEL_TO_QUEUE_NAME[lbl] for lbl in label_names if lbl in LABEL_TO_QUEUE_NAME),
+                    None,
+                )
+                if not queue_name or queue_name in dispatched or queue_name not in queues:
+                    continue
+                dispatched.add(queue_name)
+                queue = queues[queue_name]
+                if not isinstance(queue, GitHubTaskQueue):
+                    continue
+                try:
+                    task, raw_msg = await queue.claim_issue(issue)
+                except Exception as exc:
+                    log.warning("Failed to claim issue #%s for %s: %s", issue["number"], queue_name, exc)
+                    continue
+                log.info("Claimed task %s from %s", task.task_id, queue_name)
+                asyncio.create_task(
+                    _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs),
+                    name=f"task-{task.task_id}",
+                )
+
+            await asyncio.sleep(_GITHUB_POLL_INTERVAL)
+    finally:
+        await client.close()
 
 
 async def _run_subprocess(
@@ -163,12 +238,12 @@ async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: RawMe
 
 
 async def _sweep_stale_claims(config: Config) -> None:
-    """Periodically reclaim in-progress issues whose heartbeat has gone stale. GitHub backend only."""
+    """Periodically reclaim in-progress issues whose updated_at has gone stale. GitHub backend only."""
     if config.storage_backend != "github":
         return
     from datetime import UTC, datetime
-    from agentharness.github_client import GitHubClient, GitHubApiError
-    from agentharness.github_labels import STATE_IN_PROGRESS, STATE_QUEUED, is_claimed_by_label
+    from agentharness.github_client import GitHubClient
+    from agentharness.github_labels import STATE_IN_PROGRESS
 
     client = GitHubClient.from_config(config)
     try:
@@ -180,8 +255,12 @@ async def _sweep_stale_claims(config: Config) -> None:
                 )
                 now = datetime.now(UTC)
                 for issue in issues:
-                    ts = _parse_heartbeat_timestamp(issue)
-                    if ts and (now - ts).total_seconds() > _STALE_CLAIM_TIMEOUT:
+                    updated_at_str = issue.get("updated_at") or ""
+                    try:
+                        updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    if (now - updated_at).total_seconds() > _STALE_CLAIM_TIMEOUT:
                         await _reclaim_issue(client, issue)
             except Exception as exc:
                 log.warning("Sweeper error: %s", exc)
@@ -189,21 +268,30 @@ async def _sweep_stale_claims(config: Config) -> None:
         await client.close()
 
 
-def _parse_heartbeat_timestamp(issue: dict) -> "datetime | None":
-    """Extract the most recent heartbeat timestamp from an issue's body or latest comment.
+async def _sync_state_cache(config: Config) -> None:
+    """Periodically write all feature states to a local JSON cache. GitHub backend only."""
+    if config.storage_backend != "github":
+        return
+    import json
+    from agentharness.github_state import GitHubStateManager
 
-    Heartbeat comments contain: '⏱ Heartbeat: {ISO_TIMESTAMP}'
-    """
-    import re
-    from datetime import UTC, datetime
-    text = issue.get("body", "") or ""
-    match = re.search(r"⏱ Heartbeat: (\S+)", text)
-    if match:
+    while True:
         try:
-            return datetime.fromisoformat(match.group(1)).replace(tzinfo=UTC)
-        except ValueError:
-            pass
-    return None
+            mgr = GitHubStateManager.from_config(config)
+            features = await mgr.list_features()
+            states = []
+            for feature_id, _ in features:
+                try:
+                    state = await mgr.get(feature_id)
+                    states.append(state.model_dump(mode="json"))
+                except Exception as exc:
+                    log.warning("State cache: could not load %s: %s", feature_id, exc)
+            STATE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            STATE_CACHE_PATH.write_text(json.dumps(states))
+            log.debug("State cache written: %d features", len(states))
+        except Exception as exc:
+            log.warning("State cache sync failed: %s", exc)
+        await asyncio.sleep(_STATE_CACHE_INTERVAL)
 
 
 async def _reclaim_issue(client, issue: dict) -> None:

@@ -51,14 +51,26 @@ def _extract_state_json(body: str) -> str:
     return match.group(1).strip()
 
 
-def _build_body(state: FeatureState) -> str:
-    """Build the issue body containing the serialized FeatureState JSON."""
+def _build_state_comment(state: FeatureState) -> str:
+    """Build the comment body containing the serialized FeatureState JSON."""
     json_blob = state.model_dump_json()
     return f"{_STATE_FENCE_OPEN}\n{json_blob}\n{_STATE_FENCE_CLOSE}\n"
 
 
 def _feature_label(feature_id: str) -> str:
     return f"feature:{feature_id}"
+
+
+def _feature_issue_title(feature_id: str) -> str:
+    """Format: 'feature: Humanized Name' derived from the feature_id slug."""
+    # Strip leading type prefix (feat-, fix-, epic-) to get the name part
+    for prefix in ("feat-", "fix-", "epic-"):
+        if feature_id.startswith(prefix):
+            issue_type = prefix.rstrip("-")
+            name = feature_id[len(prefix):].replace("-", " ").title()
+            return f"{issue_type}: {name}"
+    name = feature_id.replace("-", " ").title()
+    return f"feature: {name}"
 
 
 def _status_from_issue_labels(issue: dict) -> FeatureStatus | None:
@@ -114,10 +126,17 @@ class GitHubStateManager:
             raise KeyError(f"No state found for feature {feature_id!r}")
         return items[0], items[0]["number"]
 
+    async def _get_state_comment(self, issue_number: int) -> dict:
+        """Return the first comment on the issue (which holds the state JSON)."""
+        comments = await self._client.list_comments(issue_number)
+        if not comments:
+            raise ValueError(f"No state comment found on issue #{issue_number}")
+        return comments[0]
+
     async def _state_from_issue(self, issue: dict) -> FeatureState:
-        """Parse a FeatureState from an issue dict, overriding status from labels."""
-        body = issue.get("body") or ""
-        json_str = _extract_state_json(body)
+        """Parse a FeatureState from the issue's first comment, overriding status from labels."""
+        comment = await self._get_state_comment(issue["number"])
+        json_str = _extract_state_json(comment["body"])
         state = FeatureState.model_validate_json(json_str)
 
         # Labels are the authoritative source of truth for status.
@@ -131,20 +150,24 @@ class GitHubStateManager:
     # StateBackend protocol
     # ------------------------------------------------------------------
 
-    async def create(self, state: FeatureState) -> None:
-        """Create a GitHub issue representing the feature's initial state."""
+    async def create(self, state: FeatureState, brief_content: str = "") -> None:
+        """Create a GitHub issue representing the feature's initial state.
+
+        The issue body is set to the brief document so it is human-readable.
+        The serialized FeatureState JSON is stored in the first comment.
+        """
         feat_label = _feature_label(state.feature_id)
         await self._client.ensure_label(feat_label, color="0075ca")
 
         status_label = FEATURE_STATUS_TO_LABEL[state.status]
-        body = _build_body(state)
-        title = state.feature_id
+        title = _feature_issue_title(state.feature_id)
 
-        await self._client.create_issue(
+        issue = await self._client.create_issue(
             title=title,
-            body=body,
+            body=brief_content,
             labels=[FEATURE_MARKER, feat_label, status_label],
         )
+        await self._client.create_comment(issue["number"], _build_state_comment(state))
         log.debug("Created state issue for feature %s", state.feature_id)
 
     async def get(self, feature_id: str) -> FeatureState:
@@ -173,8 +196,8 @@ class GitHubStateManager:
             await self._client.add_labels(issue_number, [new_label])
             await self._client.remove_label(issue_number, old_label)
 
-        new_body = _build_body(new_state)
-        await self._client.update_issue(issue_number, body=new_body)
+        comment = await self._get_state_comment(issue_number)
+        await self._client.update_comment(comment["id"], _build_state_comment(new_state))
 
         log.debug(
             "Updated state issue for feature %s (status: %s → %s)",

@@ -440,11 +440,12 @@ async def _open_feature_pr(state: FeatureState, config: Config) -> None:
     from agentharness.github_client import GitHubClient
     client = GitHubClient.from_config(config)
     try:
+        default_branch = await client.get_default_branch()
         pr = await client.create_pull_request(
             title=f"{state.feature_id}: implementation complete",
             body=_build_pr_body(state),
             head=state.feature_id,
-            base="main",
+            base=default_branch,
         )
         log.info("Opened PR #%d for feature %s", pr["number"], state.feature_id)
     except Exception as exc:
