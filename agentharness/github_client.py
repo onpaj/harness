@@ -145,26 +145,21 @@ class GitHubClient:
             json={"body": body},
         )
 
-    async def search_issues(
-        self, query: str, sort: str = "created", order: str = "asc"
+    async def list_issues(
+        self,
+        labels: list[str] | None = None,
+        state: str = "open",
+        sort: str = "created",
+        direction: str = "asc",
+        per_page: int = 100,
     ) -> list[dict]:
-        response = await self._request(
-            "GET",
-            "/search/issues",
-            params={"q": query, "sort": sort, "order": order},
+        params: dict = {"state": state, "sort": sort, "direction": direction, "per_page": per_page}
+        if labels:
+            params["labels"] = ",".join(labels)
+        result: list[dict] = await self._request(  # type: ignore[assignment]
+            "GET", self._repo_url("/issues"), params=params
         )
-        return response["items"]
-
-    # ------------------------------------------------------------------
-    # Sub-issues (GitHub's native parent/child)
-    # ------------------------------------------------------------------
-
-    async def add_sub_issue(self, parent_number: int, child_number: int) -> None:
-        await self._request(
-            "POST",
-            self._repo_url(f"/issues/{parent_number}/sub_issues"),
-            json={"sub_issue_id": child_number},
-        )
+        return result
 
     # ------------------------------------------------------------------
     # Refs / branches
@@ -225,16 +220,31 @@ class GitHubClient:
 
     async def ensure_label(self, name: str, color: str = "ededed") -> None:
         """Create label if it does not exist; no-op if it already does."""
-        try:
-            await self._request("GET", self._repo_url(f"/labels/{quote(name, safe='')}"))
-        except GitHubApiError as exc:
-            if exc.status_code != 404:
-                raise
-            await self._request(
-                "POST",
+        await self.ensure_labels([name], color=color)
+
+    async def ensure_labels(self, names: list[str], color: str = "ededed") -> None:
+        """Create any labels in *names* that do not exist — one list call total."""
+        page = 1
+        existing: set[str] = set()
+        while True:
+            batch: list[dict] = await self._request(  # type: ignore[assignment]
+                "GET",
                 self._repo_url("/labels"),
-                json={"name": name, "color": color},
+                params={"per_page": 100, "page": page},
             )
+            for label in batch:
+                existing.add(label["name"])
+            if len(batch) < 100:
+                break
+            page += 1
+
+        for name in names:
+            if name not in existing:
+                await self._request(
+                    "POST",
+                    self._repo_url("/labels"),
+                    json={"name": name, "color": color},
+                )
 
     # ------------------------------------------------------------------
     # Pull requests

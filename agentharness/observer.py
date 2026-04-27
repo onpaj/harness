@@ -24,19 +24,22 @@ _SWEEP_INTERVAL = 60        # seconds between sweeps
 _STATE_CACHE_INTERVAL = 30  # seconds between local state cache writes (GitHub backend)
 STATE_CACHE_PATH = Path("logs/state-cache.json")
 
-# GitHub search API allows 30 req/min. With N queues staggered evenly across
-# _GITHUB_POLL_INTERVAL, peak rate = N / _GITHUB_POLL_INTERVAL req/s.
-# At 15s and 6 queues: 6/15 = 0.4 req/s = 24 req/min — safely under the limit.
-_GITHUB_POLL_INTERVAL = 15.0
-
-
 async def observe(config: Config) -> None:
     """Poll all queues and spawn a subprocess per message."""
-    queues: dict[str, TaskQueue] = {}
-    for q_name in config.queue_names():
-        q = create_task_queue(config, q_name)
-        await q.ensure_exists()
-        queues[q_name] = q
+    queue_names = config.queue_names()
+
+    if config.storage_backend == "github":
+        from agentharness.github_queue import GitHubTaskQueue
+        await GitHubTaskQueue.ensure_all_queues(config, queue_names)
+        queues: dict[str, TaskQueue] = {
+            q_name: create_task_queue(config, q_name) for q_name in queue_names
+        }
+    else:
+        queues = {}
+        for q_name in queue_names:
+            q = create_task_queue(config, q_name)
+            await q.ensure_exists()
+            queues[q_name] = q
 
     log.info("Observer started — watching %d queues: %s", len(queues), ", ".join(queues))
     exe = str(Path(sys.executable).parent / "agentharness")
@@ -111,26 +114,40 @@ async def _unified_github_poll(
     import time
 
     from agentharness.github_client import GitHubClient
-    from agentharness.github_labels import FEATURE_MARKER, LABEL_TO_QUEUE_NAME, STATE_IN_PROGRESS, STATE_QUEUED
+    from agentharness.github_labels import FEATURE_MARKER, IMPLEMENT_LABEL, LABEL_TO_QUEUE_NAME, STATE_IN_PROGRESS, STATE_QUEUED
     from agentharness.github_queue import GitHubTaskQueue
-    from agentharness.github_state import parse_state_from_issue
-
+    poll_interval = config.defaults.github_poll_interval_seconds
     client = GitHubClient.from_config(config)
     last_sweep = 0.0
     last_cache = 0.0
-    log.info("GitHub unified poller started (interval=%.1fs)", _GITHUB_POLL_INTERVAL)
+    bootstrapping: set[int] = set()
+    log.info("GitHub unified poller started (interval=%.1fs)", poll_interval)
     try:
         while True:
             now = time.monotonic()
+
+            # 0. Bootstrap issues labeled 'implement'
             try:
-                issues = await client.search_issues(
-                    f"is:open label:{FEATURE_MARKER} repo:{client.owner}/{client.repo}",
-                    sort="created",
-                    order="asc",
+                implement_issues = await client.list_issues(labels=[IMPLEMENT_LABEL])
+            except Exception as exc:
+                log.warning("GitHub implement-label search failed: %s", exc)
+                implement_issues = []
+
+            for issue in implement_issues:
+                issue_number: int = issue["number"]
+                if issue_number in bootstrapping:
+                    continue
+                bootstrapping.add(issue_number)
+                asyncio.create_task(
+                    _handle_implement_issue(client, issue, config, bootstrapping),
+                    name=f"bootstrap-{issue_number}",
                 )
+
+            try:
+                issues = await client.list_issues(labels=[FEATURE_MARKER])
             except Exception as exc:
                 log.warning("GitHub unified poll failed: %s", exc)
-                await asyncio.sleep(_GITHUB_POLL_INTERVAL)
+                await asyncio.sleep(poll_interval)
                 continue
 
             # 1. Dispatch queued tasks
@@ -179,7 +196,7 @@ async def _unified_github_poll(
             # 3. Write state cache
             if now - last_cache >= _STATE_CACHE_INTERVAL:
                 last_cache = now
-                states = [s.model_dump(mode="json") for issue in issues if (s := parse_state_from_issue(issue))]
+                states = await _collect_states(client, issues)
                 try:
                     STATE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
                     STATE_CACHE_PATH.write_text(json.dumps(states))
@@ -187,9 +204,117 @@ async def _unified_github_poll(
                 except Exception as exc:
                     log.warning("State cache write failed: %s", exc)
 
-            await asyncio.sleep(_GITHUB_POLL_INTERVAL)
+            await asyncio.sleep(poll_interval)
     finally:
         await client.close()
+
+
+async def _handle_implement_issue(
+    client: "GitHubClient",
+    issue: dict,
+    config: Config,
+    bootstrapping: set[int],
+) -> None:
+    """Bootstrap the pipeline from a GitHub issue labeled 'implement'.
+
+    Saves the issue body as brief.md, creates the feature state, and enqueues
+    the analyst task. The original issue is closed with a reference comment.
+    """
+    import base64
+    import re
+    from datetime import UTC, datetime
+
+    from agentharness.github_labels import IMPLEMENT_LABEL
+    from agentharness.github_state import GitHubStateManager
+    from agentharness.models import FeatureState, FeatureStatus, PipelineConfig, TaskMessage
+    from agentharness.storage import artifact_path, create_task_queue, phase_artifact_path
+
+    number: int = issue["number"]
+    title: str = issue.get("title") or "untitled"
+    body: str = issue.get("body") or ""
+
+    try:
+        # Remove 'implement' label first to prevent double-processing
+        try:
+            await client.remove_label(number, IMPLEMENT_LABEL)
+        except Exception as exc:
+            log.debug("Issue #%d implement label already removed or missing: %s", number, exc)
+            return
+
+        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
+        feature_id = f"feat-{slug}"
+        log.info("Bootstrapping feature %s from issue #%d", feature_id, number)
+
+        # Create feature branch
+        default_branch = await client.get_default_branch()
+        main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
+        await client.create_ref(f"refs/heads/{feature_id}", main_sha)
+
+        # Commit issue body as brief.md
+        brief_blob_path = f"artifacts/{feature_id}/brief.md"
+        await client.put_content(
+            path=brief_blob_path,
+            message=f"feat: add brief for {feature_id}",
+            content=base64.b64encode(body.encode()).decode(),
+            sha=None,
+            branch=feature_id,
+        )
+
+        # Create initial feature state (persisted as a tracking issue)
+        now = datetime.now(UTC)
+        state = FeatureState(
+            feature_id=feature_id,
+            status=FeatureStatus.analyzing,
+            created_at=now,
+            updated_at=now,
+            config=PipelineConfig(max_revisions=config.defaults.max_revisions),
+        )
+        await GitHubStateManager(client).create(state, body)
+
+        # Enqueue analyst task
+        queue = create_task_queue(config, "analyst-queue")
+        task = TaskMessage(
+            feature_id=feature_id,
+            task_id=f"{feature_id}-analyst",
+            input_artifacts=[artifact_path(feature_id, "brief.md")],
+            output_artifact=phase_artifact_path(feature_id, "spec", 1),
+            agent_role="analyst",
+        )
+        await queue.send_task(task)
+        await queue.close()
+
+        await client.create_comment(
+            number,
+            f"Pipeline started — feature `{feature_id}` is now analyzing.",
+        )
+        await client.update_issue(number, state="closed")
+        log.info("Feature %s bootstrapped and analyst enqueued", feature_id)
+
+    except Exception as exc:
+        log.error("Failed to bootstrap feature from issue #%d: %s", number, exc, exc_info=True)
+        try:
+            await client.create_comment(number, f"⚠️ Failed to start pipeline: {exc}")
+        except Exception:
+            pass
+    finally:
+        bootstrapping.discard(number)
+
+
+async def _collect_states(client: "GitHubClient", issues: list[dict]) -> list[dict]:
+    """Parse FeatureState from each issue, falling back to comment body for legacy issues."""
+    from agentharness.github_state import GitHubStateManager, parse_state_from_issue
+
+    results: list[dict] = []
+    for issue in issues:
+        state = parse_state_from_issue(issue)
+        if state is None:
+            try:
+                mgr = GitHubStateManager(client)
+                state = await mgr._state_from_issue(issue)
+            except Exception:
+                continue
+        results.append(state.model_dump(mode="json"))
+    return results
 
 
 async def _run_subprocess(

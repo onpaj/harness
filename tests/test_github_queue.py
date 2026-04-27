@@ -56,6 +56,7 @@ def _make_client() -> MagicMock:
         "update_comment",
         "search_issues",
         "ensure_label",
+        "ensure_labels",
         "close",
     ):
         setattr(client, method, AsyncMock())
@@ -335,13 +336,14 @@ async def test_get_depth_returns_zero_when_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_exists_calls_ensure_label_for_all_required_labels() -> None:
+async def test_ensure_exists_calls_ensure_labels_with_all_required_labels() -> None:
     client = _make_client()
     queue = _make_queue(client)
 
     await queue.ensure_exists()
 
-    called_labels = {call[0][0] for call in client.ensure_label.call_args_list}
+    client.ensure_labels.assert_called_once()
+    called_labels = set(client.ensure_labels.call_args[0][0])
     expected = {
         _QUEUE_LABEL,
         STATE_QUEUED,

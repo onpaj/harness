@@ -97,6 +97,7 @@ class DefaultsConfig(BaseModel):
     dead_letter_threshold: int = 3
     max_revisions: int = 3
     poll_interval_seconds: float = 1.0
+    github_poll_interval_seconds: float = 60.0
 
 
 class Config(BaseModel):

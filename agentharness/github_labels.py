@@ -79,6 +79,7 @@ LABEL_TO_QUEUE_NAME: dict[str, str] = {v: k for k, v in QUEUE_NAME_TO_LABEL.item
 # ---------------------------------------------------------------------------
 
 FEATURE_MARKER = "agentharness-feature"
+IMPLEMENT_LABEL = "implement"
 
 CLAIMED_BY_PREFIX = "claimed-by:"
 

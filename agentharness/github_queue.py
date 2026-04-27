@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from agentharness.github_labels import (
     CLAIMED_BY_PREFIX,
     FEATURE_MARKER,
+    IMPLEMENT_LABEL,
     QUEUE_NAME_TO_LABEL,
     STATE_BLOCKED,
     STATE_COMPLETED,
@@ -84,6 +85,27 @@ class GitHubTaskQueue:
             worker_id=_default_worker_id(),
         )
 
+    @classmethod
+    async def ensure_all_queues(cls, config: Config, queue_names: list[str]) -> None:
+        """Ensure all labels for every queue in one GitHub API list call."""
+        from agentharness.github_client import GitHubClient
+
+        client = GitHubClient.from_config(config)
+        queue_labels = [
+            QUEUE_NAME_TO_LABEL.get(q, f"queue:{q}") for q in queue_names
+        ]
+        all_labels = queue_labels + [
+            STATE_QUEUED,
+            STATE_IN_PROGRESS,
+            STATE_COMPLETED,
+            STATE_DEAD_LETTER,
+            STATE_BLOCKED,
+            FEATURE_MARKER,
+            IMPLEMENT_LABEL,
+        ]
+        await client.ensure_labels(all_labels)
+        await client.close()
+
     # ------------------------------------------------------------------
     # Send
     # ------------------------------------------------------------------
@@ -94,19 +116,7 @@ class GitHubTaskQueue:
         labels = [self._queue_label, state_label, FEATURE_MARKER]
         title = f"[{self._queue_name}] {task.task_id}"
         body = _build_issue_body(task)
-        issue = await self._client.create_issue(title=title, body=body, labels=labels)
-        await self._link_to_feature(issue["number"], task.feature_id)
-
-    async def _link_to_feature(self, issue_number: int, feature_id: str) -> None:
-        """Add the task issue as a sub-issue of the parent feature issue."""
-        try:
-            results = await self._client.search_issues(
-                f"label:feature:{feature_id} repo:{self._client.owner}/{self._client.repo}"
-            )
-            if results:
-                await self._client.add_sub_issue(results[0]["number"], issue_number)
-        except Exception:
-            pass  # sub-issue linking is best-effort
+        await self._client.create_issue(title=title, body=body, labels=labels)
 
     # ------------------------------------------------------------------
     # Receive
@@ -119,11 +129,7 @@ class GitHubTaskQueue:
 
         Returns None if the queue has no available tasks.
         """
-        query = (
-            f"is:open label:{self._queue_label} label:{STATE_QUEUED} "
-            f"repo:{self._client.owner}/{self._client.repo}"
-        )
-        issues = await self._client.search_issues(query, sort="created", order="asc")
+        issues = await self._client.list_issues(labels=[self._queue_label, STATE_QUEUED])
         if not issues:
             return None
 
@@ -227,11 +233,7 @@ class GitHubTaskQueue:
 
     async def purge(self) -> None:
         """Close all open issues with the queue label."""
-        query = (
-            f"is:open label:{self._queue_label} "
-            f"repo:{self._client.owner}/{self._client.repo}"
-        )
-        issues = await self._client.search_issues(query)
+        issues = await self._client.list_issues(labels=[self._queue_label])
         for issue in issues:
             await self._client.update_issue(issue["number"], state="closed")
 
@@ -250,8 +252,7 @@ class GitHubTaskQueue:
             STATE_BLOCKED,
             FEATURE_MARKER,
         ]
-        for label in labels_needed:
-            await self._client.ensure_label(label)
+        await self._client.ensure_labels(labels_needed)
 
     # ------------------------------------------------------------------
     # Depth
@@ -259,11 +260,7 @@ class GitHubTaskQueue:
 
     async def get_depth(self) -> int:
         """Return the number of open queued issues for this queue."""
-        query = (
-            f"is:open label:{self._queue_label} label:{STATE_QUEUED} "
-            f"repo:{self._client.owner}/{self._client.repo}"
-        )
-        issues = await self._client.search_issues(query)
+        issues = await self._client.list_issues(labels=[self._queue_label, STATE_QUEUED])
         return len(issues)
 
     # ------------------------------------------------------------------

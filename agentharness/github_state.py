@@ -136,11 +136,7 @@ class GitHubStateManager:
 
         Raises ``KeyError`` if no issue is found.
         """
-        query = (
-            f"label:{_feature_label(feature_id)} "
-            f"repo:{self._client.owner}/{self._client.repo}"
-        )
-        items = await self._client.search_issues(query)
+        items = await self._client.list_issues(labels=[_feature_label(feature_id), FEATURE_MARKER])
         if not items:
             raise KeyError(f"No state found for feature {feature_id!r}")
         return items[0], items[0]["number"]
@@ -245,11 +241,7 @@ class GitHubStateManager:
 
         Results are sorted by issue number descending (newest first).
         """
-        query = (
-            f"label:{FEATURE_MARKER} "
-            f"repo:{self._client.owner}/{self._client.repo}"
-        )
-        items = await self._client.search_issues(query, order="desc")
+        items = await self._client.list_issues(labels=[FEATURE_MARKER], direction="desc")
 
         results: list[tuple[str, int]] = []
         for issue in items:
