@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +44,37 @@ class StorageConfig(BaseModel):
         return value
 
 
+def _parse_github_remote() -> tuple[str, str]:
+    """Parse owner and repo from `git remote get-url origin`.
+
+    Supports both HTTPS (https://github.com/owner/repo.git) and
+    SSH (git@github.com:owner/repo.git) remote URLs.
+    Raises RuntimeError if origin is not a GitHub remote or git fails.
+    """
+    try:
+        url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        raise RuntimeError(
+            "Could not detect GitHub repo: 'git remote get-url origin' failed. "
+            "Set GITHUB_OWNER and GITHUB_RUNS_REPO env vars explicitly."
+        )
+    match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+    if not match:
+        raise RuntimeError(
+            f"Remote URL {url!r} does not look like a GitHub repo. "
+            "Set GITHUB_OWNER and GITHUB_RUNS_REPO env vars explicitly."
+        )
+    return match.group(1), match.group(2)
+
+
 class GitHubConfig(BaseModel):
     token_env: str = "GITHUB_TOKEN"
-    owner_env: str = "GITHUB_OWNER"
-    runs_repo_env: str = "GITHUB_RUNS_REPO"
+    owner_env: str = "GITHUB_OWNER"      # optional — falls back to git remote
+    runs_repo_env: str = "GITHUB_RUNS_REPO"  # optional — falls back to git remote
     clone_dir: str = ".runs-cache"
 
     @property
@@ -57,17 +86,11 @@ class GitHubConfig(BaseModel):
 
     @property
     def owner(self) -> str:
-        value = os.environ.get(self.owner_env)
-        if not value:
-            raise RuntimeError(f"Environment variable {self.owner_env!r} is not set.")
-        return value
+        return os.environ.get(self.owner_env) or _parse_github_remote()[0]
 
     @property
     def runs_repo(self) -> str:
-        value = os.environ.get(self.runs_repo_env)
-        if not value:
-            raise RuntimeError(f"Environment variable {self.runs_repo_env!r} is not set.")
-        return value
+        return os.environ.get(self.runs_repo_env) or _parse_github_remote()[1]
 
 
 class DefaultsConfig(BaseModel):

@@ -2,10 +2,11 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from agentharness.config import ConfigValidationError, load_config
+from agentharness.config import ConfigValidationError, GitHubConfig, _parse_github_remote, load_config
 
 
 def write_config(tmp_path: Path, data: dict) -> Path:
@@ -149,6 +150,58 @@ class TestWorktreeConfig:
         cfg_path = write_config(tmp_path, {**base_config(), "worktree_base_branch": None})
         config = load_config(cfg_path)
         assert config.worktree_base_branch is None
+
+
+class TestParseGithubRemote:
+    def _mock_remote(self, url: str):
+        return patch("subprocess.check_output", return_value=url)
+
+    def test_https_url(self):
+        with self._mock_remote("https://github.com/acme/my-project.git"):
+            assert _parse_github_remote() == ("acme", "my-project")
+
+    def test_https_url_without_dotgit(self):
+        with self._mock_remote("https://github.com/acme/my-project"):
+            assert _parse_github_remote() == ("acme", "my-project")
+
+    def test_ssh_url(self):
+        with self._mock_remote("git@github.com:acme/my-project.git"):
+            assert _parse_github_remote() == ("acme", "my-project")
+
+    def test_non_github_remote_raises(self):
+        with self._mock_remote("https://gitlab.com/acme/my-project.git"):
+            with pytest.raises(RuntimeError, match="does not look like a GitHub repo"):
+                _parse_github_remote()
+
+    def test_git_failure_raises(self):
+        import subprocess
+        with patch("subprocess.check_output", side_effect=subprocess.CalledProcessError(128, "git")):
+            with pytest.raises(RuntimeError, match="git remote get-url origin"):
+                _parse_github_remote()
+
+
+class TestGitHubConfigAutoDetect:
+    def test_owner_falls_back_to_remote(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_OWNER", raising=False)
+        with patch("agentharness.config._parse_github_remote", return_value=("acme", "proj")):
+            cfg = GitHubConfig()
+            assert cfg.owner == "acme"
+
+    def test_runs_repo_falls_back_to_remote(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_RUNS_REPO", raising=False)
+        with patch("agentharness.config._parse_github_remote", return_value=("acme", "proj")):
+            cfg = GitHubConfig()
+            assert cfg.runs_repo == "proj"
+
+    def test_env_var_overrides_remote(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_OWNER", "override-org")
+        cfg = GitHubConfig()
+        assert cfg.owner == "override-org"
+
+    def test_runs_repo_env_var_overrides_remote(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_RUNS_REPO", "override-repo")
+        cfg = GitHubConfig()
+        assert cfg.runs_repo == "override-repo"
 
 
 class TestExistingBehaviorUnchanged:
