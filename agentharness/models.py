@@ -202,4 +202,5 @@ class AgentDefinition(BaseModel):
     visibility_timeout: int = 600
     retry_limit: int = 3
     output_parsing: str = "none"
+    output_file_glob: str | None = None
     system_prompt: str

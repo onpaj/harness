@@ -15,7 +15,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agentharness.agent_runner import run_agent
+from agentharness.agent_runner import RunResult, run_agent
 from agentharness.config import Config
 from agentharness.dispatcher import dispatch_after_completion, run_terminal_cleanup
 from agentharness.models import (
@@ -78,6 +78,9 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         prompt = build_prompt(agent_def, task, artifact_contents)
         result = await run_agent(agent_def, prompt, work_dir=work_dir, worktree_path=started_state.worktree_path)
 
+        if agent_def.output_file_glob and work_dir:
+            result = _resolve_output_file(result, agent_def.output_file_glob, work_dir)
+
         if agent_def.allowed_tools and hasattr(store, "commit_workdir_changes"):
             committed = await store.commit_workdir_changes(f"agent: developer implementation {task.task_id}")
             if committed:
@@ -121,6 +124,27 @@ def _mark_completed(state, task: TaskMessage, tokens: TokenUsage | None = None):
         .with_phase(phase, PhaseInfo(status=PhaseStatus.completed, tokens_used=phase_tokens))
         .with_event("task_completed", phase=phase, task_id=task.task_id)
     )
+
+
+def _resolve_output_file(result: RunResult, glob_pattern: str, work_dir: Path) -> RunResult:
+    """If the agent wrote a file matching glob_pattern, use that file's content as output."""
+    import glob as _glob
+    matches = sorted(
+        _glob.glob(str(work_dir / glob_pattern)),
+        key=lambda p: Path(p).stat().st_mtime,
+        reverse=True,
+    )
+    if not matches:
+        log.warning("output_file_glob %r matched no files in %s — using agent text output", glob_pattern, work_dir)
+        return result
+    plan_path = Path(matches[0])
+    try:
+        content = plan_path.read_text(encoding="utf-8")
+        log.info("Using output file %s (%d chars) as artifact", plan_path, len(content))
+        return RunResult(output=content, tokens=result.tokens)
+    except OSError as exc:
+        log.warning("Could not read output file %s: %s — using agent text output", plan_path, exc)
+        return result
 
 
 _ARTIFACT_RETRY_DELAYS = [2, 5, 10]  # seconds between attempts
