@@ -293,8 +293,6 @@ class GitHubStateManager:
         The caller is responsible for ensuring the feature branch exists and
         all commits have been pushed before calling this method.
         """
-        from agentharness.github_client import GitHubClient  # noqa: F401 — type already imported
-
         state = await self.get(feature_id)
 
         def _build_pr_body(s: FeatureState) -> str:
@@ -324,9 +322,16 @@ class GitHubStateManager:
                 head=feature_id,
                 base=default_branch,
             )
-            pr_url: str = pr.get("html_url", "")
-            log.info("Opened PR #%d for feature %s", pr["number"], feature_id)
-            return pr_url or None
+            pr_url = pr.get("html_url")
+            if not pr_url:
+                log.warning(
+                    "PR #%s created but html_url missing in response for feature %s",
+                    pr.get("number", "?"),
+                    feature_id,
+                )
+                return None
+            log.info("Opened PR #%s for feature %s: %s", pr.get("number", "?"), feature_id, pr_url)
+            return pr_url
         except Exception as exc:
             log.error("Could not open PR for %s: %s", feature_id, exc)
             return None
