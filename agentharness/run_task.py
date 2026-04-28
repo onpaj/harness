@@ -51,6 +51,28 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
                 feature_state = await state_mgr.get(task.feature_id)
         else:
             feature_state = await state_mgr.get(task.feature_id)
+
+        # Defensive guard: if a developer/review task's id was wiped out by a
+        # manual rollback, drop the message and emit an audit event rather than
+        # crash mid-execution. Phase-level messages do not have TaskEntry rows
+        # and must continue to execute (their task_id pattern is feature-{phase}-N).
+        if _is_per_task_message(task.task_id, task.feature_id):
+            current_ids = {t.task_id for t in feature_state.tasks}
+            if task.task_id not in current_ids:
+                log.warning(
+                    "Dropping orphan task %s — no matching TaskEntry in state",
+                    task.task_id,
+                )
+                await state_mgr.update(
+                    task.feature_id,
+                    lambda s: s.with_event(
+                        "dropped_orphan_task",
+                        task_id=task.task_id,
+                        details=f'task_id {task.task_id!r} no longer in state.tasks',
+                    ),
+                )
+                return
+
         branch_name = feature_state.branch_name or task.feature_id
         store = create_artifact_store(config, feature_id=branch_name)
 
@@ -248,6 +270,19 @@ async def _upload_task_contexts(store: ArtifactStorage, feature_id: str, output:
         await store.upload(blob_path, content)
         paths[name] = blob_path
     return paths
+
+
+def _is_per_task_message(task_id: str, feature_id: str) -> bool:
+    """Return True for developer/review messages keyed to a TaskEntry.
+
+    Phase-agent messages use the pattern '{feature_id}-{phase}-{N}'; per-task
+    messages use '{feature_id}-dev-{name}[-r{N}]' or '{feature_id}-review-{name}-r{N}'.
+    """
+    prefix = f"{feature_id}-"
+    if not task_id.startswith(prefix):
+        return False
+    suffix = task_id[len(prefix):]
+    return suffix.startswith("dev-") or suffix.startswith("review-")
 
 
 def configure_logging() -> None:

@@ -1,6 +1,6 @@
 .env
 .venv/
-__pycache__/
+**/__pycache__/
 *.pyc
 .pytest_cache/
 dist/
@@ -9,4 +9,10 @@ logs/**
 implementations/**
 brief.md
 .worktrees/
+artifacts/
+*.r1.md
+arch-review*.md
+design*.md
+spec*.md
+task-plan*.md
 .runs-cache/**
