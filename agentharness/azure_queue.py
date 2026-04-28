@@ -69,11 +69,14 @@ class AzureTaskQueue:
     ) -> None:
         dl_queue = QueueClient.from_connection_string(self._connection_string, dead_letter_queue_name)
         try:
-            await dl_queue.create_queue()
-        except Exception:
-            pass
-        await dl_queue.send_message(raw.content)
-        await self.delete_message(raw)
+            try:
+                await dl_queue.create_queue()
+            except Exception:
+                pass
+            await dl_queue.send_message(raw.content)
+            await self.delete_message(raw)
+        finally:
+            await dl_queue.close()
 
     async def purge(self) -> None:
         await self._client.clear_messages()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Callable
 
@@ -124,8 +125,10 @@ class AzureStateManager:
             try:
                 state = await self.get(feature_id)
                 states.append(state)
-            except Exception:
-                log.debug("Skipping unreadable state blob: %s", blob.name)
+            except (ValueError, KeyError, json.JSONDecodeError) as exc:
+                log.warning("Unreadable state blob %s: %s", blob.name, exc)
+            except Exception as exc:
+                log.error("Unexpected error reading state blob %s: %s", blob.name, exc)
         return states
 
     async def open_review(self, feature_id: str) -> str | None:
