@@ -103,3 +103,49 @@ class TestLegacyDeserialization:
         )
         state = FeatureState.model_validate_json(json_str)
         assert state.worktree_path == "/repo/.worktrees/feat-wt"
+
+
+class TestWithTasksCleared:
+    def _state_with_tasks(self) -> FeatureState:
+        from agentharness.models import TaskEntry, TaskStatus
+        return FeatureState(feature_id="feat-test").with_tasks_added([
+            TaskEntry(task_id="feat-test-dev-a", phase="developing", status=TaskStatus.completed),
+            TaskEntry(task_id="feat-test-dev-b", phase="developing", status=TaskStatus.queued),
+        ])
+
+    def test_returns_state_with_empty_tasks(self):
+        state = self._state_with_tasks()
+        cleared = state.with_tasks_cleared()
+        assert cleared.tasks == []
+
+    def test_original_instance_is_unchanged(self):
+        state = self._state_with_tasks()
+        state.with_tasks_cleared()
+        assert len(state.tasks) == 2
+
+    def test_other_fields_preserved(self):
+        state = FeatureState(
+            feature_id="feat-abc", status=FeatureStatus.developing
+        ).with_tasks_added([
+            __import__("agentharness.models", fromlist=["TaskEntry"]).TaskEntry(
+                task_id="t1", phase="developing"
+            )
+        ])
+        cleared = state.with_tasks_cleared()
+        assert cleared.feature_id == "feat-abc"
+        assert cleared.status == FeatureStatus.developing
+        assert cleared.tasks == []
+
+    def test_updated_at_changes(self):
+        import time
+        state = self._state_with_tasks()
+        original_updated = state.updated_at
+        time.sleep(0.001)
+        cleared = state.with_tasks_cleared()
+        assert cleared.updated_at >= original_updated
+
+    def test_returns_empty_when_already_empty(self):
+        state = FeatureState(feature_id="feat-empty")
+        assert state.tasks == []
+        cleared = state.with_tasks_cleared()
+        assert cleared.tasks == []

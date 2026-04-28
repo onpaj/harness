@@ -152,6 +152,10 @@ class FeatureState(BaseModel):
             update={"tasks": [*self.tasks, *new_tasks], "updated_at": datetime.now(UTC)}
         )
 
+    def with_tasks_cleared(self) -> FeatureState:
+        """Return new state with tasks=[] (immutable copy). Used by manual rollback."""
+        return self.model_copy(update={"tasks": [], "updated_at": datetime.now(UTC)})
+
     def total_tokens_used(self) -> TokenUsage:
         result = TokenUsage()
         for phase_info in self.phases.values():
