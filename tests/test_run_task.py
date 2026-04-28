@@ -160,3 +160,159 @@ class TestRunTaskUsesStorageFactory:
         assert "BlobServiceClient" not in dir(rt_module), (
             "BlobServiceClient was found in run_task module namespace — remove the direct import"
         )
+
+
+@pytest.mark.asyncio
+class TestOrphanTaskGuard:
+    """When a developer/review task message arrives but its task_id is no longer
+    in state.tasks (e.g. after a manual rollback), run_task must drop the message,
+    emit a dropped_orphan_task audit event, and not run the agent."""
+
+    async def test_drops_developer_message_when_task_id_missing(self):
+        from agentharness.run_task import run_task as run_task_fn
+
+        task_json = (
+            '{"task_id": "feat-x-dev-old", "feature_id": "feat-x",'
+            ' "input_artifacts": [], "output_artifact": "artifacts/feat-x/impl/old.r1.md",'
+            ' "agent_role": "developer", "work_dir": null, "revision": 1}'
+        )
+
+        config = MagicMock()
+        config.storage_backend = "azure"
+        config.queue_names.return_value = []
+
+        # State no longer contains the task_id from the message.
+        mock_state_mgr = AsyncMock()
+        mock_state = MagicMock()
+        mock_state.worktree_path = None
+        mock_state.branch_name = None
+        mock_state.tasks = []  # rollback cleared everything
+        mock_state_mgr.get = AsyncMock(return_value=mock_state)
+        mock_state_mgr.update = AsyncMock(return_value=mock_state)
+
+        mock_store = AsyncMock()
+        mock_store.close = AsyncMock()
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
+            patch("agentharness.run_task.create_task_queue"),
+            patch("agentharness.run_task.run_agent") as mock_run_agent,
+            patch("agentharness.run_task.dispatch_after_completion") as mock_dispatch,
+        ):
+            await run_task_fn("developer-queue", task_json, config)
+
+        # Agent must NOT have been invoked
+        mock_run_agent.assert_not_called()
+        mock_dispatch.assert_not_called()
+
+        # An audit event must have been written
+        update_calls = mock_state_mgr.update.await_args_list
+        assert len(update_calls) >= 1
+        # The closure should produce an event named dropped_orphan_task — invoke it
+        # against a real FeatureState to confirm.
+        from agentharness.models import FeatureState
+        probe_state = FeatureState(feature_id="feat-x")
+        produced = update_calls[0].args[1](probe_state)
+        assert any(e.event == "dropped_orphan_task" for e in produced.history)
+
+    async def test_runs_normally_when_task_id_is_present(self):
+        """Sanity: presence of the task_id in state.tasks does not trigger the guard."""
+        from agentharness.models import FeatureState, TaskEntry, TaskStatus
+        from agentharness.run_task import run_task as run_task_fn
+
+        existing_task_id = "feat-x-dev-here"
+        task_json = (
+            f'{{"task_id": "{existing_task_id}", "feature_id": "feat-x",'
+            ' "input_artifacts": [], "output_artifact": "artifacts/feat-x/impl/here.r1.md",'
+            ' "agent_role": "developer", "work_dir": null, "revision": 1}'
+        )
+
+        config = MagicMock()
+        config.storage_backend = "azure"
+        config.queue_names.return_value = []
+        config.agent_path_for_queue.return_value = MagicMock()
+
+        state = FeatureState(feature_id="feat-x").with_tasks_added([
+            TaskEntry(task_id=existing_task_id, phase="developing", status=TaskStatus.queued)
+        ])
+
+        mock_state_mgr = AsyncMock()
+        mock_state_mgr.get = AsyncMock(return_value=state)
+        mock_state_mgr.update = AsyncMock(return_value=state)
+
+        mock_store = AsyncMock()
+        mock_store.upload = AsyncMock()
+        mock_store.close = AsyncMock()
+
+        mock_agent_def = MagicMock()
+        mock_agent_def.allowed_tools = []
+        mock_agent_def.system_prompt = "x"
+        mock_agent_def.context_files = []
+
+        mock_run_result = MagicMock()
+        mock_run_result.output = "## Status: DONE"
+        mock_run_result.tokens = None
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
+            patch("agentharness.run_task.create_task_queue"),
+            patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
+            patch("agentharness.run_task.run_agent", return_value=mock_run_result) as mock_run_agent,
+            patch("agentharness.run_task.dispatch_after_completion", return_value=None),
+        ):
+            await run_task_fn("developer-queue", task_json, config)
+
+        # Agent should have been invoked (no orphan)
+        mock_run_agent.assert_called_once()
+
+    async def test_does_not_apply_guard_to_phase_agent_messages(self):
+        """Phase-level messages (no task_id in state.tasks) must still execute —
+        phase agents do not have TaskEntry rows. We only skip dev/review messages
+        whose task_id starts with the feature_id followed by '-dev-' or '-review-'."""
+        from agentharness.models import FeatureState
+        from agentharness.run_task import run_task as run_task_fn
+
+        # Message uses the analyst-phase task_id pattern (no -dev-/-review-)
+        task_json = (
+            '{"task_id": "feat-x-analyzing-1", "feature_id": "feat-x",'
+            ' "input_artifacts": [], "output_artifact": "artifacts/feat-x/spec.r1.md",'
+            ' "agent_role": "analyst", "work_dir": null, "revision": 1}'
+        )
+
+        config = MagicMock()
+        config.storage_backend = "azure"
+        config.queue_names.return_value = []
+        config.agent_path_for_queue.return_value = MagicMock()
+
+        state = FeatureState(feature_id="feat-x")  # no tasks; that is normal for phase work
+
+        mock_state_mgr = AsyncMock()
+        mock_state_mgr.get = AsyncMock(return_value=state)
+        mock_state_mgr.update = AsyncMock(return_value=state)
+
+        mock_store = AsyncMock()
+        mock_store.upload = AsyncMock()
+        mock_store.close = AsyncMock()
+
+        mock_agent_def = MagicMock()
+        mock_agent_def.allowed_tools = []
+        mock_agent_def.system_prompt = "x"
+        mock_agent_def.context_files = []
+
+        mock_run_result = MagicMock()
+        mock_run_result.output = "spec content"
+        mock_run_result.tokens = None
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
+            patch("agentharness.run_task.create_task_queue"),
+            patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
+            patch("agentharness.run_task.run_agent", return_value=mock_run_result) as mock_run_agent,
+            patch("agentharness.run_task.dispatch_after_completion", return_value=None),
+        ):
+            await run_task_fn("analyst-queue", task_json, config)
+
+        mock_run_agent.assert_called_once()
