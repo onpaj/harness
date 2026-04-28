@@ -440,6 +440,30 @@ class TestBuildPhaseTask:
         with pytest.raises(ValueError, match="No developer task"):
             build_phase_task(state, FeatureStatus.developing, self._config())
 
+    def test_reviewing_target_uses_in_progress_dev_task(self):
+        from agentharness.dispatcher import build_phase_task
+        dev_msg = TaskMessage(
+            feature_id="feat-x",
+            task_id="feat-x-dev-auth-r1",
+            input_artifacts=["artifacts/feat-x/task-context/auth.md"],
+            output_artifact="artifacts/feat-x/impl/auth.r1.md",
+            agent_role="developer",
+            context="auth",
+        )
+        entry = TaskEntry(
+            task_id=dev_msg.task_id,
+            phase="developing",
+            status=TaskStatus.in_progress,
+            queued_message=dev_msg.model_dump(),
+        )
+        state = FeatureState(
+            feature_id="feat-x", status=FeatureStatus.reviewing
+        ).with_tasks_added([entry])
+        task = build_phase_task(state, FeatureStatus.reviewing, self._config())
+        assert task.agent_role == "reviewer"
+        assert "review" in task.task_id
+        assert dev_msg.output_artifact in task.input_artifacts
+
     def test_terminal_status_raises(self):
         from agentharness.dispatcher import build_phase_task
         state = FeatureState(feature_id="feat-x", status=FeatureStatus.failed)
