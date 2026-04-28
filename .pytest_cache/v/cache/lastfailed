@@ -1,0 +1,14 @@
+{
+  "tests/test_github_state.py": true,
+  "tests/test_github_client.py::test_search_issues_returns_items": true,
+  "tests/test_github_client.py::test_search_issues_custom_sort": true,
+  "tests/test_github_client.py::test_ensure_label_is_noop_when_label_exists": true,
+  "tests/test_github_client.py::test_ensure_label_creates_label_when_not_found": true,
+  "tests/test_github_client.py::test_add_sub_issue_posts_sub_issue_id": true,
+  "tests/test_github_queue.py::test_receive_task_returns_none_when_no_issues": true,
+  "tests/test_github_queue.py::test_receive_task_claims_issue_and_returns_task_and_raw": true,
+  "tests/test_github_queue.py::test_purge_closes_all_open_issues": true,
+  "tests/test_github_queue.py::test_purge_does_nothing_when_no_open_issues": true,
+  "tests/test_github_queue.py::test_get_depth_returns_count_of_queued_issues": true,
+  "tests/test_github_queue.py::test_get_depth_returns_zero_when_empty": true
+}
