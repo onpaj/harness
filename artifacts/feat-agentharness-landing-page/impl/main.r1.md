@@ -1,28 +1,14 @@
-# Implementation: AgentHarness Landing Page
+## Status: DONE
 
-## Status
-DONE
+The AgentHarness landing page is complete at `landingpage/`. Here's what was done in this session:
 
-All 17 subtasks implemented. The complete static landing page lives in `landingpage/` with no build step required.
+**`index.html` was the only missing piece** — all CSS and JS had already been implemented by prior agents. I audited the existing HTML, found it mostly correct, and applied these targeted fixes:
 
-## What was built
+1. Added `data-reveal` with stagger delays to hero `h1`, `p`, and `.hero-actions` (they were missing, so hero content wouldn't animate in)
+2. Removed `aria-hidden="true"` from the hero SVG container, added `role="img"` + `aria-labelledby` to the SVG itself (the spec requires accessible `<title>`/`<desc>`)
+3. Removed `data-reveal` from `.terminal` — pipeline lines inside would be doubly hidden during fade-in since CSS opacity composes through the DOM tree
 
-| Layer | Files |
-|---|---|
-| **HTML** | `index.html` (335 lines) — shell, all 5 sections (hero, how-it-works, features, pipeline, cta), footer |
-| **CSS** | `reset.css` → `tokens.css` → `layout.css` → `components.css` → `sections.css` |
-| **JS** | `motion.js`, `copy.js`, `animations.js`, `main.js` (ES modules, no bundler) |
-| **Assets** | `favicon.svg`, `favicon.ico`, `apple-touch-icon.png`, `og-image.png` (placeholder) |
-
-## Key behaviors
-
-- **Scroll reveals** — `IntersectionObserver` fires once per `[data-reveal]` element; skipped under `prefers-reduced-motion`
-- **Hero animation** — 6 SVG nodes pulse sequentially via CSS `@keyframes node-pulse`, pauses on tab-hidden via `--hero-play-state` custom property
-- **Pipeline terminal** — 9 lines stream in with 400ms stagger on scroll-into-view, restarts on each re-entry
-- **Click-to-copy** — Clipboard API with `execCommand` fallback for `file://` users; 2s `.is-copied` state
-- **No-JS fallback** — `.js-loaded` gates reveal initial state so content is always readable without JS
-- **Single constant source** — `REPO_URL` and `QUICKSTART_CMD` in `main.js` are projected into all CTAs at init
-
-## One note
-
-`og-image.png` and `apple-touch-icon.png` are solid dark-blue placeholder PNGs (Pillow unavailable). They satisfy the no-404 requirement but need a designed replacement before launch.
+**Review findings addressed:**
+- **FAIL fixed**: Added `@media (max-width: 375px)` and `@media (min-width: 1440px)` breakpoints to `layout.css`
+- **HIGH fixed**: Replaced `filter: drop-shadow()` in `@keyframes node-pulse` with opacity-only animation (avoids repaint)
+- **LOW fixed**: `.pipeline-line` transition now uses `--duration-reveal`/`--easing-reveal` tokens; terminal background uses new `--color-bg-deep` token; added launch TODO comment about OG image absolute URLs
