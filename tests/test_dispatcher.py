@@ -353,3 +353,95 @@ class TestStateToQueue:
         from agentharness.models import FeatureStatus
         assert queue_for_state(FeatureStatus.failed) is None
         assert queue_for_state(FeatureStatus.done) is None
+
+
+class TestBuildPhaseTask:
+    def _config(self):
+        # Mimic the queue→agent path mapping in .pipeline/config.json
+        cfg = MagicMock()
+        from pathlib import Path
+        agent_paths = {
+            "analyst-queue":   Path(".agents/analyst.md"),
+            "architect-queue": Path(".agents/architect.md"),
+            "designer-queue":  Path(".agents/designer.md"),
+            "planner-queue":   Path(".agents/planner.md"),
+            "developer-queue": Path(".agents/developer.md"),
+            "review-queue":    Path(".agents/reviewer.md"),
+        }
+        cfg.agent_path_for_queue.side_effect = lambda q: agent_paths[q]
+        return cfg
+
+    def test_phase_agent_task_for_analyzing(self):
+        from agentharness.dispatcher import build_phase_task
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.analyzing)
+        task = build_phase_task(state, FeatureStatus.analyzing, self._config())
+        assert task.feature_id == "feat-x"
+        assert task.task_id == "feat-x-analyzing-1"
+        assert task.agent_role == "analyst"
+        assert task.input_artifacts == ["artifacts/feat-x/brief.md"]
+        assert task.output_artifact == "artifacts/feat-x/spec.r1.md"
+
+    def test_phase_agent_task_for_planning(self):
+        from agentharness.dispatcher import build_phase_task
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.planning)
+        task = build_phase_task(state, FeatureStatus.planning, self._config())
+        assert task.agent_role == "planner"
+        assert task.task_id == "feat-x-planning-1"
+        assert task.output_artifact == "artifacts/feat-x/task-plan.r1.md"
+
+    def test_developer_target_uses_in_progress_queued_message(self):
+        from agentharness.dispatcher import build_phase_task
+        existing = TaskMessage(
+            feature_id="feat-x",
+            task_id="feat-x-dev-auth-r1",
+            input_artifacts=["artifacts/feat-x/task-context/auth.md"],
+            output_artifact="artifacts/feat-x/impl/auth.r1.md",
+            agent_role="developer",
+            context="auth",
+        )
+        entry = TaskEntry(
+            task_id=existing.task_id,
+            phase="developing",
+            status=TaskStatus.in_progress,
+            queued_message=existing.model_dump(),
+        )
+        state = FeatureState(
+            feature_id="feat-x", status=FeatureStatus.developing
+        ).with_tasks_added([entry])
+        task = build_phase_task(state, FeatureStatus.developing, self._config())
+        assert task.task_id == existing.task_id
+        assert task.agent_role == "developer"
+
+    def test_developer_target_falls_back_to_pending_task(self):
+        from agentharness.dispatcher import build_phase_task
+        pending_msg = TaskMessage(
+            feature_id="feat-x",
+            task_id="feat-x-dev-api-r1",
+            input_artifacts=[],
+            output_artifact="artifacts/feat-x/impl/api.r1.md",
+            agent_role="developer",
+            context="api",
+        )
+        entry = TaskEntry(
+            task_id=pending_msg.task_id,
+            phase="developing",
+            status=TaskStatus.pending,
+            queued_message=pending_msg.model_dump(),
+        )
+        state = FeatureState(
+            feature_id="feat-x", status=FeatureStatus.developing
+        ).with_tasks_added([entry])
+        task = build_phase_task(state, FeatureStatus.developing, self._config())
+        assert task.task_id == pending_msg.task_id
+
+    def test_developer_target_raises_when_no_task_available(self):
+        from agentharness.dispatcher import build_phase_task
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.developing)
+        with pytest.raises(ValueError, match="No developer task"):
+            build_phase_task(state, FeatureStatus.developing, self._config())
+
+    def test_terminal_status_raises(self):
+        from agentharness.dispatcher import build_phase_task
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.failed)
+        with pytest.raises(ValueError, match="no enqueueable task"):
+            build_phase_task(state, FeatureStatus.failed, self._config())

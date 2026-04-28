@@ -460,6 +460,90 @@ def _build_pr_body(state: FeatureState) -> str:
 """
 
 
+def build_phase_task(
+    state: FeatureState,
+    target_status: FeatureStatus,
+    config: Config,
+) -> TaskMessage:
+    """Construct a TaskMessage for any pipeline phase.
+
+    For phase agents (analyzing/architecting/designing/planning), build the
+    TaskMessage from scratch using artifact path helpers.
+
+    For developer/dev_revision phases, return the TaskMessage from the
+    in-progress developer task's queued_message, falling back to the next
+    pending task's queued_message.
+
+    For the reviewing phase, return the review TaskMessage derived from the
+    in-progress developer task.
+
+    Raises ValueError for terminal or pre-pipeline statuses that have no queue.
+    """
+    queue_name = STATE_TO_QUEUE.get(target_status)
+    if queue_name is None:
+        raise ValueError(
+            f"build_phase_task: no enqueueable task for terminal/pre-pipeline status {target_status!r}"
+        )
+
+    feature_id = state.feature_id
+
+    if target_status in (FeatureStatus.developing, FeatureStatus.dev_revision):
+        candidate = next(
+            (t for t in state.tasks if t.phase == "developing" and t.status == TaskStatus.in_progress),
+            None,
+        )
+        if candidate is None:
+            candidate = state.next_pending_task("developing")
+
+        if candidate is None or not candidate.queued_message:
+            raise ValueError(
+                f"No developer task available to enqueue for feature {feature_id!r}"
+            )
+        return TaskMessage.model_validate(candidate.queued_message)
+
+    if target_status == FeatureStatus.reviewing:
+        in_progress = next(
+            (t for t in state.tasks if t.phase == "developing" and t.status == TaskStatus.in_progress),
+            None,
+        )
+        if in_progress is None or not in_progress.queued_message:
+            raise ValueError(
+                f"No in-progress developer task found for review in feature {feature_id!r}"
+            )
+        dev_task = TaskMessage.model_validate(in_progress.queued_message)
+        task_name = _task_name_from_id(dev_task.task_id, feature_id)
+        revision = dev_task.revision
+        return TaskMessage(
+            feature_id=feature_id,
+            task_id=f"{feature_id}-review-{task_name}-r{revision}",
+            input_artifacts=[
+                phase_artifact_path(feature_id, "spec", 1),
+                phase_artifact_path(feature_id, "arch-review", 1),
+                dev_task.output_artifact,
+            ],
+            output_artifact=task_review_artifact_path(feature_id, task_name, revision),
+            agent_role="reviewer",
+            context=task_name,
+            revision=revision,
+            work_dir=dev_task.work_dir,
+            state_issue_number=state.state_issue_number,
+        )
+
+    # Phase agents: analyzing, architecting, designing, planning
+    phase = target_status.value
+    input_artifacts = _artifacts_for_phase(feature_id, phase)
+    output_artifact = phase_artifact_path(feature_id, _output_name(phase), 1)
+    agent_role = config.agent_path_for_queue(queue_name).stem
+    return TaskMessage(
+        feature_id=feature_id,
+        task_id=f"{feature_id}-{phase}-1",
+        input_artifacts=input_artifacts,
+        output_artifact=output_artifact,
+        agent_role=agent_role,
+        state_issue_number=state.state_issue_number,
+    )
+
+
 async def _open_feature_pr(state: FeatureState, config: Config) -> None:
     """Open a GitHub PR for the completed feature. No-op if not using GitHub backend."""
     if config.storage_backend != "github":
