@@ -75,9 +75,8 @@ def worker(ctx: click.Context, queue_name: str, concurrency: int) -> None:
         console.print(f"Available queues: {', '.join(config.queue_names())}")
         sys.exit(1)
 
-    from agentharness.worker import start_workers
-    console.print(f"Starting {concurrency} worker(s) on [bold]{queue_name}[/bold]")
-    asyncio.run(start_workers(queue_name, config, concurrency))
+    console.print("[red]Legacy worker mode has been removed.[/red] Use [bold]agentharness observe[/bold] instead.")
+    sys.exit(1)
 
 
 @main.command("start")
