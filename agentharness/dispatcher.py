@@ -19,12 +19,12 @@ from agentharness.models import (
 )
 from agentharness.worktree_manager import WorktreeRemovalError, remove_worktree
 from agentharness.storage import (
-    PipelineQueue,
     impl_artifact_path,
     phase_artifact_path,
     task_context_artifact_path,
     task_review_artifact_path,
 )
+from agentharness.storage_protocol import TaskQueue
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,8 @@ async def dispatch_after_completion(
     completed_task: TaskMessage,
     agent_output: str,
     config: Config,
-    queues: dict[str, PipelineQueue],
+    queues: dict[str, TaskQueue],
+    state_mgr=None,
 ) -> FeatureState | None:
     """Determine and execute the next pipeline step.
 
@@ -101,7 +102,7 @@ async def dispatch_after_completion(
         return await _dispatch_serial_next(state, completed_task, agent_output, config, queues)
 
     if status == FeatureStatus.reviewing:
-        return await _dispatch_review_result(state, completed_task, agent_output, config, queues)
+        return await _dispatch_review_result(state, completed_task, agent_output, config, queues, state_mgr)
 
     log.warning("No dispatch logic for status %r", status)
     return None
@@ -111,7 +112,7 @@ async def _dispatch_linear(
     state: FeatureState,
     current_status: str,
     config: Config,
-    queues: dict[str, PipelineQueue],
+    queues: dict[str, TaskQueue],
 ) -> FeatureState:
     next_status, queue_key = _LINEAR_TRANSITIONS[current_status]
     next_queue = queues.get(queue_key)
@@ -149,7 +150,7 @@ async def _dispatch_fan_out(
     state: FeatureState,
     planner_output: str,
     config: Config,
-    queues: dict[str, PipelineQueue],
+    queues: dict[str, TaskQueue],
 ) -> FeatureState:
     dev_queue = queues.get("developer-queue")
     if not dev_queue:
@@ -193,7 +194,7 @@ async def _dispatch_serial_next(
     completed_task: TaskMessage,
     agent_output: str,
     config: Config,
-    queues: dict[str, PipelineQueue],
+    queues: dict[str, TaskQueue],
 ) -> FeatureState:
     dev_status = _parse_developer_status(agent_output)
     if dev_status in ("BLOCKED", "NEEDS_CONTEXT"):
@@ -212,7 +213,7 @@ async def _dispatch_serial_next(
 async def _enqueue_per_task_review(
     state: FeatureState,
     dev_task: TaskMessage,
-    queues: dict[str, PipelineQueue],
+    queues: dict[str, TaskQueue],
 ) -> FeatureState:
     review_queue = queues.get("review-queue")
     if not review_queue:
@@ -253,7 +254,8 @@ async def _dispatch_review_result(
     completed_task: TaskMessage,
     review_output: str,
     config: Config,
-    queues: dict[str, PipelineQueue],
+    queues: dict[str, TaskQueue],
+    state_mgr=None,
 ) -> FeatureState:
     task_name = completed_task.context or _task_name_from_id(completed_task.task_id, state.feature_id)
     failed_tasks = _parse_review_result(review_output)
@@ -263,7 +265,7 @@ async def _dispatch_review_result(
         if next_task_entry is None:
             log.info("All tasks reviewed and passed for %s — done", state.feature_id)
             done_state = state.with_status(FeatureStatus.done).with_event("feature_completed")
-            await _open_feature_pr(done_state, config)
+            await _open_feature_pr(done_state, state_mgr)
             return done_state
 
         dev_queue = queues.get("developer-queue")
@@ -437,22 +439,8 @@ def _build_pr_body(state: FeatureState) -> str:
 """
 
 
-async def _open_feature_pr(state: FeatureState, config: Config) -> None:
-    """Open a GitHub PR for the completed feature. No-op if not using GitHub backend."""
-    if config.storage_backend != "github":
+async def _open_feature_pr(state: FeatureState, state_mgr) -> None:
+    """Open a GitHub PR for the completed feature via the state backend abstraction."""
+    if state_mgr is None:
         return
-    from agentharness.github_client import GitHubClient
-    client = GitHubClient.from_config(config)
-    try:
-        default_branch = await client.get_default_branch()
-        pr = await client.create_pull_request(
-            title=f"{state.feature_id}: implementation complete",
-            body=_build_pr_body(state),
-            head=state.feature_id,
-            base=default_branch,
-        )
-        log.info("Opened PR #%d for feature %s", pr["number"], state.feature_id)
-    except Exception as exc:
-        log.error("Could not open PR for %s: %s", state.feature_id, exc)
-    finally:
-        await client.close()
+    await state_mgr.open_review(state.feature_id)
