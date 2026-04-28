@@ -131,6 +131,7 @@ async def _dispatch_linear(
         input_artifacts=input_artifacts,
         output_artifact=output_artifact,
         agent_role=agent_path.stem,
+        state_issue_number=state.state_issue_number,
     )
     await next_queue.send_task(task)
     log.info("Enqueued %s task for feature %s", next_status, feature_id)
@@ -167,6 +168,7 @@ async def _dispatch_fan_out(
         output_artifact=impl_artifact_path(feature_id, "main", 1),
         agent_role="developer",
         work_dir=_impl_work_dir(feature_id),
+        state_issue_number=state.state_issue_number,
     )
     task_entry = TaskEntry(
         task_id=task_msg.task_id,
@@ -233,6 +235,7 @@ async def _enqueue_per_task_review(
         context=task_name,
         revision=revision,
         work_dir=dev_task.work_dir,
+        state_issue_number=state.state_issue_number,
     )
     await review_queue.send_task(task)
     log.info("Enqueued per-task review for %s r%d", task_name, revision)
@@ -308,6 +311,7 @@ async def _dispatch_review_result(
         revision=new_revision,
         review_feedback=feedback,
         work_dir=_impl_work_dir(feature_id),
+        state_issue_number=state.state_issue_number,
     )
     task_entry = TaskEntry(
         task_id=task_id,

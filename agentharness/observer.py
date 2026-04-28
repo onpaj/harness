@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 _RENEWAL_INTERVAL = 60      # seconds between visibility renewals
 _VISIBILITY_TIMEOUT = 150   # seconds of visibility granted per renewal
 
-_STALE_CLAIM_TIMEOUT = 150  # seconds before a claimed task is reclaimed
+_STALE_CLAIM_TIMEOUT = 600  # seconds before a claimed task is reclaimed
 _SWEEP_INTERVAL = 60        # seconds between sweeps
 _STATE_CACHE_INTERVAL = 30  # seconds between local state cache writes (GitHub backend)
 STATE_CACHE_PATH = Path("logs/state-cache.json")
@@ -191,6 +191,17 @@ async def _unified_github_poll(
                     except ValueError:
                         continue
                     if (utcnow - updated_at).total_seconds() > _STALE_CLAIM_TIMEOUT:
+                        try:
+                            from agentharness.github_queue import _parse_task_from_body
+                            local_task = _parse_task_from_body(issue.get("body") or "")
+                            if local_task.task_id in active_procs:
+                                log.debug(
+                                    "Skipping reclaim of issue #%d — task %s still active locally",
+                                    issue["number"], local_task.task_id,
+                                )
+                                continue
+                        except Exception:
+                            pass
                         await _reclaim_issue(client, issue)
 
             # 3. Write state cache
@@ -226,8 +237,7 @@ async def _handle_implement_issue(
 
     from agentharness.github_labels import IMPLEMENT_LABEL
     from agentharness.github_state import GitHubStateManager
-    from agentharness.models import FeatureState, FeatureStatus, PipelineConfig, TaskMessage
-    from agentharness.storage import artifact_path, create_task_queue, phase_artifact_path
+    from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
 
     number: int = issue["number"]
     title: str = issue.get("title") or "untitled"
@@ -243,12 +253,16 @@ async def _handle_implement_issue(
 
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
         feature_id = f"feat-{slug}"
-        log.info("Bootstrapping feature %s from issue #%d", feature_id, number)
+        branch_name = f"{feature_id}-{number}"
+        log.info("Bootstrapping feature %s from issue #%d (branch: %s)", feature_id, number, branch_name)
 
-        # Create feature branch
+        # Create feature branch (branch_name includes issue number so it's always unique)
         default_branch = await client.get_default_branch()
         main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
-        await client.create_ref(f"refs/heads/{feature_id}", main_sha)
+        try:
+            await client.create_ref(f"refs/heads/{branch_name}", main_sha)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to create branch {branch_name!r}: {exc}") from exc
 
         # Commit issue body as brief.md
         brief_blob_path = f"artifacts/{feature_id}/brief.md"
@@ -257,38 +271,27 @@ async def _handle_implement_issue(
             message=f"feat: add brief for {feature_id}",
             content=base64.b64encode(body.encode()).decode(),
             sha=None,
-            branch=feature_id,
+            branch=branch_name,
         )
 
-        # Create initial feature state (persisted as a tracking issue)
+        # Create initial feature state — pipeline starts on user's explicit "implement" action
         now = datetime.now(UTC)
         state = FeatureState(
             feature_id=feature_id,
-            status=FeatureStatus.analyzing,
+            status=FeatureStatus.brainstormed,
             created_at=now,
             updated_at=now,
             config=PipelineConfig(max_revisions=config.defaults.max_revisions),
+            branch_name=branch_name,
         )
         await GitHubStateManager(client).create(state, body)
 
-        # Enqueue analyst task
-        queue = create_task_queue(config, "analyst-queue")
-        task = TaskMessage(
-            feature_id=feature_id,
-            task_id=f"{feature_id}-analyst",
-            input_artifacts=[artifact_path(feature_id, "brief.md")],
-            output_artifact=phase_artifact_path(feature_id, "spec", 1),
-            agent_role="analyst",
-        )
-        await queue.send_task(task)
-        await queue.close()
-
         await client.create_comment(
             number,
-            f"Pipeline started — feature `{feature_id}` is now analyzing.",
+            f"Feature `{feature_id}` created — press **i** in the TUI (or run `agentharness implement {feature_id}`) to start the pipeline.",
         )
         await client.update_issue(number, state="closed")
-        log.info("Feature %s bootstrapped and analyst enqueued", feature_id)
+        log.info("Feature %s created in brainstormed state", feature_id)
 
     except Exception as exc:
         log.error("Failed to bootstrap feature from issue #%d: %s", number, exc, exc_info=True)
@@ -301,11 +304,18 @@ async def _handle_implement_issue(
 
 
 async def _collect_states(client: "GitHubClient", issues: list[dict]) -> list[dict]:
-    """Parse FeatureState from each issue, falling back to comment body for legacy issues."""
+    """Parse FeatureState from tracking issues only, skipping task queue issues.
+
+    Deduplicates by feature_id, keeping the highest-numbered issue per feature.
+    """
+    from agentharness.github_labels import TASK_STATE_LABELS
     from agentharness.github_state import GitHubStateManager, parse_state_from_issue
 
-    results: list[dict] = []
+    seen: dict[str, tuple[int, dict]] = {}  # feature_id -> (issue_number, state_dict)
     for issue in issues:
+        label_names = {lbl["name"] for lbl in issue.get("labels", [])}
+        if label_names & TASK_STATE_LABELS:
+            continue  # task queue issue, not a tracking issue
         state = parse_state_from_issue(issue)
         if state is None:
             try:
@@ -313,8 +323,11 @@ async def _collect_states(client: "GitHubClient", issues: list[dict]) -> list[di
                 state = await mgr._state_from_issue(issue)
             except Exception:
                 continue
-        results.append(state.model_dump(mode="json"))
-    return results
+        issue_number: int = issue.get("number", 0)
+        existing = seen.get(state.feature_id)
+        if existing is None or issue_number > existing[0]:
+            seen[state.feature_id] = (issue_number, state.model_dump(mode="json"))
+    return [entry[1] for entry in seen.values()]
 
 
 async def _run_subprocess(

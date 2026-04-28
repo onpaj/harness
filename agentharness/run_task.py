@@ -38,8 +38,10 @@ WORKER_ID = f"{socket.gethostname()}-{os.getpid()}"
 async def run_task(queue_name: str, task_json: str, config: Config) -> None:
     task = TaskMessage.model_validate_json(task_json)
 
-    store = create_artifact_store(config, feature_id=task.feature_id)
     state_mgr = create_state_manager(config)
+    feature_state = await state_mgr.get(task.feature_id)
+    branch_name = feature_state.branch_name or task.feature_id
+    store = create_artifact_store(config, feature_id=branch_name)
 
     all_queues: dict[str, TaskQueue] = {
         q_name: create_task_queue(config, q_name)
@@ -75,6 +77,13 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         prompt = build_prompt(agent_def, task, artifact_contents)
         result = await run_agent(agent_def, prompt, work_dir=work_dir, worktree_path=started_state.worktree_path)
+
+        if agent_def.allowed_tools and hasattr(store, "commit_workdir_changes"):
+            committed = await store.commit_workdir_changes(f"agent: developer implementation {task.task_id}")
+            if committed:
+                log.info("[%s] Committed workdir changes for task %s", WORKER_ID, task.task_id)
+            else:
+                log.info("[%s] No workdir changes to commit for task %s", WORKER_ID, task.task_id)
 
         await store.upload(task.output_artifact, result.output)
         log.info("[%s] Task %s complete → %s", WORKER_ID, task.task_id, task.output_artifact)

@@ -1,4 +1,5 @@
 {
+  "storage_backend": "github",
   "storage": {
     "connection_string_env": "AZURE_STORAGE_CONNECTION_STRING",
     "container": "pipeline-artifacts"
@@ -14,6 +15,7 @@
   "defaults": {
     "dead_letter_threshold": 3,
     "max_revisions": 3,
-    "poll_interval_seconds": 1.0
+    "poll_interval_seconds": 1.0,
+    "github_poll_interval_seconds": 15.0
   }
 }

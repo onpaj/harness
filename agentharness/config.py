@@ -75,7 +75,7 @@ class GitHubConfig(BaseModel):
     token_env: str = "GITHUB_TOKEN"
     owner_env: str = "GITHUB_OWNER"      # optional — falls back to git remote
     runs_repo_env: str = "GITHUB_RUNS_REPO"  # optional — falls back to git remote
-    clone_dir: str = ".runs-cache"
+    clone_dir: str = ".worktrees"
 
     @property
     def token(self) -> str:

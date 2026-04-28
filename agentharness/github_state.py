@@ -76,10 +76,6 @@ def _replace_state_block(body: str, state: FeatureState) -> str:
     return f"{body}\n\n{new_block}\n"
 
 
-def _feature_label(feature_id: str) -> str:
-    return f"feature:{feature_id}"
-
-
 def _feature_issue_title(feature_id: str) -> str:
     """Format: 'feature: Humanized Name' derived from the feature_id slug."""
     # Strip leading type prefix (feat-, fix-, epic-) to get the name part
@@ -101,13 +97,10 @@ def _status_from_issue_labels(issue: dict) -> FeatureStatus | None:
     return None
 
 
-def _feature_id_from_issue_labels(issue: dict) -> str | None:
-    """Extract the feature_id from a ``feature:{feature_id}`` label."""
-    for label_obj in issue.get("labels", []):
-        label_name = label_obj["name"]
-        if label_name.startswith("feature:"):
-            return label_name[len("feature:"):]
-    return None
+def _feature_id_from_issue(issue: dict) -> str | None:
+    """Extract the feature_id from the agentharness-state JSON block in the issue body."""
+    state = parse_state_from_issue(issue)
+    return state.feature_id if state else None
 
 
 # ---------------------------------------------------------------------------
@@ -134,12 +127,16 @@ class GitHubStateManager:
     async def _find_issue(self, feature_id: str) -> tuple[dict, int]:
         """Search for the parent issue and return (issue_dict, issue_number).
 
+        Fetches all agentharness-feature issues and filters in-memory by
+        feature_id parsed from the state JSON body.
+
         Raises ``KeyError`` if no issue is found.
         """
-        items = await self._client.list_issues(labels=[_feature_label(feature_id), FEATURE_MARKER])
-        if not items:
-            raise KeyError(f"No state found for feature {feature_id!r}")
-        return items[0], items[0]["number"]
+        items = await self._client.list_issues(labels=[FEATURE_MARKER])
+        for issue in items:
+            if _feature_id_from_issue(issue) == feature_id:
+                return issue, issue["number"]
+        raise KeyError(f"No state found for feature {feature_id!r}")
 
     async def _get_state_comment(self, issue_number: int) -> dict:
         """Return the first comment on the issue (which holds the state JSON)."""
@@ -169,22 +166,23 @@ class GitHubStateManager:
     async def create(self, state: FeatureState, brief_content: str = "") -> None:
         """Create a GitHub issue representing the feature's initial state.
 
-        The issue body is set to the brief document so it is human-readable.
-        The serialized FeatureState JSON is stored in the first comment.
+        The issue body contains the brief content followed by the fenced
+        agentharness-state block holding the serialized FeatureState JSON.
         """
-        feat_label = _feature_label(state.feature_id)
-        await self._client.ensure_label(feat_label, color="0075ca")
-
         status_label = FEATURE_STATUS_TO_LABEL[state.status]
-        title = _feature_issue_title(state.feature_id)
+        await self._client.ensure_labels([FEATURE_MARKER, status_label], color="0075ca")
 
+        title = _feature_issue_title(state.feature_id)
         body = _replace_state_block(brief_content, state)
         issue = await self._client.create_issue(
             title=title,
             body=body,
-            labels=[FEATURE_MARKER, feat_label, status_label],
+            labels=[FEATURE_MARKER, status_label],
         )
-        log.debug("Created state issue for feature %s", state.feature_id)
+        issue_number: int = issue["number"]
+        updated = state.model_copy(update={"state_issue_number": issue_number})
+        await self._client.update_issue(issue_number, body=_replace_state_block(brief_content, updated))
+        log.debug("Created state issue #%d for feature %s", issue_number, state.feature_id)
 
     async def get(self, feature_id: str) -> FeatureState:
         """Fetch and reconstruct the FeatureState for the given feature_id."""
@@ -243,17 +241,19 @@ class GitHubStateManager:
         """
         items = await self._client.list_issues(labels=[FEATURE_MARKER], direction="desc")
 
-        results: list[tuple[str, int]] = []
+        seen: dict[str, int] = {}  # feature_id -> highest issue_number
         for issue in items:
-            feature_id = _feature_id_from_issue_labels(issue)
+            feature_id = _feature_id_from_issue(issue)
             if feature_id is None:
                 log.warning(
-                    "Issue #%d has %s label but no feature:* label — skipping",
+                    "Issue #%d has %s label but no parseable state JSON — skipping",
                     issue["number"],
                     FEATURE_MARKER,
                 )
                 continue
-            results.append((feature_id, issue["number"]))
+            issue_number: int = issue["number"]
+            if feature_id not in seen or issue_number > seen[feature_id]:
+                seen[feature_id] = issue_number
 
-        results.sort(key=lambda pair: pair[1], reverse=True)
+        results = sorted(seen.items(), key=lambda pair: pair[1], reverse=True)
         return results

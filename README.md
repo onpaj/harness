@@ -33,16 +33,14 @@ cp .env.example .env
 # See Environment section below for required variables
 ```
 
-**Azure backend:**
+**Azure backend** — set `"storage_backend": "azure"` in `.pipeline/config.json`:
 ```bash
-STORAGE_BACKEND=azure
 AZURE_STORAGE_CONNECTION_STRING=...
 agentharness init      # scaffold Azure queues and containers
 ```
 
-**GitHub backend:**
+**GitHub backend** — set `"storage_backend": "github"` in `.pipeline/config.json`:
 ```bash
-STORAGE_BACKEND=github
 GITHUB_TOKEN=ghp_...
 # GITHUB_OWNER and GITHUB_RUNS_REPO auto-detected from git remote, or set explicitly
 ```
@@ -56,6 +54,99 @@ agentharness implement feat-20260425-abc123     # enqueue first task, start pipe
 agentharness observe                            # start observer (primary execution mode)
 agentharness watch                              # Textual TUI, auto-refresh 2s
 ```
+
+## Deployment (local machine, targeting a different project)
+
+This section covers running AgentHarness locally while targeting a **different GitHub repository** — the common case where you install the harness once and run it against whichever project you're working on.
+
+### Prerequisites
+
+- Python 3.11+
+- [Claude Code CLI](https://claude.ai/code) installed and authenticated (`claude --version`)
+- `git` ≥ 2.38 (for worktree support)
+- A GitHub personal access token with `repo` and `workflow` scopes
+
+### 1. Install
+
+```bash
+git clone https://github.com/pajgrtondrej/AgentHarness.git
+cd AgentHarness
+python -m venv .venv
+.venv/bin/pip install -e .
+```
+
+Verify:
+
+```bash
+.venv/bin/agentharness --version
+```
+
+### 2. Configure for a target project
+
+Copy the env template and fill in your target repo:
+
+```bash
+cp .env.example .env
+```
+
+Set `"storage_backend": "github"` in `.pipeline/config.json`, then edit `.env`:
+
+```bash
+GITHUB_TOKEN=ghp_your_token_here
+GITHUB_OWNER=target-org-or-user    # owner of the project you want to develop
+GITHUB_RUNS_REPO=target-repo       # repo where issues/branches will be created
+```
+
+`GITHUB_OWNER` and `GITHUB_RUNS_REPO` tell AgentHarness which repo to use for task queues and artifact branches. Set them explicitly when the harness is not cloned from the target project's remote.
+
+### 3. Verify GitHub access
+
+```bash
+gh repo view $GITHUB_OWNER/$GITHUB_RUNS_REPO
+```
+
+The token must have read/write access to issues and branches on the target repo.
+
+### 4. Start the observer
+
+Run from the AgentHarness directory:
+
+```bash
+.venv/bin/agentharness observe
+```
+
+The observer polls the target repo's issues for queued tasks and spawns agent subprocesses as work arrives. It clones the target repo into `.runs-cache/owner/repo/` on first use.
+
+### 5. Submit work
+
+In a separate terminal (or Claude Code session in the target project), use the `/brainstorm` skill or CLI:
+
+```bash
+.venv/bin/agentharness brainstorm          # interactive → uploads brief
+.venv/bin/agentharness implement <feat-id> # kick off the pipeline
+```
+
+Or set `AGENTHARNESS_CONFIG` to an absolute path if you want to run commands from outside the AgentHarness directory:
+
+```bash
+export AGENTHARNESS_CONFIG=/path/to/AgentHarness/.pipeline/config.json
+agentharness observe
+```
+
+### What happens under the hood
+
+1. `brainstorm` uploads `brief.md` to the target repo branch and creates a GitHub issue for the analyst task.
+2. The observer picks up the issue, spawns `agentharness _run_task`, which runs the analyst Claude agent.
+3. Each subsequent agent (architect → designer → planner → developer → reviewer) runs the same way.
+4. The developer agent clones the target repo into `.runs-cache/`, writes code there, commits, and pushes to a `feature/{feat-id}` branch.
+5. When the pipeline completes the feature branch is ready for a PR against the target repo.
+
+### Notes
+
+- **Agent context:** Developer agents write to `.runs-cache/{owner}/{repo}/artifacts/{feat-id}/`. Add target-project files to `context_files` in `.agents/developer.md` so agents have project context.
+- **Logs:** `agentharness observe` writes structured JSON logs to stdout. Pipe to `jq` for filtering.
+- **Concurrency:** The observer handles one task at a time per queue by default. GitHub's unified poller runs on a 15-second cycle (configurable via `github_poll_interval_seconds` in `.pipeline/config.json`).
+- **Cleanup:** Stale task claims (idle > 150 s) are swept automatically by the observer.
 
 ## CLI reference
 
@@ -214,9 +305,13 @@ AgentHarness supports two pluggable storage backends:
 - Azure Storage account
 - Connection string in `AZURE_STORAGE_CONNECTION_STRING`
 
-**Environment:**
+**config.json:**
+```json
+{ "storage_backend": "azure" }
+```
+
+**.env:**
 ```bash
-STORAGE_BACKEND=azure
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
 ```
 
@@ -231,23 +326,28 @@ agentharness init      # Creates containers and queues
 
 **Requirements:**
 - GitHub token with repo read/write and workflow access
-- Repo with CI/CD capable of running `agentharness observe`
 
-**Environment:**
+**config.json:**
+```json
+{ "storage_backend": "github" }
+```
+
+**.env:**
 ```bash
-STORAGE_BACKEND=github
 GITHUB_TOKEN=ghp_...
-GITHUB_OWNER=owner          # optional (auto-detected from git remote)
-GITHUB_RUNS_REPO=repo       # optional (auto-detected from git remote)
+# GITHUB_OWNER=owner       # optional (auto-detected from git remote)
+# GITHUB_RUNS_REPO=repo    # optional (auto-detected from git remote)
 ```
 
 **No manual setup needed** — issues and branches are created dynamically.
 
 ## Environment
 
+The storage backend is selected via `"storage_backend"` in `.pipeline/config.json` (`"azure"` or `"github"`). Credentials go in `.env`:
+
 ```bash
 cp .env.example .env
-# Configure storage backend and set backend-specific variables (see above)
+# Set backend credentials — see Backends section above
 ```
 
 `.env` is loaded automatically via `python-dotenv`. Never commit it — it's in `.gitignore`.

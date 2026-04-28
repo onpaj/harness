@@ -164,7 +164,7 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
 
         initial_state = FeatureState(
             feature_id=feature_id,
-            status=FeatureStatus.brainstorming,
+            status=FeatureStatus.brainstormed,
             config=PipelineConfig(max_revisions=config.defaults.max_revisions),
         ).with_event("brief_uploaded")
         await state_mgr.create(initial_state)
@@ -178,23 +178,34 @@ async def _upload_brief_github(feature_id: str, brief_content: str, config: Conf
     import base64
     from datetime import UTC, datetime
 
-    from agentharness.github_client import GitHubClient
+    from agentharness.github_client import GitHubApiError, GitHubClient
     from agentharness.github_state import GitHubStateManager
 
     client = GitHubClient.from_config(config)
     try:
-        # 1. Create feature branch from the repo's default branch
+        # 1. Create feature branch from the repo's default branch (idempotent)
         default_branch = await client.get_default_branch()
         main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
-        await client.create_ref(f"refs/heads/{feature_id}", main_sha)
+        try:
+            await client.create_ref(f"refs/heads/{feature_id}", main_sha)
+        except GitHubApiError as exc:
+            if exc.status_code != 422:
+                raise
 
-        # 2. Commit brief.md to the feature branch
+        # 2. Commit brief.md to the feature branch (idempotent — fetch SHA if exists)
         brief_path = f"artifacts/{feature_id}/brief.md"
+        existing_sha: str | None = None
+        try:
+            existing = await client.get_content(brief_path, ref=feature_id)
+            existing_sha = existing.get("sha")
+        except GitHubApiError as exc:
+            if exc.status_code != 404:
+                raise
         await client.put_content(
             path=brief_path,
             message=f"feat: add brief for {feature_id}",
             content=base64.b64encode(brief_content.encode()).decode(),
-            sha=None,
+            sha=existing_sha,
             branch=feature_id,
         )
 
@@ -202,7 +213,7 @@ async def _upload_brief_github(feature_id: str, brief_content: str, config: Conf
         now = datetime.now(UTC)
         state = FeatureState(
             feature_id=feature_id,
-            status=FeatureStatus.analyzing,
+            status=FeatureStatus.brainstormed,
             created_at=now,
             updated_at=now,
             config=PipelineConfig(
@@ -255,9 +266,16 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
 
 async def _enqueue_planner_github(feature_id: str, config: Config) -> None:
     """GitHub-backend implementation of enqueue_planner."""
-    from agentharness.models import TaskMessage
+    from agentharness.github_state import GitHubStateManager
+    from agentharness.models import FeatureStatus, TaskMessage
     from agentharness.storage import artifact_path as _artifact_path
     from agentharness.storage import create_task_queue, phase_artifact_path
+
+    state_mgr = GitHubStateManager.from_config(config)
+    state = await state_mgr.update(
+        feature_id,
+        lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
+    )
 
     queue = create_task_queue(config, "analyst-queue")
     try:
@@ -267,6 +285,7 @@ async def _enqueue_planner_github(feature_id: str, config: Config) -> None:
             input_artifacts=[_artifact_path(feature_id, "brief.md")],
             output_artifact=phase_artifact_path(feature_id, "spec", 1),
             agent_role="analyst",
+            state_issue_number=state.state_issue_number,
         )
         await queue.ensure_exists()
         await queue.send_task(task)

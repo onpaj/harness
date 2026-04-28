@@ -212,12 +212,12 @@ def init_project(target_dir: str, force: bool) -> None:
         console.print("[red]Data files not found in package — reinstall agentharness.[/red]")
         sys.exit(1)
 
-    destinations = [
+    flat_destinations = [
         (data_root / "agents", target / ".agents"),
         (data_root / "pipeline", target / ".pipeline"),
     ]
 
-    for src, dst in destinations:
+    for src, dst in flat_destinations:
         if not src.exists():
             continue
         dst.mkdir(parents=True, exist_ok=True)
@@ -229,20 +229,35 @@ def init_project(target_dir: str, force: bool) -> None:
             shutil.copy2(src_file, dst_file)
             console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
 
+    skills_src = data_root / "skills"
+    if skills_src.exists():
+        for skill_dir in skills_src.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            dst_skill = target / ".claude" / "skills" / skill_dir.name
+            dst_skill.mkdir(parents=True, exist_ok=True)
+            for src_file in skill_dir.iterdir():
+                dst_file = dst_skill / src_file.name
+                if dst_file.exists() and not force:
+                    console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)} (use --force to overwrite)")
+                    continue
+                shutil.copy2(src_file, dst_file)
+                console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
+
     env_example = target / ".env.example"
     if not env_example.exists() or force:
         env_example.write_text(
+            "# Azure backend credentials (required when storage_backend = \"azure\" in .pipeline/config.json)\n"
             "AZURE_STORAGE_CONNECTION_STRING=\n"
             "\n"
-            "# GitHub backend (set STORAGE_BACKEND=github to use)\n"
+            "# GitHub backend credentials (required when storage_backend = \"github\" in .pipeline/config.json)\n"
             "GITHUB_TOKEN=\n"
-            "GITHUB_OWNER=\n"
-            "GITHUB_RUNS_REPO=\n"
-            "STORAGE_BACKEND=azure\n"
+            "# GITHUB_OWNER=       # optional — auto-detected from git remote\n"
+            "# GITHUB_RUNS_REPO=   # optional — auto-detected from git remote\n"
         )
         console.print(f"[green]wrote[/green] .env.example")
 
-    console.print("\n[bold]Done.[/bold] Copy .env.example → .env and fill in your connection string.")
+    console.print("\n[bold]Done.[/bold] Set storage_backend in .pipeline/config.json, copy .env.example → .env and fill in credentials.")
 
 
 @main.command("list")
@@ -347,6 +362,7 @@ def _status_style(status) -> str:
         "architecting": "[blue]architecting[/blue]",
         "designing": "[blue]designing[/blue]",
         "brainstorming": "[blue]brainstorming[/blue]",
+        "brainstormed": "[cyan]brainstormed[/cyan]",
     }
     return styles.get(str(status), str(status))
 

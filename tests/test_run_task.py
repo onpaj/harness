@@ -120,6 +120,8 @@ class TestRunTaskUsesStorageFactory:
         mock_state_mgr = AsyncMock()
         mock_state = MagicMock()
         mock_state.worktree_path = None
+        mock_state.branch_name = None
+        mock_state_mgr.get = AsyncMock(return_value=mock_state)
         mock_state_mgr.update = AsyncMock(return_value=mock_state)
 
         mock_agent_def = MagicMock()

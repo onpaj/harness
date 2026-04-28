@@ -56,7 +56,7 @@ Write the brief using the Write tool to `brief.md` in the current working direct
 
 Show the user a summary of what you wrote. Ask: "Does this capture what you had in mind, or would you like to adjust anything?"
 
-If they're satisfied, upload the brief to Azure:
+If they're satisfied, upload the brief:
 ```bash
 agentharness submit brief.md
 ```

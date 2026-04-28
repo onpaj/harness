@@ -41,6 +41,7 @@ def _make_gh_client() -> MagicMock:
         "get_default_branch",
         "get_ref",
         "create_ref",
+        "get_content",
         "put_content",
         "create_issue",
         "ensure_label",
@@ -48,14 +49,13 @@ def _make_gh_client() -> MagicMock:
         "close",
     ):
         setattr(client, method, AsyncMock())
-    # get_default_branch returns "main"
     client.get_default_branch.return_value = "main"
-    # get_ref returns the main-branch SHA payload
     client.get_ref.return_value = {"object": {"sha": _MAIN_SHA}}
-    # create_issue returns a minimal issue dict
     client.create_issue.return_value = {"number": 42, "labels": []}
-    # search_issues returns empty by default (state not found yet)
     client.search_issues.return_value = []
+    # get_content raises 404 by default (brief doesn't exist yet)
+    from agentharness.github_client import GitHubApiError
+    client.get_content.side_effect = GitHubApiError(404, "Not Found")
     return client
 
 
@@ -107,7 +107,7 @@ async def test_upload_brief_github_calls_in_order() -> None:
     mock_mgr_instance.create.assert_awaited_once()
     created_state = mock_mgr_instance.create.call_args.args[0]
     assert created_state.feature_id == _FEATURE_ID
-    assert created_state.status == FeatureStatus.analyzing
+    assert created_state.status == FeatureStatus.brainstormed
 
     # 5. Client was closed
     client.close.assert_awaited_once()
@@ -144,9 +144,16 @@ async def test_enqueue_planner_github_sends_correct_task() -> None:
     mock_queue.send_task = AsyncMock()
     mock_queue.close = AsyncMock()
 
-    with patch(
-        "agentharness.storage.create_task_queue", return_value=mock_queue
-    ) as mock_create:
+    from agentharness.models import FeatureState, FeatureStatus
+    mock_state_mgr = MagicMock()
+    mock_state_mgr.update = AsyncMock(
+        return_value=FeatureState(feature_id=_FEATURE_ID, status=FeatureStatus.analyzing)
+    )
+
+    with (
+        patch("agentharness.storage.create_task_queue", return_value=mock_queue) as mock_create,
+        patch("agentharness.github_state.GitHubStateManager.from_config", return_value=mock_state_mgr),
+    ):
         await _enqueue_planner_github(_FEATURE_ID, config)
 
     # Queue was created for analyst-queue
@@ -186,8 +193,15 @@ async def test_enqueue_planner_github_closes_queue_on_error() -> None:
     mock_queue.send_task = AsyncMock()
     mock_queue.close = AsyncMock()
 
-    with patch(
-        "agentharness.storage.create_task_queue", return_value=mock_queue
+    from agentharness.models import FeatureState, FeatureStatus
+    mock_state_mgr = MagicMock()
+    mock_state_mgr.update = AsyncMock(
+        return_value=FeatureState(feature_id=_FEATURE_ID, status=FeatureStatus.analyzing)
+    )
+
+    with (
+        patch("agentharness.storage.create_task_queue", return_value=mock_queue),
+        patch("agentharness.github_state.GitHubStateManager.from_config", return_value=mock_state_mgr),
     ):
         with pytest.raises(RuntimeError, match="label error"):
             await _enqueue_planner_github(_FEATURE_ID, config)

@@ -35,7 +35,7 @@ agentharness/       Python package
   github_client.py            httpx async GitHub REST API wrapper
   github_labels.py            GitHub label name constants and utilities
   github_queue.py             GitHub Issues as task queue backend (claim/delete operations)
-  github_artifacts.py         Git branch artifact storage backend
+  github_artifacts.py         Git branch artifact storage backend; commit_workdir_changes() auto-commits developer code after agent runs
   github_state.py             GitHub issue label + JSON body state manager, parse_state_from_issue helper
   state_manager.py  Lease-based atomic state updates (abstracts over backends)
   context_files.py  Per-agent context file resolution and prompt injection
@@ -140,6 +140,12 @@ System prompt...
 - `allowed_tools: [bash, read, write]` → developer agents that write code.
 - `output_parsing: task_list` → dispatcher extracts `### task: name` headers from planner output to fan-out developer tasks.
 - `output_parsing: review_result` → dispatcher extracts `### task: name` + `**Status:** PASS/REVISION_NEEDED` from reviewer output.
+
+### Developer code commit (GitHub backend)
+
+After a developer agent finishes, `run_task.py` checks whether the agent had `allowed_tools` set and the store exposes `commit_workdir_changes`. If so, all files the agent wrote to its work directory (`clone_root/artifacts/{feature_id}/`) are staged with `git add -A`, committed, and pushed to the feature branch **before** the impl markdown is uploaded. This ensures actual code files (not just the agent's text summary) appear in the feature PR.
+
+`GitHubArtifactStore.commit_workdir_changes(message)` returns `True` if a commit was created, `False` if nothing was staged (idempotent — no empty commits).
 
 ### Developer status codes
 

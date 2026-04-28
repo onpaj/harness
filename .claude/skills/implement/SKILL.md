@@ -32,4 +32,4 @@ If the user wants to adjust the brief before starting, remind them the brief is 
 ```
 artifacts/{feature_id}/brief.md
 ```
-in Azure blob storage. They can download, edit, and re-upload it before calling implement.
+in the configured storage backend. They can download, edit, and re-upload it before calling implement.

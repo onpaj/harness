@@ -38,6 +38,7 @@ _STATUS_ICONS = {
     FeatureStatus.architecting: "◌",
     FeatureStatus.designing: "◌",
     FeatureStatus.brainstorming: "◌",
+    FeatureStatus.brainstormed: "◎",
 }
 
 _STATUS_COLORS = {
@@ -49,6 +50,15 @@ _STATUS_COLORS = {
 }
 
 _PHASE_ORDER = ["analyzing", "architecting", "designing", "planning", "developing", "reviewing"]
+
+_PHASE_TO_QUEUE = {
+    "analyzing": "analyst-queue",
+    "architecting": "architect-queue",
+    "designing": "designer-queue",
+    "planning": "planner-queue",
+    "developing": "developer-queue",
+    "reviewing": "review-queue",
+}
 
 _OBSERVER_PID_FILE = Path("logs/observer.pid")
 
@@ -325,13 +335,16 @@ class TaskLogPanel(RichLog):
                 self.write(Text.from_markup(f"[dim]No log yet for {short}[/dim]"))
             return
 
-        # Fallback: scan log dir by task_id stem match
+        # Fallback: scan log dir by task_id stem match or queue directory
         if not _LOG_DIR.exists():
             self.write(Text.from_markup("[dim]No logs directory[/dim]"))
             return
         lines: list[tuple[str, str, str]] = []
+        queue_dir = _LOG_DIR / _PHASE_TO_QUEUE.get(task_id, "")
         for lf in _LOG_DIR.rglob("*.log"):
-            if task_id not in lf.stem:
+            # Phase rows: match by queue directory; task rows: match by stem
+            in_queue_dir = queue_dir.name and lf.parent == queue_dir
+            if not in_queue_dir and task_id not in lf.stem:
                 continue
             label = lf.stem
             try:
@@ -754,7 +767,7 @@ class PipelineMonitor(App):
     async def _do_implement(self, feature_id: str) -> None:
         from agentharness.brainstorm import enqueue_planner
         await enqueue_planner(feature_id, self._config)
-        self.notify(f"Pipeline started: {feature_id}", severity="information")
+        self.notify(f"Analyzing: {feature_id}", severity="information")
 
     def action_purge_queues(self) -> None:
         def on_confirm(confirmed: bool) -> None:
@@ -861,16 +874,6 @@ async def _load_depths_azure(config: Config) -> dict[str, int]:
         except Exception:
             depths[queue_name] = 0
     return depths
-
-
-_PHASE_TO_QUEUE = {
-    "analyzing": "analyst-queue",
-    "architecting": "architect-queue",
-    "designing": "designer-queue",
-    "planning": "planner-queue",
-    "developing": "developer-queue",
-    "reviewing": "review-queue",
-}
 
 
 def _derive_depths_from_cache() -> dict[str, int]:

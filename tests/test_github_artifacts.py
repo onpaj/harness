@@ -17,8 +17,8 @@ from agentharness.github_artifacts import GitHubArtifactStore
 _OWNER = "test-owner"
 _REPO = "test-repo"
 _FEATURE_ID = "feat-20260427-abc123"
-_CLONE_DIR = Path("/tmp/runs-cache-test")
-_CLONE_ROOT = _CLONE_DIR / _OWNER / _REPO
+_CLONE_DIR = Path("/tmp/worktrees-test")
+_CLONE_ROOT = _CLONE_DIR / _FEATURE_ID
 
 
 def _make_store(clone_dir: Path = _CLONE_DIR) -> GitHubArtifactStore:
@@ -47,15 +47,15 @@ def test_from_config_builds_correct_paths() -> None:
     config = MagicMock()
     config.github.owner = "org"
     config.github.runs_repo = "runs"
-    config.github.clone_dir = ".runs-cache"
+    config.github.clone_dir = ".worktrees"
 
     store = GitHubArtifactStore.from_config(config, "feat-xyz")
 
     assert store._owner == "org"
     assert store._repo == "runs"
     assert store._feature_id == "feat-xyz"
-    assert store._clone_dir == Path(".runs-cache")
-    assert store._clone_root == Path(".runs-cache") / "org" / "runs"
+    assert store._clone_dir == Path(".worktrees")
+    assert store._clone_root == Path(".worktrees") / "feat-xyz"
 
 
 # ---------------------------------------------------------------------------
@@ -63,10 +63,9 @@ def test_from_config_builds_correct_paths() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_work_dir_returns_implementation_subdir() -> None:
+def test_get_work_dir_returns_clone_root() -> None:
     store = _make_store()
-    expected = _CLONE_ROOT / "artifacts" / _FEATURE_ID
-    assert store.get_work_dir() == expected
+    assert store.get_work_dir() == _CLONE_ROOT
 
 
 # ---------------------------------------------------------------------------

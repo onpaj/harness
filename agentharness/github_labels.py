@@ -10,6 +10,8 @@ from agentharness.models import FeatureStatus
 # Feature-level status labels
 # ---------------------------------------------------------------------------
 
+FEAT_BRAINSTORMING = "feat:brainstorming"
+FEAT_BRAINSTORMED = "feat:brainstormed"
 FEAT_ANALYZING = "feat:analyzing"
 FEAT_ARCHITECTING = "feat:architecting"
 FEAT_DESIGNING = "feat:designing"
@@ -21,6 +23,8 @@ FEAT_DONE = "feat:done"
 FEAT_FAILED = "feat:failed"
 
 FEAT_STATUS_LABELS: frozenset[str] = frozenset({
+    FEAT_BRAINSTORMING,
+    FEAT_BRAINSTORMED,
     FEAT_ANALYZING,
     FEAT_ARCHITECTING,
     FEAT_DESIGNING,
@@ -99,6 +103,8 @@ def is_claimed_by_label(label: str) -> bool:
 # ---------------------------------------------------------------------------
 
 FEATURE_STATUS_TO_LABEL: dict[FeatureStatus, str] = {
+    FeatureStatus.brainstorming: FEAT_BRAINSTORMING,
+    FeatureStatus.brainstormed: FEAT_BRAINSTORMED,
     FeatureStatus.analyzing: FEAT_ANALYZING,
     FeatureStatus.architecting: FEAT_ARCHITECTING,
     FeatureStatus.designing: FEAT_DESIGNING,

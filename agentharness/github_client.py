@@ -63,7 +63,11 @@ class GitHubClient:
         response = await self._client.request(method, url, **kwargs)
         if response.status_code >= 400:
             try:
-                detail = response.json().get("message", response.text)
+                body = response.json()
+                detail = body.get("message", response.text)
+                if "errors" in body:
+                    detail = f"{detail}: {body['errors']}"
+
             except Exception:
                 detail = response.text
             raise GitHubApiError(response.status_code, detail)
@@ -159,6 +163,9 @@ class GitHubClient:
         result: list[dict] = await self._request(  # type: ignore[assignment]
             "GET", self._repo_url("/issues"), params=params
         )
+        # GitHub API sometimes returns closed issues despite state=open — filter client-side
+        if state != "all":
+            result = [i for i in result if i.get("state") == state]
         return result
 
     # ------------------------------------------------------------------
@@ -240,11 +247,15 @@ class GitHubClient:
 
         for name in names:
             if name not in existing:
-                await self._request(
-                    "POST",
-                    self._repo_url("/labels"),
-                    json={"name": name, "color": color},
-                )
+                try:
+                    await self._request(
+                        "POST",
+                        self._repo_url("/labels"),
+                        json={"name": name, "color": color},
+                    )
+                except GitHubApiError as exc:
+                    if exc.status_code != 422:
+                        raise
 
     # ------------------------------------------------------------------
     # Pull requests

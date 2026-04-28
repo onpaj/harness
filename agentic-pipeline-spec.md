@@ -136,7 +136,8 @@ Tělo souboru obsahuje system prompt agenta včetně instrukcí pro formát outp
 ### Developer
 - **Model:** claude-sonnet-4-6
 - **Input:** spec.md, arch-review.md, design.md + konkrétní task
-- **Output:** impl/{task}.md nebo přímo kód v repozitáři
+- **Output:** impl/{task}.md (shrnutí) + kód zapsaný přímo do pracovního adresáře
+- **GitHub backend:** po dokončení jsou všechny změny v pracovním adresáři automaticky commitnuty a pushnuty do feature branche (`git add -A → commit → push`) před uploadem impl artefaktu
 - **Next queue:** review-queue (po dokončení všech developer tasků pro danou feature)
 
 ### Reviewer
@@ -157,11 +158,12 @@ Každý worker proces (bash nebo Node.js) běží kontinuálně na daném stroji
 4. Stažení input artifacts z Blob Storage
 5. Sestavení promptu z agent MD souboru + artifacts
 6. Spuštění `claude --model {model} --print -p "{prompt}"`
-7. Upload output artifact do Blob Storage
-8. Publikace zprávy do next queue
-9. Smazání zpracované zprávy z aktuální queue
+7. (GitHub backend, developer agent) Commit všech souborů zapsaných agentem do feature branche (`git add -A → commit → push`)
+8. Upload output artifact (impl markdown / review) do storage backendu
+9. Publikace zprávy do next queue
+10. Smazání zpracované zprávy z aktuální queue
 
-Pokud worker selže mezi kroky 3–9, zpráva se automaticky vrátí do queue po vypršení visibility timeout.
+Pokud worker selže mezi kroky 3–10, zpráva se automaticky vrátí do queue po vypršení visibility timeout.
 
 ---
 

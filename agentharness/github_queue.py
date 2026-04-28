@@ -44,8 +44,13 @@ def _default_worker_id() -> str:
 
 def _build_issue_body(task: TaskMessage) -> str:
     task_json = task.model_dump_json(indent=2)
+    parent_line = (
+        f"Feature: #{task.state_issue_number}\n\n"
+        if task.state_issue_number is not None
+        else ""
+    )
     return (
-        f"Task: {task.task_id}\n\n"
+        f"{parent_line}Task: {task.task_id}\n\n"
         f"```{_TASK_FENCE}\n{task_json}\n```"
     )
 

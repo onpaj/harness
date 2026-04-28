@@ -33,9 +33,7 @@ async def _run_git(*args: str, cwd: Path | None = None) -> bytes:
 class GitHubArtifactStore:
     """Artifact store backed by a git feature branch in a GitHub repository.
 
-    Files are committed directly to the feature branch.  A local clone of the
-    runs repo is kept in ``clone_dir/owner/repo`` and used as a write-through
-    cache so that all git operations remain local (followed by a push).
+    Each feature gets an isolated clone at ``clone_dir/{feature_id}/``.
     """
 
     def __init__(
@@ -49,7 +47,7 @@ class GitHubArtifactStore:
         self._repo = repo
         self._feature_id = feature_id
         self._clone_dir = clone_dir
-        self._clone_root = clone_dir / owner / repo
+        self._clone_root = clone_dir / feature_id
 
     # ------------------------------------------------------------------
     # Factory
@@ -112,7 +110,7 @@ class GitHubArtifactStore:
         else:
             dest.write_bytes(content)
 
-        await _run_git("-C", str(self._clone_root), "add", path)
+        await _run_git("-C", str(self._clone_root), "add", "-f", path)
 
         # Commit only if there is something staged (nothing-to-commit is OK).
         try:
@@ -162,6 +160,31 @@ class GitHubArtifactStore:
         listed_paths = stdout.decode("utf-8").splitlines()
         return path in listed_paths
 
+    async def commit_workdir_changes(self, message: str) -> bool:
+        """Stage all changes under the work dir, commit, and push to the feature branch.
+
+        Returns True if a new commit was created, False if nothing was staged.
+        """
+        await self._ensure_clone()
+
+        try:
+            await _run_git("-C", str(self._clone_root), "fetch", "origin", self._feature_id)
+        except RuntimeError:
+            pass
+
+        await _run_git("-C", str(self._clone_root), "checkout", self._feature_id)
+        await _run_git("-C", str(self._clone_root), "add", "-f", "-A")
+
+        try:
+            await _run_git("-C", str(self._clone_root), "commit", "-m", message)
+        except RuntimeError as exc:
+            if "nothing to commit" in str(exc).lower():
+                return False
+            raise
+
+        await _run_git("-C", str(self._clone_root), "push", "origin", self._feature_id)
+        return True
+
     async def close(self) -> None:
         """No-op; git subprocesses are short-lived."""
 
@@ -171,4 +194,4 @@ class GitHubArtifactStore:
 
     def get_work_dir(self) -> Path:
         """Return the local directory where developer agents write code."""
-        return self._clone_root / "artifacts" / self._feature_id
+        return self._clone_root

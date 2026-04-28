@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class FeatureStatus(str, Enum):
     brainstorming = "brainstorming"
+    brainstormed = "brainstormed"
     analyzing = "analyzing"
     architecting = "architecting"
     designing = "designing"
@@ -106,7 +107,9 @@ class FeatureState(BaseModel):
     history: list[HistoryEvent] = Field(default_factory=list)
     config: PipelineConfig = Field(default_factory=PipelineConfig)
     worktree_path: str | None = None
+    branch_name: str | None = None
     cleanup_warning: str | None = None
+    state_issue_number: int | None = None
 
     def with_event(self, event: str, **kwargs: Any) -> FeatureState:
         """Return new state with appended history event (immutable update)."""
@@ -185,6 +188,7 @@ class TaskMessage(BaseModel):
     revision: int = 1
     review_feedback: str | None = None
     work_dir: str | None = None  # local filesystem path; None → temp dir
+    state_issue_number: int | None = None
 
 
 class AgentDefinition(BaseModel):
