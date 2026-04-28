@@ -23,7 +23,7 @@ from textual.widgets import Button, DataTable, Footer, Header, Label, ListItem, 
 
 from agentharness.config import Config
 from agentharness.models import FeatureState, FeatureStatus, TaskStatus, TokenUsage
-from agentharness.storage import PipelineQueue
+from agentharness.storage import create_state_manager, create_task_queue
 
 _REFRESH_SECONDS = 2.0
 
@@ -624,35 +624,19 @@ class PipelineMonitor(App):
         )
 
     async def _do_resume_task(self, feature_id: str, task_id: str) -> None:
-        from azure.storage.blob.aio import BlobServiceClient
         from agentharness.models import FeatureStatus, PhaseInfo, PhaseStatus, TaskMessage, TaskStatus
-        from agentharness.state_manager import StateManager
         from agentharness.storage import phase_artifact_path, review_artifact_path
 
-        _PHASE_TO_QUEUE = {
-            "analyzing": "analyst-queue",
-            "architecting": "architect-queue",
-            "designing": "designer-queue",
-            "planning": "planner-queue",
-            "developing": "developer-queue",
-            "reviewing": "review-queue",
-        }
+        state_mgr = create_state_manager(self._config)
+        state = await state_mgr.get(feature_id)
 
-        conn_str = self._config.storage.connection_string
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-        try:
-            state_mgr = StateManager(blob_service, self._config.storage.container)
-            state = await state_mgr.get(feature_id)
+        if task_id in _PHASE_ORDER:
+            await self._resume_phase(state_mgr, state, feature_id, task_id, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
+        else:
+            await self._resume_dev_task(state_mgr, state, feature_id, task_id, TaskMessage, TaskStatus)
 
-            if task_id in _PHASE_ORDER:
-                await self._resume_phase(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, conn_str, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
-            else:
-                await self._resume_dev_task(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, conn_str, TaskMessage, TaskStatus)
-        finally:
-            await blob_service.close()
-
-    async def _resume_phase(self, state_mgr, state, feature_id, phase, phase_to_queue, conn_str, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path) -> None:
-        queue_name = phase_to_queue.get(phase)
+    async def _resume_phase(self, state_mgr, state, feature_id, phase, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path) -> None:
+        queue_name = _PHASE_TO_QUEUE.get(phase)
         if not queue_name:
             self.notify(f"No queue mapped for phase {phase!r}.", severity="error")
             return
@@ -703,15 +687,15 @@ class PipelineMonitor(App):
             ),
         )
 
-        q = PipelineQueue.from_connection_string(conn_str, queue_name)
+        queue = create_task_queue(self._config, queue_name)
         try:
-            await q.send_task(task_msg)
+            await queue.send_task(task_msg)
         finally:
-            await q.close()
+            await queue.close()
 
         self.notify(f"Phase {phase!r} requeued → {queue_name}", severity="information")
 
-    async def _resume_dev_task(self, state_mgr, state, feature_id, task_id, phase_to_queue, conn_str, TaskMessage, TaskStatus) -> None:
+    async def _resume_dev_task(self, state_mgr, state, feature_id, task_id, TaskMessage, TaskStatus) -> None:
         task_entry = next((t for t in state.tasks if t.task_id == task_id), None)
         if not task_entry:
             self.notify(f"Task {task_id!r} not found in state.", severity="error")
@@ -723,7 +707,7 @@ class PipelineMonitor(App):
             self.notify("No saved message for this task — cannot resume.", severity="error")
             return
 
-        queue_name = phase_to_queue.get(task_entry.phase)
+        queue_name = _PHASE_TO_QUEUE.get(task_entry.phase)
         if not queue_name:
             self.notify(f"Unknown phase {task_entry.phase!r}.", severity="error")
             return
@@ -739,11 +723,11 @@ class PipelineMonitor(App):
             ).with_event("task_resumed", task_id=task_id),
         )
 
-        q = PipelineQueue.from_connection_string(conn_str, queue_name)
+        queue = create_task_queue(self._config, queue_name)
         try:
-            await q.send_task(TaskMessage(**task_entry.queued_message))
+            await queue.send_task(TaskMessage(**task_entry.queued_message))
         finally:
-            await q.close()
+            await queue.close()
 
         short = task_id.split("-dev-")[-1]
         self.notify(f"Task {short!r} queued → {queue_name}", severity="information")
@@ -776,13 +760,12 @@ class PipelineMonitor(App):
         self.push_screen(ConfirmScreen("Purge ALL queues? This cannot be undone."), on_confirm)
 
     async def _do_purge_queues(self) -> None:
-        conn = self._config.storage.connection_string
-        for name in self._config.queue_names():
-            q = PipelineQueue.from_connection_string(conn, name)
+        for queue_name in self._config.queue_names():
+            queue = create_task_queue(self._config, queue_name)
             try:
-                await q.purge()
+                await queue.purge()
             finally:
-                await q.close()
+                await queue.close()
         self.notify("All queues purged.", severity="warning")
 
     async def action_open_log(self) -> None:
@@ -801,52 +784,8 @@ class PipelineMonitor(App):
 
 
 async def _load_all_states(config: Config) -> list[FeatureState]:
-    if config.storage_backend == "github":
-        return _load_states_from_cache()
-    return await _load_states_azure(config)
-
-
-async def _load_states_azure(config: Config) -> list[FeatureState]:
-    from azure.storage.blob.aio import BlobServiceClient
-    from agentharness.state_manager import StateManager
-
-    conn_str = config.storage.connection_string
-    blob_service = BlobServiceClient.from_connection_string(conn_str)
-    container = blob_service.get_container_client(config.storage.container)
-    mgr = StateManager(blob_service, config.storage.container)
-
-    states: list[FeatureState] = []
-    try:
-        async for blob in container.list_blobs(name_starts_with="artifacts/"):
-            if blob.name.endswith("/state.json"):
-                feature_id = blob.name.split("/")[1]
-                try:
-                    state = await mgr.get(feature_id)
-                    states.append(state)
-                except Exception:
-                    pass
-    finally:
-        await blob_service.close()
-
-    # Sort: active first, then by updated_at desc
-    def sort_key(s: FeatureState):
-        active = s.status not in (FeatureStatus.done, FeatureStatus.failed)
-        return (not active, -(s.updated_at.timestamp() if s.updated_at else 0))
-
-    return sorted(states, key=sort_key)
-
-
-def _load_states_from_cache() -> list[FeatureState]:
-    import json
-    from agentharness.observer import STATE_CACHE_PATH
-
-    if not STATE_CACHE_PATH.exists():
-        return []
-    try:
-        raw = json.loads(STATE_CACHE_PATH.read_text())
-        states = [FeatureState.model_validate(s) for s in raw]
-    except Exception:
-        return []
+    state_mgr = create_state_manager(config)
+    states = await state_mgr.list_features()
 
     def sort_key(s: FeatureState):
         active = s.status not in (FeatureStatus.done, FeatureStatus.failed)
@@ -856,51 +795,15 @@ def _load_states_from_cache() -> list[FeatureState]:
 
 
 async def _load_queue_depths(config: Config) -> dict[str, int]:
-    if config.storage_backend == "github":
-        return _derive_depths_from_cache()
-    return await _load_depths_azure(config)
-
-
-async def _load_depths_azure(config: Config) -> dict[str, int]:
-    from agentharness.storage import PipelineQueue
-
-    conn_str = config.storage.connection_string
     depths: dict[str, int] = {}
     for queue_name in config.queue_names():
+        queue = create_task_queue(config, queue_name)
         try:
-            q = PipelineQueue.from_connection_string(conn_str, queue_name)
-            depths[queue_name] = await q.get_depth()
-            await q.close()
+            depths[queue_name] = await queue.get_depth()
         except Exception:
             depths[queue_name] = 0
-    return depths
-
-
-def _derive_depths_from_cache() -> dict[str, int]:
-    from agentharness.models import PhaseStatus, TaskStatus
-    from agentharness.observer import STATE_CACHE_PATH
-    import json
-
-    if not STATE_CACHE_PATH.exists():
-        return {}
-    try:
-        raw = json.loads(STATE_CACHE_PATH.read_text())
-        states = [FeatureState.model_validate(s) for s in raw]
-    except Exception:
-        return {}
-
-    depths: dict[str, int] = {q: 0 for q in _PHASE_TO_QUEUE.values()}
-    active_phase_statuses = {PhaseStatus.pending, PhaseStatus.in_progress}
-    for state in states:
-        for phase, queue in _PHASE_TO_QUEUE.items():
-            info = state.phases.get(phase)
-            if info and info.status in active_phase_statuses:
-                depths[queue] += 1
-        for task in state.tasks:
-            if task.status in (TaskStatus.queued, TaskStatus.in_progress):
-                queue = _PHASE_TO_QUEUE.get(task.phase or "developing")
-                if queue:
-                    depths[queue] += 1
+        finally:
+            await queue.close()
     return depths
 
 
