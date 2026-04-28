@@ -9,3 +9,9 @@ logs/**
 implementations/**
 brief.md
 .worktrees/
+artifacts/
+*.r1.md
+arch-review*.md
+design*.md
+spec*.md
+task-plan*.md
