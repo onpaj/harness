@@ -14,11 +14,29 @@ from agentharness.models import (
     TaskStatus,
 )
 from agentharness.state_change import (
+    CLEAR_TASKS_STATES,
     StateChangeError,
     StateChangeMode,
     StateChangeResult,
     apply_state_change,
 )
+
+
+class TestConstants:
+    def test_clear_tasks_states_covers_brainstorming_through_planning(self):
+        assert CLEAR_TASKS_STATES == frozenset({
+            FeatureStatus.brainstorming,
+            FeatureStatus.brainstormed,
+            FeatureStatus.analyzing,
+            FeatureStatus.architecting,
+            FeatureStatus.designing,
+            FeatureStatus.planning,
+        })
+
+    def test_clear_tasks_states_excludes_developing_and_later(self):
+        for s in (FeatureStatus.developing, FeatureStatus.dev_revision,
+                  FeatureStatus.reviewing, FeatureStatus.done, FeatureStatus.failed):
+            assert s not in CLEAR_TASKS_STATES
 
 
 def _make_state_mgr(initial: FeatureState):

@@ -256,6 +256,8 @@
   "tests/test_state_change.py::TestApplyStateChangeRollback::test_rollback_to_brainstorming_does_not_enqueue",
   "tests/test_state_change.py::TestApplyStateChangeRollback::test_rollback_to_planning_clears_tasks",
   "tests/test_state_change.py::TestApplyStateChangeRollback::test_rollback_to_reviewing_does_not_clear_tasks",
+  "tests/test_state_change.py::TestConstants::test_clear_tasks_states_covers_brainstorming_through_planning",
+  "tests/test_state_change.py::TestConstants::test_clear_tasks_states_excludes_developing_and_later",
   "tests/test_state_manager.py::TestStateManagerCreate::test_create_uploads_state",
   "tests/test_state_manager.py::TestStateManagerGet::test_get_raises_key_error_when_not_found",
   "tests/test_state_manager.py::TestStateManagerGet::test_get_returns_state",
