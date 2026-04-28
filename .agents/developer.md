@@ -10,7 +10,7 @@ allowed_tools:
   - write
   - task
 output_format: markdown
-visibility_timeout: 1800
+visibility_timeout: 3600
 retry_limit: 3
 output_parsing: none
 context_files:
@@ -70,3 +70,11 @@ DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 Use `DONE_WITH_CONCERNS` if any subagent raised unresolved concerns.
 Use `BLOCKED` if the task could not be completed after re-dispatch attempts.
 Use `NEEDS_CONTEXT` if information required to complete the task was not available in the context file.
+
+## Model selection for subagents
+
+You (the orchestrator) run on Sonnet — coordinate, plan, and decide.
+Dispatch every subagent (implementer, spec reviewer, code quality reviewer) on
+**Haiku** by passing `"model": "claude-haiku-4-5-20251001"` in the `task` tool
+invocation. Haiku is ~3× faster and sufficient for mechanical implementation
+and review work. Reserve Sonnet for coordination decisions only.

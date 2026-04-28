@@ -151,7 +151,11 @@ class TestOpenFeaturePr:
         config = _make_github_config()
 
         mock_client = AsyncMock()
-        mock_client.create_pull_request = AsyncMock(return_value={"number": 99})
+        mock_client.get_default_branch = AsyncMock(return_value="main")
+        mock_client.create_pull_request = AsyncMock(
+            return_value={"number": 99, "html_url": "https://github.com/org/repo/pull/99"}
+        )
+        mock_client.create_comment = AsyncMock()
         mock_client.close = AsyncMock()
 
         with patch("agentharness.github_client.GitHubClient") as MockGitHubClient:

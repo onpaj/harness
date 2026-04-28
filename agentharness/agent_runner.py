@@ -69,10 +69,12 @@ async def run_agent(
                 async for raw in proc.stdout:
                     line = raw.decode(errors="replace").rstrip("\n")
                     lines.append(line)
-                    log.info("[claude] %s", line)
-                    if log_fh:
-                        log_fh.write(line + "\n")
-                        log_fh.flush()
+                    readable = _format_stream_line(line)
+                    if readable:
+                        log.info("%s", readable)
+                        if log_fh:
+                            log_fh.write(readable + "\n")
+                            log_fh.flush()
             finally:
                 if log_fh:
                     log_fh.close()
@@ -112,12 +114,66 @@ async def run_agent(
     return RunResult(output=text, tokens=tokens)
 
 
+def _format_stream_line(line: str) -> str | None:
+    """Convert a stream-json event line into a human-readable log string.
+
+    Returns None for events that add no value (init, system, empty).
+    """
+    if not line.strip():
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return line  # pass through non-JSON lines as-is
+
+    event_type = event.get("type", "")
+
+    if event_type == "assistant":
+        message = event.get("message") or {}
+        parts: list[str] = []
+        for block in message.get("content", []):
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    parts.append(text)
+            elif btype == "tool_use":
+                tool_name = block.get("name", "?")
+                inp = block.get("input") or {}
+                if "command" in inp:
+                    parts.append(f"[tool:{tool_name}] {inp['command']}")
+                elif "path" in inp:
+                    parts.append(f"[tool:{tool_name}] {inp['path']}")
+                else:
+                    parts.append(f"[tool:{tool_name}]")
+        return "\n".join(parts) if parts else None
+
+    if event_type == "tool_result":
+        content = event.get("content") or []
+        texts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        combined = " ".join(t.strip() for t in texts if t.strip())
+        if combined:
+            max_len = 300
+            snippet = combined[:max_len] + ("…" if len(combined) > max_len else "")
+            return f"[tool_result] {snippet}"
+        return None
+
+    if event_type == "result":
+        subtype = event.get("subtype", "")
+        tokens_in = event.get("total_input_tokens", 0)
+        tokens_out = event.get("total_output_tokens", 0)
+        return f"[result:{subtype}] in={tokens_in} out={tokens_out}"
+
+    return None
+
+
 def _build_command(agent_def: AgentDefinition, prompt: str) -> list[str]:
     cmd = [
         "claude",
         "-p", prompt,
+        "--verbose",
         "--model", agent_def.model,
-        "--output-format", "json",
+        "--output-format", "stream-json",
     ]
 
     if agent_def.allowed_tools:

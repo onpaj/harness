@@ -1,12 +1,13 @@
 """Unit tests for dispatcher — state transitions, parsing, serial dispatch."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentharness.config import Config
 from agentharness.dispatcher import (
     _dispatch_review_result,
     _dispatch_serial_next,
+    _open_feature_pr,
     _parse_review_result,
     _task_name_from_id,
 )
@@ -167,31 +168,59 @@ def _make_config() -> Config:
     return cfg
 
 
+def _make_github_config() -> Config:
+    cfg = MagicMock(spec=Config)
+    cfg.storage_backend = "github"
+    return cfg
+
+
+def _mock_github_client(
+    pr_number: int = 42,
+    pr_url: str = "https://github.com/org/repo/pull/42",
+    raise_exc: Exception | None = None,
+):
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_default_branch = AsyncMock(return_value="main")
+    mock_client.close = AsyncMock()
+    mock_client.create_comment = AsyncMock()
+    if raise_exc:
+        mock_client.create_pull_request = AsyncMock(side_effect=raise_exc)
+    else:
+        mock_client.create_pull_request = AsyncMock(
+            return_value={"number": pr_number, "html_url": pr_url}
+        )
+    mock_cls = MagicMock(return_value=mock_client)
+    mock_cls.from_config = MagicMock(return_value=mock_client)
+    return patch("agentharness.github_client.GitHubClient", mock_cls)
+
+
 @pytest.mark.asyncio
 class TestDispatchSerialNext:
-    async def test_enqueues_per_task_review(self):
-        state = _make_state_with_pending_tasks("feat-1", ["auth", "api"])
-        state = state.with_task_update("feat-1-dev-auth", status=TaskStatus.completed)
+    async def test_done_transitions_to_done_directly(self):
+        """Successful dev completion goes straight to done — no outer review queue."""
+        state = _make_state_with_pending_tasks("feat-1", ["auth"])
+        dev_task = _make_dev_task("feat-1", "auth")
+        queues = _make_queues()
+        cfg = _make_config()
+        cfg.storage_backend = "azure"  # non-github, so _open_feature_pr is a no-op
+
+        result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", cfg, queues)
+
+        assert result.status == FeatureStatus.done
+        queues["review-queue"].send_task.assert_not_awaited()
+
+    async def test_done_with_concerns_transitions_to_done(self):
+        state = _make_state_with_pending_tasks("feat-1", ["auth"])
         dev_task = _make_dev_task("feat-1", "auth")
         queues = _make_queues()
 
-        result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", _make_config(), queues)
+        result = await _dispatch_serial_next(
+            state, dev_task, "## Status\nDONE_WITH_CONCERNS\n", _make_config(), queues
+        )
 
-        assert result.status == FeatureStatus.reviewing
-        queues["review-queue"].send_task.assert_awaited_once()
-        sent = queues["review-queue"].send_task.call_args[0][0]
-        assert "review-auth" in sent.task_id
-        assert sent.context == "auth"
-
-    async def test_review_task_includes_impl_artifact(self):
-        state = _make_state_with_pending_tasks("feat-1", ["foo"])
-        dev_task = _make_dev_task("feat-1", "foo")
-        queues = _make_queues()
-
-        await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", _make_config(), queues)
-
-        sent = queues["review-queue"].send_task.call_args[0][0]
-        assert dev_task.output_artifact in sent.input_artifacts
+        assert result.status == FeatureStatus.done
 
     async def test_blocked_status_marks_feature_failed(self):
         state = _make_state_with_pending_tasks("feat-1", ["auth"])
@@ -224,7 +253,7 @@ class TestDispatchSerialNext:
 
         result = await _dispatch_serial_next(state, dev_task, "No status header here.", _make_config(), queues)
 
-        assert result.status == FeatureStatus.reviewing
+        assert result.status == FeatureStatus.done
 
 
 @pytest.mark.asyncio
@@ -295,6 +324,31 @@ class TestDispatchReviewResult:
         assert sent.revision == 2
         assert "Missing error handling" in sent.review_feedback
 
+    async def test_pass_with_no_more_tasks_persists_pr_on_state(self):
+        """When all tasks pass review and a PR is opened, pr_url is stored on the returned state."""
+        state = _make_state_with_pending_tasks("feat-3", ["only-task"])
+        state = state.model_copy(update={"branch_name": "feat-3-99", "state_issue_number": 99})
+        state = state.with_task_update("feat-3-dev-only-task", status=TaskStatus.completed)
+        review_task = TaskMessage(
+            feature_id="feat-3",
+            task_id="feat-3-review-only-task-r1",
+            input_artifacts=[],
+            output_artifact="artifacts/feat-3/review/only-task.r1.md",
+            agent_role="reviewer",
+            context="only-task",
+            revision=1,
+        )
+        review_output = "### task: only-task\n**Status:** PASS\n"
+        queues = _make_queues()
+        cfg = _make_github_config()
+
+        with _mock_github_client(pr_number=7, pr_url="https://github.com/org/repo/pull/7") as mock_cls:
+            result = await _dispatch_review_result(state, review_task, review_output, cfg, queues)
+
+        assert result.status == FeatureStatus.done
+        assert result.pr_number == 7
+        assert result.pr_url == "https://github.com/org/repo/pull/7"
+
     async def test_revision_exceeding_max_marks_failed(self):
         from agentharness.models import PipelineConfig
         state = _make_state_with_pending_tasks("feat-5", ["auth"])
@@ -315,3 +369,99 @@ class TestDispatchReviewResult:
 
         assert result.status == FeatureStatus.failed
         queues["developer-queue"].send_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestOpenFeaturePr:
+    def _done_state(self, branch_name: str = "feat-auth-42", issue_number: int = 42) -> FeatureState:
+        return FeatureState(
+            feature_id="feat-auth",
+            status=FeatureStatus.done,
+            branch_name=branch_name,
+            state_issue_number=issue_number,
+        )
+
+    async def test_noop_for_azure_backend(self):
+        """Azure backend: _open_feature_pr returns (None, None) immediately."""
+        state = self._done_state()
+        cfg = _make_config()  # storage_backend = "azure"
+        pr_number, pr_url = await _open_feature_pr(state, cfg)
+        assert pr_number is None
+        assert pr_url is None
+
+    async def test_uses_branch_name_as_head(self):
+        """PR is created with head = state.branch_name, not state.feature_id."""
+        state = self._done_state(branch_name="feat-auth-42")
+        cfg = _make_github_config()
+
+        with _mock_github_client() as mock_cls:
+            await _open_feature_pr(state, cfg)
+
+        client = mock_cls.from_config.return_value
+        call_kwargs = client.create_pull_request.call_args.kwargs
+        assert call_kwargs["head"] == "feat-auth-42"
+
+    async def test_falls_back_to_feature_id_when_branch_name_is_none(self):
+        """If branch_name is not set, fall back to feature_id."""
+        state = FeatureState(feature_id="feat-auth", status=FeatureStatus.done, state_issue_number=42)
+        cfg = _make_github_config()
+
+        with _mock_github_client() as mock_cls:
+            await _open_feature_pr(state, cfg)
+
+        client = mock_cls.from_config.return_value
+        call_kwargs = client.create_pull_request.call_args.kwargs
+        assert call_kwargs["head"] == "feat-auth"
+
+    async def test_returns_pr_number_and_url(self):
+        """Returns (pr_number, pr_url) on success."""
+        state = self._done_state()
+        cfg = _make_github_config()
+
+        with _mock_github_client(pr_number=7, pr_url="https://github.com/org/repo/pull/7"):
+            pr_number, pr_url = await _open_feature_pr(state, cfg)
+
+        assert pr_number == 7
+        assert pr_url == "https://github.com/org/repo/pull/7"
+
+    async def test_posts_success_comment_on_tracking_issue(self):
+        """On success, a comment with the PR URL is posted on state_issue_number."""
+        state = self._done_state(issue_number=42)
+        cfg = _make_github_config()
+
+        with _mock_github_client(pr_number=5, pr_url="https://github.com/org/repo/pull/5") as mock_cls:
+            await _open_feature_pr(state, cfg)
+
+        client = mock_cls.from_config.return_value
+        client.create_comment.assert_awaited_once()
+        comment_body: str = client.create_comment.call_args.args[1]
+        assert "https://github.com/org/repo/pull/5" in comment_body
+
+    async def test_posts_error_comment_on_failure(self):
+        """On PR creation failure, an error comment is posted on the tracking issue."""
+        state = self._done_state(issue_number=42)
+        cfg = _make_github_config()
+
+        with _mock_github_client(raise_exc=Exception("API error")) as mock_cls:
+            pr_number, pr_url = await _open_feature_pr(state, cfg)
+
+        assert pr_number is None
+        client = mock_cls.from_config.return_value
+        client.create_comment.assert_awaited_once()
+        comment_body: str = client.create_comment.call_args.args[1]
+        assert "API error" in comment_body
+
+    async def test_done_via_serial_next_persists_pr_url(self):
+        """_dispatch_serial_next folds pr_url into returned state when GitHub backend."""
+        state = _make_state_with_pending_tasks("feat-gh", ["auth"])
+        state = state.model_copy(update={"branch_name": "feat-gh-10", "state_issue_number": 10})
+        dev_task = _make_dev_task("feat-gh", "auth")
+        queues = _make_queues()
+        cfg = _make_github_config()
+
+        with _mock_github_client(pr_number=3, pr_url="https://github.com/org/repo/pull/3"):
+            result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", cfg, queues)
+
+        assert result.status == FeatureStatus.done
+        assert result.pr_url == "https://github.com/org/repo/pull/3"
+        assert result.pr_number == 3

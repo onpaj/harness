@@ -134,7 +134,8 @@ class GitHubTaskQueue:
 
         Returns None if the queue has no available tasks.
         """
-        issues = await self._client.list_issues(labels=[self._queue_label, STATE_QUEUED])
+        query = f"is:open label:{STATE_QUEUED} label:{self._queue_label}"
+        issues = await self._client.search_issues(query)
         if not issues:
             return None
 
@@ -238,7 +239,8 @@ class GitHubTaskQueue:
 
     async def purge(self) -> None:
         """Close all open issues with the queue label."""
-        issues = await self._client.list_issues(labels=[self._queue_label])
+        query = f"is:open label:{self._queue_label}"
+        issues = await self._client.search_issues(query)
         for issue in issues:
             await self._client.update_issue(issue["number"], state="closed")
 
@@ -265,7 +267,8 @@ class GitHubTaskQueue:
 
     async def get_depth(self) -> int:
         """Return the number of open queued issues for this queue."""
-        issues = await self._client.list_issues(labels=[self._queue_label, STATE_QUEUED])
+        query = f"is:open label:{STATE_QUEUED} label:{self._queue_label}"
+        issues = await self._client.search_issues(query)
         return len(issues)
 
     # ------------------------------------------------------------------

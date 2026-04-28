@@ -198,15 +198,25 @@ async def _dispatch_serial_next(
     dev_status = _parse_developer_status(agent_output)
     if dev_status in ("BLOCKED", "NEEDS_CONTEXT"):
         log.warning(
-            "Dev task %s reported %s — skipping review, marking feature failed",
+            "Dev task %s reported %s — marking feature failed",
             completed_task.task_id,
             dev_status,
         )
         return state.with_status(FeatureStatus.failed).with_event(
             "feature_failed", details=f"Task {completed_task.task_id} reported {dev_status}"
         )
-    log.info("Dev task %s complete (%s), enqueuing per-task review", completed_task.task_id, dev_status)
-    return await _enqueue_per_task_review(state, completed_task, queues)
+    log.info(
+        "Dev task %s complete (%s) — in-developer review already done, marking feature done",
+        completed_task.task_id,
+        dev_status,
+    )
+    done_state = state.with_status(FeatureStatus.done).with_event("feature_completed")
+    pr_number, pr_url = await _open_feature_pr(done_state, config)
+    if pr_number is not None:
+        done_state = done_state.with_pr(pr_number, pr_url).with_event(
+            "pr_opened", details=f"#{pr_number} {pr_url}"
+        )
+    return done_state
 
 
 async def _enqueue_per_task_review(
@@ -263,7 +273,11 @@ async def _dispatch_review_result(
         if next_task_entry is None:
             log.info("All tasks reviewed and passed for %s — done", state.feature_id)
             done_state = state.with_status(FeatureStatus.done).with_event("feature_completed")
-            await _open_feature_pr(done_state, config)
+            pr_number, pr_url = await _open_feature_pr(done_state, config)
+            if pr_number is not None:
+                done_state = done_state.with_pr(pr_number, pr_url).with_event(
+                    "pr_opened", details=f"#{pr_number} {pr_url}"
+                )
             return done_state
 
         dev_queue = queues.get("developer-queue")
@@ -437,22 +451,43 @@ def _build_pr_body(state: FeatureState) -> str:
 """
 
 
-async def _open_feature_pr(state: FeatureState, config: Config) -> None:
-    """Open a GitHub PR for the completed feature. No-op if not using GitHub backend."""
+async def _open_feature_pr(state: FeatureState, config: Config) -> tuple[int, str] | tuple[None, None]:
+    """Open a GitHub PR for the completed feature. No-op for non-GitHub backends.
+
+    Returns (pr_number, pr_url) on success, (None, None) otherwise.
+    """
     if config.storage_backend != "github":
-        return
+        return None, None
     from agentharness.github_client import GitHubClient
     client = GitHubClient.from_config(config)
     try:
+        head = state.branch_name or state.feature_id
         default_branch = await client.get_default_branch()
         pr = await client.create_pull_request(
             title=f"{state.feature_id}: implementation complete",
             body=_build_pr_body(state),
-            head=state.feature_id,
+            head=head,
             base=default_branch,
         )
-        log.info("Opened PR #%d for feature %s", pr["number"], state.feature_id)
+        pr_number: int = pr["number"]
+        pr_url: str = pr["html_url"]
+        log.info("Opened PR #%d for feature %s: %s", pr_number, state.feature_id, pr_url)
+        if state.state_issue_number is not None:
+            await client.create_comment(
+                state.state_issue_number,
+                f"Feature complete — PR #{pr_number}: {pr_url}",
+            )
+        return pr_number, pr_url
     except Exception as exc:
         log.error("Could not open PR for %s: %s", state.feature_id, exc)
+        if state.state_issue_number is not None:
+            try:
+                await client.create_comment(
+                    state.state_issue_number,
+                    f"Could not open PR: {exc}",
+                )
+            except Exception:
+                pass
+        return None, None
     finally:
         await client.close()

@@ -1,43 +1,54 @@
-# Feature Brief: AgentHarness Landing Page
+# Feature Brief: TUI Feature State Change Dialog
 
 ## Problem Statement
-Developers discovering AgentHarness have no compelling entry point that communicates the core value proposition: you can delegate the implementation grind to autonomous Claude agents and reclaim your time for design, architecture, and creative work.
+Operators monitoring the AgentHarness TUI have no way to manually change a feature's state — for example, to roll back a stuck or failed feature to an earlier phase and restart it. Currently they must manipulate state storage directly, which is error-prone and requires deep system knowledge.
 
 ## Goals
-- Convert developer visitors into users by making the value prop undeniable in under 10 seconds
-- Communicate the "ship faster by delegating the grind" message visually and emotionally
-- Provide enough technical credibility that developers trust the project
+- Allow any feature's state to be rolled back (or restarted) from within the TUI with a single keyboard shortcut
+- Auto-requeue the feature to the appropriate pipeline queue after the state change, requiring no further manual steps
 
 ## Functional Requirements
-- Hero section: bold headline + animated/dynamic visual that evokes autonomous agents working in the background
-- How-it-works section: 3-step visual flow (brainstorm → agents work → code ships) with subtle JS animation
-- Features section: highlight key differentiators (multi-agent pipeline, per-task review loop, GitHub/Azure backends, zero babysitting)
-- Social proof / credibility section: pipeline diagram or terminal-style animation showing agents running
-- CTA section: "Get started" pointing to GitHub repo + quick-start command
-- Smooth scroll, parallax or scroll-triggered animations (JS-driven)
-- Mobile responsive
+- Pressing `S` in the TUI opens a modal dialog for the currently selected feature
+- The dialog lists all states from `brainstorming` up to and including the feature's current state, plus `failed` at the bottom
+- Selecting the **current state** restarts it: re-enqueues the same phase queue
+- Selecting an **earlier state** rolls back: updates state, clears developer TaskEntry records if the target is `planning` or earlier, then re-enqueues the appropriate phase queue
+- Selecting **`failed`** marks the feature as failed with no requeue
+- State update is atomic via `state_mgr.update()` with an event logged (`"manual_state_change"`)
+- On successful change the TUI refreshes immediately to reflect the new state
+
+## State → Queue Mapping (for auto-requeue)
+| State | Queue |
+|-------|-------|
+| `analyzing` | `analyst-queue` |
+| `architecting` | `architect-queue` |
+| `designing` | `designer-queue` |
+| `planning` | `planner-queue` |
+| `developing` | `developer-queue` |
+| `reviewing` | `review-queue` |
+| `dev_revision` | `developer-queue` |
+| `brainstorming` / `brainstormed` | no requeue |
 
 ## Non-Functional Requirements
-- Pure static site: HTML + CSS + vanilla JS (or minimal JS library like GSAP for animations)
-- No build step required — works by opening index.html directly or serving as static files
-- Fast load: no heavy frameworks, no React/Vue/etc.
-- Dark blue color palette (#0a0f1e base, #1e3a5f mid, #00d4ff accent), bold typography
+- State update must be atomic (blob lease / GitHub optimistic locking — same guarantees as existing `state_mgr.update()`)
+- Dialog must not block the TUI refresh loop
+- Rollback of TaskEntry records must not leave orphaned queue messages
 
 ## Technical Constraints
-- Lives in `/landingpage` folder in the AgentHarness repo
-- No backend, no API calls
-- Self-contained: all assets relative paths
+- TUI is built with the Textual framework (async-first); use `ModalScreen` for the dialog
+- State management: `StateManager.update()` with immutable `FeatureState.with_status()` / `with_tasks_added([])` patterns
+- Queue enqueue: construct `TaskMessage` and push via existing `TaskQueue` protocol
+- Must work with both Azure and GitHub storage backends
+- Shortcut `S` is currently unbound in the TUI
 
 ## Out of Scope
-- Documentation site / full docs
-- Interactive demo or live pipeline connection
-- Authentication or user accounts
-- Analytics integration
+- Forward state jumps (only rollback to earlier states or restart current)
+- Bulk state changes across multiple features
+- Editing individual task entries from the TUI
+- Changing state of `done` features
 
 ## Success Criteria
-- A developer landing on the page immediately understands: "Claude agents build my features while I do other things"
-- Page looks polished enough to share on X/HN/Reddit without embarrassment
-- Loads and animates correctly on Chrome, Firefox, Safari
-
-## Additional Context
-AgentHarness is a distributed, event-driven pipeline that autonomously processes development tasks using specialized Claude agents. A user describes a feature via brainstorm, uploads a brief, and a chain of agents (analyst → architect → designer → planner → developer → reviewer) produces the implementation without further human input. Target audience: developers already comfortable with Claude Code who want to scale their output. Design direction: dark blue (#0a0f1e base, #00d4ff accent), bold modern typography, Vercel/Linear aesthetic — premium, fast, developer-native. Animations encouraged: scroll-triggered reveals, terminal-style agent activity, pipeline flow diagram.
+- `S` opens the modal on a selected feature; Escape closes it without changes
+- Rolling back from `developing` to `planning` clears all TaskEntry records and re-enqueues planner-queue
+- Restarting the current state re-enqueues the correct queue and the observer picks it up within one poll cycle
+- Marking as `failed` sets state correctly with no queue message created
+- Unit tests cover: state transition logic, task clearing, queue selection, `failed` path

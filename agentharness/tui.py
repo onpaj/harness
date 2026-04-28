@@ -62,6 +62,12 @@ _PHASE_TO_QUEUE = {
 
 _OBSERVER_PID_FILE = Path("logs/observer.pid")
 
+_GITHUB_CALL_PATTERNS = ("api.github.com", "mcp__github__", "X-GitHub-Api-Version")
+
+
+def _is_github_call_line(line: str) -> bool:
+    return any(p in line for p in _GITHUB_CALL_PATTERNS)
+
 
 def _observer_pid() -> int | None:
     if not _OBSERVER_PID_FILE.exists():
@@ -327,6 +333,8 @@ class TaskLogPanel(RichLog):
                 try:
                     raw_lines = log_path.read_text().splitlines()[-_LOG_TAIL_LINES:]
                     for line in raw_lines:
+                        if _is_github_call_line(line):
+                            continue
                         self.write(Text.from_markup(f"[dim green]{log_path.stem}[/dim green]  {line}"))
                     self.scroll_end(animate=False)
                 except OSError:
@@ -352,6 +360,8 @@ class TaskLogPanel(RichLog):
             except OSError:
                 continue
             for line in text.splitlines()[-_LOG_TAIL_LINES:]:
+                if _is_github_call_line(line):
+                    continue
                 ts = line[:8] if len(line) >= 8 and line[2] == ":" else "00:00:00"
                 lines.append((ts, label, line))
         if not lines:
@@ -389,6 +399,8 @@ class WorkerLogPanel(RichLog):
             except OSError:
                 continue
             for line in text.splitlines()[-_LOG_TAIL_LINES:]:
+                if _is_github_call_line(line):
+                    continue
                 ts = line[:8] if len(line) >= 8 and line[2] == ":" else "00:00:00"
                 lines.append((ts, label, line))
 
@@ -624,9 +636,7 @@ class PipelineMonitor(App):
         )
 
     async def _do_resume_task(self, feature_id: str, task_id: str) -> None:
-        from azure.storage.blob.aio import BlobServiceClient
         from agentharness.models import FeatureStatus, PhaseInfo, PhaseStatus, TaskMessage, TaskStatus
-        from agentharness.state_manager import StateManager
         from agentharness.storage import phase_artifact_path, review_artifact_path
 
         _PHASE_TO_QUEUE = {
@@ -638,20 +648,30 @@ class PipelineMonitor(App):
             "reviewing": "review-queue",
         }
 
-        conn_str = self._config.storage.connection_string
-        blob_service = BlobServiceClient.from_connection_string(conn_str)
-        try:
-            state_mgr = StateManager(blob_service, self._config.storage.container)
+        if self._config.storage_backend == "github":
+            from agentharness.github_state import GitHubStateManager
+            state_mgr = GitHubStateManager.from_config(self._config)
             state = await state_mgr.get(feature_id)
-
             if task_id in _PHASE_ORDER:
-                await self._resume_phase(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, conn_str, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
+                await self._resume_phase(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, self._config, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
             else:
-                await self._resume_dev_task(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, conn_str, TaskMessage, TaskStatus)
-        finally:
-            await blob_service.close()
+                await self._resume_dev_task(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, self._config, TaskMessage, TaskStatus)
+        else:
+            from azure.storage.blob.aio import BlobServiceClient
+            from agentharness.state_manager import StateManager
+            conn_str = self._config.storage.connection_string
+            blob_service = BlobServiceClient.from_connection_string(conn_str)
+            try:
+                state_mgr = StateManager(blob_service, self._config.storage.container)
+                state = await state_mgr.get(feature_id)
+                if task_id in _PHASE_ORDER:
+                    await self._resume_phase(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, self._config, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
+                else:
+                    await self._resume_dev_task(state_mgr, state, feature_id, task_id, _PHASE_TO_QUEUE, self._config, TaskMessage, TaskStatus)
+            finally:
+                await blob_service.close()
 
-    async def _resume_phase(self, state_mgr, state, feature_id, phase, phase_to_queue, conn_str, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path) -> None:
+    async def _resume_phase(self, state_mgr, state, feature_id, phase, phase_to_queue, config, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path) -> None:
         queue_name = phase_to_queue.get(phase)
         if not queue_name:
             self.notify(f"No queue mapped for phase {phase!r}.", severity="error")
@@ -692,6 +712,7 @@ class PipelineMonitor(App):
             input_artifacts=_phase_inputs.get(phase, []),
             output_artifact=_phase_outputs[phase],
             agent_role=_phase_agents[phase],
+            state_issue_number=state.state_issue_number,
         )
 
         await state_mgr.update(
@@ -703,7 +724,11 @@ class PipelineMonitor(App):
             ),
         )
 
-        q = PipelineQueue.from_connection_string(conn_str, queue_name)
+        if config.storage_backend == "github":
+            from agentharness.github_queue import GitHubTaskQueue
+            q = GitHubTaskQueue.from_config(config, queue_name)
+        else:
+            q = PipelineQueue.from_connection_string(config.storage.connection_string, queue_name)
         try:
             await q.send_task(task_msg)
         finally:
@@ -711,7 +736,7 @@ class PipelineMonitor(App):
 
         self.notify(f"Phase {phase!r} requeued → {queue_name}", severity="information")
 
-    async def _resume_dev_task(self, state_mgr, state, feature_id, task_id, phase_to_queue, conn_str, TaskMessage, TaskStatus) -> None:
+    async def _resume_dev_task(self, state_mgr, state, feature_id, task_id, phase_to_queue, config, TaskMessage, TaskStatus) -> None:
         task_entry = next((t for t in state.tasks if t.task_id == task_id), None)
         if not task_entry:
             self.notify(f"Task {task_id!r} not found in state.", severity="error")
@@ -739,7 +764,11 @@ class PipelineMonitor(App):
             ).with_event("task_resumed", task_id=task_id),
         )
 
-        q = PipelineQueue.from_connection_string(conn_str, queue_name)
+        if config.storage_backend == "github":
+            from agentharness.github_queue import GitHubTaskQueue
+            q = GitHubTaskQueue.from_config(config, queue_name)
+        else:
+            q = PipelineQueue.from_connection_string(config.storage.connection_string, queue_name)
         try:
             await q.send_task(TaskMessage(**task_entry.queued_message))
         finally:

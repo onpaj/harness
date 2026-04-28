@@ -58,7 +58,9 @@ def parse_state_from_issue(issue: dict) -> FeatureState | None:
     body = issue.get("body") or ""
     try:
         raw = _extract_state_json(body)
-        return FeatureState.model_validate(_json.loads(raw))
+        # strict=False tolerates literal newlines in string values that some
+        # GitHub API responses embed when bodies contain unescaped newlines.
+        return FeatureState.model_validate(_json.loads(raw, strict=False))
     except Exception:
         return None
 
@@ -134,7 +136,14 @@ class GitHubStateManager:
         """
         items = await self._client.list_issues(labels=[FEATURE_MARKER])
         for issue in items:
-            if _feature_id_from_issue(issue) == feature_id:
+            candidate_id = _feature_id_from_issue(issue)
+            if candidate_id is None:
+                # list_issues may truncate long bodies — fetch the full issue
+                full = await self._client.get_issue(issue["number"])
+                candidate_id = _feature_id_from_issue(full)
+                if candidate_id == feature_id:
+                    return full, full["number"]
+            elif candidate_id == feature_id:
                 return issue, issue["number"]
         raise KeyError(f"No state found for feature {feature_id!r}")
 
@@ -151,8 +160,9 @@ class GitHubStateManager:
         if state is None:
             # Legacy: state stored in first comment
             comment = await self._get_state_comment(issue["number"])
+            import json as _json
             json_str = _extract_state_json(comment["body"])
-            state = FeatureState.model_validate_json(json_str)
+            state = FeatureState.model_validate(_json.loads(json_str, strict=False))
 
         status_from_label = _status_from_issue_labels(issue)
         if status_from_label is not None and status_from_label != state.status:
@@ -184,8 +194,15 @@ class GitHubStateManager:
         await self._client.update_issue(issue_number, body=_replace_state_block(brief_content, updated))
         log.debug("Created state issue #%d for feature %s", issue_number, state.feature_id)
 
-    async def get(self, feature_id: str) -> FeatureState:
-        """Fetch and reconstruct the FeatureState for the given feature_id."""
+    async def get(self, feature_id: str, issue_number: int | None = None) -> FeatureState:
+        """Fetch and reconstruct the FeatureState for the given feature_id.
+
+        If *issue_number* is provided, the state issue is fetched directly
+        (avoiding a full label search) and validated against *feature_id*.
+        """
+        if issue_number is not None:
+            issue = await self._client.get_issue(issue_number)
+            return await self._state_from_issue(issue)
         issue, _ = await self._find_issue(feature_id)
         return await self._state_from_issue(issue)
 
