@@ -23,7 +23,13 @@ from textual.widgets import Button, DataTable, Footer, Header, Label, ListItem, 
 
 from agentharness.config import Config
 from agentharness.models import FeatureState, FeatureStatus, TaskStatus, TokenUsage
-from agentharness.storage import PipelineQueue
+from agentharness.state_change import (
+    StateChangeError,
+    StateChangeResult,
+    apply_state_change,
+)
+from agentharness.storage import PipelineQueue, create_state_manager, create_task_queue
+from agentharness.tui_state_change import StateChangeModal
 
 _REFRESH_SECONDS = 2.0
 
@@ -508,6 +514,7 @@ class PipelineMonitor(App):
         Binding("o", "toggle_observer", "Observer on/off"),
         Binding("k", "kill_task", "Kill selected task"),
         Binding("t", "resume_task", "Resume selected task"),
+        Binding("s", "open_state_change", "Change state"),
     ]
 
     TITLE = "AgentHarness Pipeline Monitor"
@@ -622,6 +629,82 @@ class PipelineMonitor(App):
             ConfirmScreen(f"Resume: {label}?"),
             lambda confirmed: self.run_worker(self._do_resume_task(feature_id, task_id), exclusive=False) if confirmed else None,
         )
+
+    def action_open_state_change(self) -> None:
+        feature_id = self.query_one(FeatureList).selected_feature_id()
+        if not feature_id:
+            self.notify("No feature selected.", severity="warning")
+            return
+        state = next((s for s in self._states if s.feature_id == feature_id), None)
+        if state is None:
+            self.notify("Selected feature has no cached state.", severity="warning")
+            return
+        if state.status == FeatureStatus.done:
+            self.notify(
+                "State change unavailable for completed features.",
+                severity="warning",
+            )
+            return
+
+        def on_result(result: StateChangeResult | None) -> None:
+            if result is None:
+                return
+            if result.mode == "fail":
+                self.push_screen(
+                    ConfirmScreen(
+                        f"Mark {feature_id} as failed?\nThis cannot be undone automatically."
+                    ),
+                    lambda confirmed: (
+                        self.run_worker(
+                            self._do_apply_state_change(feature_id, result, state.status),
+                            exclusive=False,
+                        )
+                        if confirmed
+                        else None
+                    ),
+                )
+                return
+            self.run_worker(
+                self._do_apply_state_change(feature_id, result, state.status),
+                exclusive=False,
+            )
+
+        self.push_screen(StateChangeModal(state), on_result)
+
+    async def _do_apply_state_change(
+        self,
+        feature_id: str,
+        result: StateChangeResult,
+        previous_status: FeatureStatus,
+    ) -> None:
+        state_mgr = create_state_manager(self._config)
+        try:
+            await apply_state_change(
+                feature_id,
+                result,
+                state_mgr=state_mgr,
+                queue_factory=lambda name: create_task_queue(self._config, name),
+                config=self._config,
+            )
+            self.notify(
+                f"State changed: {previous_status.value} → {result.target_status.value} ({result.mode})",
+                severity="information",
+            )
+            self.call_after_refresh(self._refresh_data)
+        except StateChangeError as exc:
+            self.notify(
+                f"State updated but re-queue failed — press S to retry: {exc}",
+                severity="error",
+            )
+        except Exception as exc:
+            self.notify(f"State change failed: {exc}", severity="error")
+        finally:
+            close = getattr(state_mgr, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    pass
 
     async def _do_resume_task(self, feature_id: str, task_id: str) -> None:
         from azure.storage.blob.aio import BlobServiceClient
