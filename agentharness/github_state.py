@@ -52,17 +52,14 @@ def _extract_state_json(body: str) -> str:
 
 
 def parse_state_from_issue(issue: dict) -> FeatureState | None:
-    """Parse a FeatureState from a GitHub issue dict, or return None on failure."""
-    import json as _json
+    """Parse a FeatureState from a GitHub issue dict, or return None on failure.
 
-    body = issue.get("body") or ""
-    try:
-        raw = _extract_state_json(body)
-        # strict=False tolerates literal newlines in string values that some
-        # GitHub API responses embed when bodies contain unescaped newlines.
-        return FeatureState.model_validate(_json.loads(raw, strict=False))
-    except Exception:
-        return None
+    .. deprecated::
+        Prefer ``GitHubStateManager._parse_state_from_issue`` for new code.
+        # TODO: observer.py will be updated to use GitHubStateManager directly
+        # in the observer refactor task; at that point this shim can be removed.
+    """
+    return GitHubStateManager._parse_state_from_issue(issue)
 
 
 def _build_state_block(state: FeatureState) -> str:
@@ -76,6 +73,11 @@ def _replace_state_block(body: str, state: FeatureState) -> str:
     if _STATE_BLOCK_RE.search(body):
         return _STATE_BLOCK_RE.sub(new_block, body)
     return f"{body}\n\n{new_block}\n"
+
+
+def _feature_label(feature_id: str) -> str:
+    """Return the per-feature GitHub label name for a given feature_id."""
+    return f"feature:{feature_id}"
 
 
 def _feature_issue_title(feature_id: str) -> str:
@@ -123,6 +125,23 @@ class GitHubStateManager:
         return cls(client=GitHubClient.from_config(config))
 
     # ------------------------------------------------------------------
+    # Static helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_state_from_issue(issue: dict) -> FeatureState | None:
+        """Parse a FeatureState from a GitHub issue dict, or None on failure."""
+        import json as _json
+        body = issue.get("body") or ""
+        try:
+            raw = _extract_state_json(body)
+            # strict=False tolerates literal newlines in string values that
+            # GitHub API responses embed when issue bodies have unescaped newlines.
+            return FeatureState.model_validate(_json.loads(raw, strict=False))
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -156,7 +175,7 @@ class GitHubStateManager:
 
     async def _state_from_issue(self, issue: dict) -> FeatureState:
         """Parse FeatureState from issue body; fall back to first comment for legacy issues."""
-        state = parse_state_from_issue(issue)
+        state = self._parse_state_from_issue(issue)
         if state is None:
             # Legacy: state stored in first comment
             comment = await self._get_state_comment(issue["number"])
@@ -251,14 +270,17 @@ class GitHubStateManager:
             lambda s: s.with_cleanup_warning(message),
         )
 
-    async def list_features(self) -> list[tuple[str, int]]:
-        """Return all known features as ``(feature_id, issue_number)`` pairs.
+    async def list_features(self) -> list[FeatureState]:
+        """Return all known features as parsed FeatureState objects.
 
-        Results are sorted by issue number descending (newest first).
+        Results are sorted by issue number descending (newest first). If the
+        same feature_id appears in multiple issues, only the highest-numbered
+        issue (most recent) is kept.
         """
         items = await self._client.list_issues(labels=[FEATURE_MARKER], direction="desc")
 
-        seen: dict[str, int] = {}  # feature_id -> highest issue_number
+        # feature_id -> (issue_number, issue_dict) — keep newest issue per feature
+        seen: dict[str, tuple[int, dict]] = {}
         for issue in items:
             feature_id = _feature_id_from_issue(issue)
             if feature_id is None:
@@ -269,8 +291,74 @@ class GitHubStateManager:
                 )
                 continue
             issue_number: int = issue["number"]
-            if feature_id not in seen or issue_number > seen[feature_id]:
-                seen[feature_id] = issue_number
+            existing = seen.get(feature_id)
+            if existing is None or issue_number > existing[0]:
+                seen[feature_id] = (issue_number, issue)
 
-        results = sorted(seen.items(), key=lambda pair: pair[1], reverse=True)
-        return results
+        sorted_pairs = sorted(seen.values(), key=lambda pair: pair[0], reverse=True)
+
+        states: list[FeatureState] = []
+        for _issue_number, issue in sorted_pairs:
+            try:
+                state = await self._state_from_issue(issue)
+                states.append(state)
+            except Exception:
+                log.warning(
+                    "Could not parse state for issue #%d — skipping",
+                    issue["number"],
+                )
+        return states
+
+    async def close(self) -> None:
+        """Close the underlying HTTP connection pool."""
+        await self._client.close()
+
+    async def open_review(self, feature_id: str) -> str | None:
+        """Open a GitHub pull request for the completed feature.
+
+        Returns the PR URL on success, or None if the PR could not be created.
+        The caller is responsible for ensuring the feature branch exists and
+        all commits have been pushed before calling this method.
+        """
+        state = await self.get(feature_id)
+
+        def _build_pr_body(s: FeatureState) -> str:
+            phases_summary = "\n".join(
+                f"- **{phase}**: {info.status.value}"
+                for phase, info in s.phases.items()
+            )
+            tasks_summary = "\n".join(
+                f"- {t.task_id}: {t.status.value}"
+                for t in s.tasks
+            )
+            total = s.total_tokens_used()
+            tokens_line = str(total.total) if total.total else "unknown"
+            return (
+                f"## Feature: {s.feature_id}\n\n"
+                f"### Phases\n{phases_summary}\n\n"
+                f"### Tasks\n{tasks_summary}\n\n"
+                f"### Tokens used\n{tokens_line}\n\n"
+                f"---\n*Generated by AgentHarness*\n"
+            )
+
+        try:
+            default_branch = await self._client.get_default_branch()
+            pr = await self._client.create_pull_request(
+                title=f"{feature_id}: implementation complete",
+                body=_build_pr_body(state),
+                head=feature_id,
+                base=default_branch,
+            )
+            pr_url = pr.get("html_url")
+            if not pr_url:
+                log.warning(
+                    "PR #%s created but html_url missing in response for feature %s",
+                    pr.get("number", "?"),
+                    feature_id,
+                )
+                return None
+            log.info("Opened PR #%s for feature %s: %s", pr.get("number", "?"), feature_id, pr_url)
+            return pr_url
+        except Exception as exc:
+            log.error("Could not open PR for %s: %s", feature_id, exc)
+            return None

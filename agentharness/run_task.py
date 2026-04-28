@@ -66,12 +66,10 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         started_state = await state_mgr.update(task.feature_id, lambda s: _mark_started(s, task))
 
-        work_dir = None
-        if config.storage_backend == "github" and hasattr(store, "get_work_dir"):
-            work_dir = store.get_work_dir()
-            work_dir.mkdir(parents=True, exist_ok=True)
-        elif task.work_dir:
+        work_dir = store.get_work_dir()
+        if work_dir is None and task.work_dir:
             work_dir = Path(task.work_dir)
+        if work_dir is not None:
             work_dir.mkdir(parents=True, exist_ok=True)
 
         artifact_contents: dict[str, str] = {}
@@ -91,7 +89,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         if agent_def.output_file_glob and work_dir:
             result = _resolve_output_file(result, agent_def.output_file_glob, work_dir)
 
-        if agent_def.allowed_tools and hasattr(store, "commit_workdir_changes"):
+        if agent_def.allowed_tools:
             committed = await store.commit_workdir_changes(f"agent: developer implementation {task.task_id}")
             if committed:
                 log.info("[%s] Committed workdir changes for task %s", WORKER_ID, task.task_id)
@@ -103,7 +101,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         updated_state = await state_mgr.update(task.feature_id, lambda s: _mark_completed(s, task, result.tokens))
 
-        next_state = await dispatch_after_completion(updated_state, task, result.output, config, all_queues)
+        next_state = await dispatch_after_completion(updated_state, task, result.output, config, all_queues, state_mgr)
         if next_state is not None:
             persisted = await state_mgr.update(task.feature_id, lambda _: next_state)
             await run_terminal_cleanup(persisted, state_mgr)

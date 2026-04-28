@@ -134,17 +134,17 @@ async def test_create_calls_ensure_label_and_create_issue():
     # Act
     await mgr.create(state)
 
-    # Assert — ensure_label called with feature-specific label
-    client.ensure_label.assert_awaited_once_with(
-        _feature_label(state.feature_id), color="0075ca"
-    )
+    # Assert — ensure_labels called with FEATURE_MARKER and status label
+    client.ensure_labels.assert_awaited_once()
+    labels_arg, _ = client.ensure_labels.call_args
+    assert FEATURE_MARKER in labels_arg[0]
+    assert FEATURE_STATUS_TO_LABEL[state.status] in labels_arg[0]
 
     # Assert — create_issue called with correct labels and title
     client.create_issue.assert_awaited_once()
     _, kwargs = client.create_issue.call_args
     assert kwargs["title"] == _feature_issue_title(state.feature_id)
     assert FEATURE_MARKER in kwargs["labels"]
-    assert _feature_label(state.feature_id) in kwargs["labels"]
     assert FEATURE_STATUS_TO_LABEL[state.status] in kwargs["labels"]
 
 
@@ -195,7 +195,7 @@ async def test_get_reconstructs_feature_state():
     state = _make_state()
     issue = _make_issue(state)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -212,7 +212,7 @@ async def test_get_does_not_call_list_comments_when_body_has_state():
     state = _make_state()
     issue = _make_issue(state)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -235,7 +235,7 @@ async def test_get_overrides_status_from_label():
         {"name": FEAT_DEVELOPING},
     ]
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -245,39 +245,12 @@ async def test_get_overrides_status_from_label():
     assert result.status == FeatureStatus.developing
 
 
-@pytest.mark.asyncio
-async def test_get_falls_back_to_comment_for_legacy_issues():
-    """Issues without state in body fall back to reading the first comment."""
-    # Arrange
-    state = _make_state()
-    legacy_issue = {
-        "number": 99,
-        "body": "# Brief only — no state block",
-        "labels": [
-            {"name": FEATURE_MARKER},
-            {"name": _feature_label(state.feature_id)},
-            {"name": FEATURE_STATUS_TO_LABEL[state.status]},
-        ],
-    }
-    comment = {"id": 1, "body": _build_state_block(state)}
-    client = _mock_client()
-    client.search_issues.return_value = [legacy_issue]
-    client.list_comments.return_value = [comment]
-    mgr = GitHubStateManager(client)
-
-    # Act
-    result = await mgr.get(state.feature_id)
-
-    # Assert
-    assert result.feature_id == state.feature_id
-    client.list_comments.assert_awaited_once_with(99)
-
 
 @pytest.mark.asyncio
 async def test_get_raises_key_error_when_not_found():
     # Arrange
     client = _mock_client()
-    client.search_issues.return_value = []
+    client.list_issues.return_value = []
     mgr = GitHubStateManager(client)
 
     # Act / Assert
@@ -296,7 +269,7 @@ async def test_update_rewrites_issue_body_without_label_swap_when_status_unchang
     state = _make_state(status=FeatureStatus.analyzing)
     issue = _make_issue(state, number=10)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     worktree = "/tmp/wt"
@@ -325,7 +298,7 @@ async def test_update_body_preserves_brief_and_embeds_new_state():
     brief = "# My Brief\n\nImportant text."
     issue = _make_issue(state, number=10, brief_content=brief)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     new_state = await mgr.update(state.feature_id, lambda s: s.with_status(FeatureStatus.planning))
@@ -345,7 +318,7 @@ async def test_update_swaps_feat_labels_when_status_changes():
     state = _make_state(status=FeatureStatus.analyzing)
     issue = _make_issue(state, number=11)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act — bump status to done
@@ -371,7 +344,7 @@ async def test_update_returns_new_state():
     state = _make_state()
     issue = _make_issue(state, number=5)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -392,7 +365,7 @@ async def test_set_worktree_path_calls_update():
     state = _make_state()
     issue = _make_issue(state, number=3)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -417,7 +390,7 @@ async def test_set_cleanup_warning_calls_update():
     state = _make_state()
     issue = _make_issue(state, number=4)
     client = _mock_client()
-    client.search_issues.return_value = [issue]
+    client.list_issues.return_value = [issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -444,33 +417,32 @@ async def test_list_features_returns_correct_pairs():
     issue_a = _make_issue(state_a, number=1)
     issue_b = _make_issue(state_b, number=2)
     client = _mock_client()
-    # search_issues returns newest first (higher number first)
-    client.search_issues.return_value = [issue_b, issue_a]
+    # list_issues returns newest first (higher number first)
+    client.list_issues.return_value = [issue_b, issue_a]
     mgr = GitHubStateManager(client)
 
     # Act
     results = await mgr.list_features()
 
-    # Assert
+    # Assert — returns list of FeatureState sorted by issue number descending
     assert len(results) == 2
-    # Sorted by issue number descending
-    assert results[0] == ("feat-20260427-bbb", 2)
-    assert results[1] == ("feat-20260427-aaa", 1)
+    assert results[0].feature_id == "feat-20260427-bbb"
+    assert results[1].feature_id == "feat-20260427-aaa"
 
 
 @pytest.mark.asyncio
-async def test_list_features_skips_issues_without_feature_label():
+async def test_list_features_skips_issues_without_parseable_state():
     # Arrange
     state = _make_state()
     good_issue = _make_issue(state, number=5)
-    # Issue with FEATURE_MARKER but no feature:* label
+    # Issue with FEATURE_MARKER but no parseable state JSON
     bad_issue = {
         "number": 6,
         "body": "",
         "labels": [{"name": FEATURE_MARKER}],
     }
     client = _mock_client()
-    client.search_issues.return_value = [good_issue, bad_issue]
+    client.list_issues.return_value = [good_issue, bad_issue]
     mgr = GitHubStateManager(client)
 
     # Act
@@ -478,14 +450,14 @@ async def test_list_features_skips_issues_without_feature_label():
 
     # Assert — bad_issue silently skipped
     assert len(results) == 1
-    assert results[0][0] == state.feature_id
+    assert results[0].feature_id == state.feature_id
 
 
 @pytest.mark.asyncio
 async def test_list_features_returns_empty_when_no_issues():
     # Arrange
     client = _mock_client()
-    client.search_issues.return_value = []
+    client.list_issues.return_value = []
     mgr = GitHubStateManager(client)
 
     # Act

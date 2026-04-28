@@ -192,8 +192,7 @@ async def _unified_github_poll(
                         continue
                     if (utcnow - updated_at).total_seconds() > _STALE_CLAIM_TIMEOUT:
                         try:
-                            from agentharness.github_queue import _parse_task_from_body
-                            local_task = _parse_task_from_body(issue.get("body") or "")
+                            local_task = GitHubTaskQueue._parse_task_from_body(issue.get("body") or "")
                             if local_task.task_id in active_procs:
                                 log.debug(
                                     "Skipping reclaim of issue #%d — task %s still active locally",

@@ -55,16 +55,6 @@ def _build_issue_body(task: TaskMessage) -> str:
     )
 
 
-def _parse_task_from_body(body: str) -> TaskMessage:
-    pattern = rf"```{_TASK_FENCE}\n(.*?)```"
-    match = re.search(pattern, body, re.DOTALL)
-    if not match:
-        raise ValueError(f"No {_TASK_FENCE} fenced block found in issue body")
-    return TaskMessage.model_validate_json(match.group(1).strip())
-
-
-
-
 class GitHubTaskQueue:
     """TaskQueue backed by GitHub Issues with label-based state transitions."""
 
@@ -78,6 +68,14 @@ class GitHubTaskQueue:
         self._queue_name = queue_name
         self._worker_id = worker_id
         self._queue_label = QUEUE_NAME_TO_LABEL.get(queue_name, f"queue:{queue_name}")
+
+    @staticmethod
+    def _parse_task_from_body(body: str) -> TaskMessage:
+        pattern = rf"```{_TASK_FENCE}\n(.*?)```"
+        match = re.search(pattern, body, re.DOTALL)
+        if not match:
+            raise ValueError(f"No {_TASK_FENCE} fenced block found in issue body")
+        return TaskMessage.model_validate_json(match.group(1).strip())
 
     @classmethod
     def from_config(cls, config: Config, queue_name: str) -> GitHubTaskQueue:
@@ -149,7 +147,7 @@ class GitHubTaskQueue:
             number, [STATE_IN_PROGRESS, claimed_by_label(self._worker_id)]
         )
 
-        task = _parse_task_from_body(raw_body)
+        task = self._parse_task_from_body(raw_body)
         raw = RawMessage(
             id=str(number),
             pop_receipt="",
@@ -168,7 +166,7 @@ class GitHubTaskQueue:
             number, [STATE_IN_PROGRESS, claimed_by_label(self._worker_id)]
         )
 
-        task = _parse_task_from_body(raw_body)
+        task = self._parse_task_from_body(raw_body)
         raw = RawMessage(
             id=str(number),
             pop_receipt="",
@@ -213,7 +211,6 @@ class GitHubTaskQueue:
         self,
         raw: RawMessage,
         dead_letter_queue_name: str,
-        connection_string: str,
     ) -> None:
         """Move issue to dead-letter state and close it."""
         number = int(raw.id)
