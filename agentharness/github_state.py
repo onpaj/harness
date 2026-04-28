@@ -75,6 +75,11 @@ def _replace_state_block(body: str, state: FeatureState) -> str:
     return f"{body}\n\n{new_block}\n"
 
 
+def _feature_label(feature_id: str) -> str:
+    """Return the per-feature GitHub label name for a given feature_id."""
+    return f"feature:{feature_id}"
+
+
 def _feature_issue_title(feature_id: str) -> str:
     """Format: 'feature: Humanized Name' derived from the feature_id slug."""
     # Strip leading type prefix (feat-, fix-, epic-) to get the name part
@@ -285,6 +290,10 @@ class GitHubStateManager:
                     issue["number"],
                 )
         return states
+
+    async def close(self) -> None:
+        """Close the underlying HTTP connection pool."""
+        await self._client.close()
 
     async def open_review(self, feature_id: str) -> str | None:
         """Open a GitHub pull request for the completed feature.

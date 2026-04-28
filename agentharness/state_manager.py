@@ -136,6 +136,10 @@ class AzureStateManager:
         log.debug("open_review called for %s — no-op on Azure backend", feature_id)
         return None
 
+    async def close(self) -> None:
+        """Close the underlying BlobServiceClient connection pool."""
+        await self._service.close()
+
 
 # Backward-compatible alias — prefer AzureStateManager in new code
 StateManager = AzureStateManager
