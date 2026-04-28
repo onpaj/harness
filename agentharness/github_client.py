@@ -160,13 +160,39 @@ class GitHubClient:
         params: dict = {"state": state, "sort": sort, "direction": direction, "per_page": per_page}
         if labels:
             params["labels"] = ",".join(labels)
-        result: list[dict] = await self._request(  # type: ignore[assignment]
-            "GET", self._repo_url("/issues"), params=params
-        )
-        # GitHub API sometimes returns closed issues despite state=open — filter client-side
+        all_results: list[dict] = []
+        page = 1
+        while True:
+            params["page"] = page
+            page_results: list[dict] = await self._request(  # type: ignore[assignment]
+                "GET", self._repo_url("/issues"), params=params
+            )
+            all_results.extend(page_results)
+            if len(page_results) < per_page:
+                break
+            page += 1
         if state != "all":
-            result = [i for i in result if i.get("state") == state]
-        return result
+            all_results = [i for i in all_results if i.get("state") == state]
+        return all_results
+
+    async def search_issues(
+        self, query: str, sort: str = "created", order: str = "asc"
+    ) -> list[dict]:
+        """Search issues via GitHub Search API. Returns the `items` list."""
+        result: dict = await self._request(  # type: ignore[assignment]
+            "GET",
+            "/search/issues",
+            params={"q": query, "sort": sort, "order": order},
+        )
+        return result.get("items", [])
+
+    async def add_sub_issue(self, parent_number: int, child_number: int) -> None:
+        """Link child_number as a sub-issue of parent_number."""
+        await self._request(
+            "POST",
+            self._repo_url(f"/issues/{parent_number}/sub_issues"),
+            json={"sub_issue_id": child_number},
+        )
 
     # ------------------------------------------------------------------
     # Refs / branches
@@ -227,7 +253,14 @@ class GitHubClient:
 
     async def ensure_label(self, name: str, color: str = "ededed") -> None:
         """Create label if it does not exist; no-op if it already does."""
-        await self.ensure_labels([name], color=color)
+        try:
+            await self._request("GET", self._repo_url(f"/labels/{name}"))
+        except GitHubApiError as exc:
+            if exc.status_code != 404:
+                raise
+            await self._request(
+                "POST", self._repo_url("/labels"), json={"name": name, "color": color}
+            )
 
     async def ensure_labels(self, names: list[str], color: str = "ededed") -> None:
         """Create any labels in *names* that do not exist — one list call total."""

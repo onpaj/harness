@@ -1,12 +1,13 @@
 """Unit tests for dispatcher — state transitions, parsing, serial dispatch."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentharness.config import Config
 from agentharness.dispatcher import (
     _dispatch_review_result,
     _dispatch_serial_next,
+    _open_feature_pr,
     _parse_review_result,
     _task_name_from_id,
 )
@@ -167,31 +168,59 @@ def _make_config() -> Config:
     return cfg
 
 
+def _make_github_config() -> Config:
+    cfg = MagicMock(spec=Config)
+    cfg.storage_backend = "github"
+    return cfg
+
+
+def _mock_github_client(
+    pr_number: int = 42,
+    pr_url: str = "https://github.com/org/repo/pull/42",
+    raise_exc: Exception | None = None,
+):
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_default_branch = AsyncMock(return_value="main")
+    mock_client.close = AsyncMock()
+    mock_client.create_comment = AsyncMock()
+    if raise_exc:
+        mock_client.create_pull_request = AsyncMock(side_effect=raise_exc)
+    else:
+        mock_client.create_pull_request = AsyncMock(
+            return_value={"number": pr_number, "html_url": pr_url}
+        )
+    mock_cls = MagicMock(return_value=mock_client)
+    mock_cls.from_config = MagicMock(return_value=mock_client)
+    return patch("agentharness.github_client.GitHubClient", mock_cls)
+
+
 @pytest.mark.asyncio
 class TestDispatchSerialNext:
-    async def test_enqueues_per_task_review(self):
-        state = _make_state_with_pending_tasks("feat-1", ["auth", "api"])
-        state = state.with_task_update("feat-1-dev-auth", status=TaskStatus.completed)
+    async def test_done_transitions_to_done_directly(self):
+        """Successful dev completion goes straight to done — no outer review queue."""
+        state = _make_state_with_pending_tasks("feat-1", ["auth"])
+        dev_task = _make_dev_task("feat-1", "auth")
+        queues = _make_queues()
+        cfg = _make_config()
+        cfg.storage_backend = "azure"  # non-github, so _open_feature_pr is a no-op
+
+        result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", cfg, queues)
+
+        assert result.status == FeatureStatus.done
+        queues["review-queue"].send_task.assert_not_awaited()
+
+    async def test_done_with_concerns_transitions_to_done(self):
+        state = _make_state_with_pending_tasks("feat-1", ["auth"])
         dev_task = _make_dev_task("feat-1", "auth")
         queues = _make_queues()
 
-        result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", _make_config(), queues)
+        result = await _dispatch_serial_next(
+            state, dev_task, "## Status\nDONE_WITH_CONCERNS\n", _make_config(), queues
+        )
 
-        assert result.status == FeatureStatus.reviewing
-        queues["review-queue"].send_task.assert_awaited_once()
-        sent = queues["review-queue"].send_task.call_args[0][0]
-        assert "review-auth" in sent.task_id
-        assert sent.context == "auth"
-
-    async def test_review_task_includes_impl_artifact(self):
-        state = _make_state_with_pending_tasks("feat-1", ["foo"])
-        dev_task = _make_dev_task("feat-1", "foo")
-        queues = _make_queues()
-
-        await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", _make_config(), queues)
-
-        sent = queues["review-queue"].send_task.call_args[0][0]
-        assert dev_task.output_artifact in sent.input_artifacts
+        assert result.status == FeatureStatus.done
 
     async def test_blocked_status_marks_feature_failed(self):
         state = _make_state_with_pending_tasks("feat-1", ["auth"])
@@ -224,7 +253,7 @@ class TestDispatchSerialNext:
 
         result = await _dispatch_serial_next(state, dev_task, "No status header here.", _make_config(), queues)
 
-        assert result.status == FeatureStatus.reviewing
+        assert result.status == FeatureStatus.done
 
 
 @pytest.mark.asyncio
@@ -252,6 +281,7 @@ class TestDispatchReviewResult:
         assert "task-b" in sent.task_id
 
     async def test_pass_with_no_more_tasks_marks_done(self):
+        from unittest.mock import AsyncMock
         state = _make_state_with_pending_tasks("feat-3", ["only-task"])
         state = state.with_task_update("feat-3-dev-only-task", status=TaskStatus.completed)
         review_task = TaskMessage(
@@ -265,11 +295,14 @@ class TestDispatchReviewResult:
         )
         review_output = "### task: only-task\n**Status:** PASS\n"
         queues = _make_queues()
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value=None)
 
-        result = await _dispatch_review_result(state, review_task, review_output, _make_config(), queues)
+        result = await _dispatch_review_result(state, review_task, review_output, _make_config(), queues, state_mgr)
 
         assert result.status == FeatureStatus.done
         queues["developer-queue"].send_task.assert_not_awaited()
+        state_mgr.open_review.assert_awaited_once_with("feat-3")
 
     async def test_revision_needed_enqueues_revision_task(self):
         state = _make_state_with_pending_tasks("feat-4", ["auth"])
@@ -294,6 +327,30 @@ class TestDispatchReviewResult:
         sent = queues["developer-queue"].send_task.call_args[0][0]
         assert sent.revision == 2
         assert "Missing error handling" in sent.review_feedback
+
+    async def test_pass_with_no_more_tasks_calls_open_review(self):
+        """When all tasks pass review, open_review is called on the state_mgr."""
+        state = _make_state_with_pending_tasks("feat-3", ["only-task"])
+        state = state.model_copy(update={"branch_name": "feat-3-99", "state_issue_number": 99})
+        state = state.with_task_update("feat-3-dev-only-task", status=TaskStatus.completed)
+        review_task = TaskMessage(
+            feature_id="feat-3",
+            task_id="feat-3-review-only-task-r1",
+            input_artifacts=[],
+            output_artifact="artifacts/feat-3/review/only-task.r1.md",
+            agent_role="reviewer",
+            context="only-task",
+            revision=1,
+        )
+        review_output = "### task: only-task\n**Status:** PASS\n"
+        queues = _make_queues()
+        cfg = _make_github_config()
+        state_mgr = AsyncMock()
+
+        result = await _dispatch_review_result(state, review_task, review_output, cfg, queues, state_mgr)
+
+        assert result.status == FeatureStatus.done
+        state_mgr.open_review.assert_awaited_once_with("feat-3")
 
     async def test_revision_exceeding_max_marks_failed(self):
         from agentharness.models import PipelineConfig
@@ -469,3 +526,39 @@ class TestBuildPhaseTask:
         state = FeatureState(feature_id="feat-x", status=FeatureStatus.failed)
         with pytest.raises(ValueError, match="no enqueueable task"):
             build_phase_task(state, FeatureStatus.failed, self._config())
+
+
+@pytest.mark.asyncio
+class TestOpenFeaturePr:
+    def _done_state(self, issue_number: int = 42) -> FeatureState:
+        return FeatureState(
+            feature_id="feat-auth",
+            status=FeatureStatus.done,
+            state_issue_number=issue_number,
+        )
+
+    async def test_noop_when_state_mgr_is_none(self):
+        """No-op when state_mgr is None (e.g. Azure backend with no reviewer)."""
+        state = self._done_state()
+        await _open_feature_pr(state, None)  # should not raise
+
+    async def test_delegates_to_state_mgr_open_review(self):
+        """Calls state_mgr.open_review with the feature_id."""
+        state = self._done_state()
+        state_mgr = AsyncMock()
+        await _open_feature_pr(state, state_mgr)
+        state_mgr.open_review.assert_awaited_once_with("feat-auth")
+
+    async def test_done_via_serial_next_marks_done(self):
+        """_dispatch_serial_next transitions state to done and calls open_review."""
+        state = _make_state_with_pending_tasks("feat-gh", ["auth"])
+        state = state.model_copy(update={"branch_name": "feat-gh-10", "state_issue_number": 10})
+        dev_task = _make_dev_task("feat-gh", "auth")
+        queues = _make_queues()
+        cfg = _make_github_config()
+        state_mgr = AsyncMock()
+
+        result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", cfg, queues, state_mgr)
+
+        assert result.status == FeatureStatus.done
+        state_mgr.open_review.assert_awaited_once_with("feat-gh")

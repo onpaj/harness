@@ -39,38 +39,48 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
     task = TaskMessage.model_validate_json(task_json)
 
     state_mgr = create_state_manager(config)
-    feature_state = await state_mgr.get(task.feature_id)
-
-    # Defensive guard: if a developer/review task's id was wiped out by a
-    # manual rollback, drop the message and emit an audit event rather than
-    # crash mid-execution. Phase-level messages do not have TaskEntry rows
-    # and must continue to execute (their task_id pattern is feature-{phase}-N).
-    if _is_per_task_message(task.task_id, task.feature_id):
-        current_ids = {t.task_id for t in feature_state.tasks}
-        if task.task_id not in current_ids:
-            log.warning(
-                "Dropping orphan task %s — no matching TaskEntry in state",
-                task.task_id,
-            )
-            await state_mgr.update(
-                task.feature_id,
-                lambda s: s.with_event(
-                    "dropped_orphan_task",
-                    task_id=task.task_id,
-                    details=f'task_id {task.task_id!r} no longer in state.tasks',
-                ),
-            )
-            return
-
-    branch_name = feature_state.branch_name or task.feature_id
-    store = create_artifact_store(config, feature_id=branch_name)
-
-    all_queues: dict[str, TaskQueue] = {
-        q_name: create_task_queue(config, q_name)
-        for q_name in config.queue_names()
-    }
-
+    store: ArtifactStorage | None = None
+    all_queues: dict[str, TaskQueue] = {}
+    agent_def = None
     try:
+        if task.state_issue_number is not None:
+            from agentharness.github_state import GitHubStateManager
+            if isinstance(state_mgr, GitHubStateManager):
+                feature_state = await state_mgr.get(task.feature_id, task.state_issue_number)
+            else:
+                feature_state = await state_mgr.get(task.feature_id)
+        else:
+            feature_state = await state_mgr.get(task.feature_id)
+
+        # Defensive guard: if a developer/review task's id was wiped out by a
+        # manual rollback, drop the message and emit an audit event rather than
+        # crash mid-execution. Phase-level messages do not have TaskEntry rows
+        # and must continue to execute (their task_id pattern is feature-{phase}-N).
+        if _is_per_task_message(task.task_id, task.feature_id):
+            current_ids = {t.task_id for t in feature_state.tasks}
+            if task.task_id not in current_ids:
+                log.warning(
+                    "Dropping orphan task %s — no matching TaskEntry in state",
+                    task.task_id,
+                )
+                await state_mgr.update(
+                    task.feature_id,
+                    lambda s: s.with_event(
+                        "dropped_orphan_task",
+                        task_id=task.task_id,
+                        details=f'task_id {task.task_id!r} no longer in state.tasks',
+                    ),
+                )
+                return
+
+        branch_name = feature_state.branch_name or task.feature_id
+        store = create_artifact_store(config, feature_id=branch_name)
+
+        all_queues = {
+            q_name: create_task_queue(config, q_name)
+            for q_name in config.queue_names()
+        }
+
         agent_path = config.agent_path_for_queue(queue_name)
         agent_def = load_agent_definition(agent_path)
 
@@ -78,12 +88,10 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         started_state = await state_mgr.update(task.feature_id, lambda s: _mark_started(s, task))
 
-        work_dir = None
-        if config.storage_backend == "github" and hasattr(store, "get_work_dir"):
-            work_dir = store.get_work_dir()
-            work_dir.mkdir(parents=True, exist_ok=True)
-        elif task.work_dir:
+        work_dir = store.get_work_dir()
+        if work_dir is None and task.work_dir:
             work_dir = Path(task.work_dir)
+        if work_dir is not None:
             work_dir.mkdir(parents=True, exist_ok=True)
 
         artifact_contents: dict[str, str] = {}
@@ -103,7 +111,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         if agent_def.output_file_glob and work_dir:
             result = _resolve_output_file(result, agent_def.output_file_glob, work_dir)
 
-        if agent_def.allowed_tools and hasattr(store, "commit_workdir_changes"):
+        if agent_def.allowed_tools:
             committed = await store.commit_workdir_changes(f"agent: developer implementation {task.task_id}")
             if committed:
                 log.info("[%s] Committed workdir changes for task %s", WORKER_ID, task.task_id)
@@ -115,15 +123,62 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         updated_state = await state_mgr.update(task.feature_id, lambda s: _mark_completed(s, task, result.tokens))
 
-        next_state = await dispatch_after_completion(updated_state, task, result.output, config, all_queues)
+        next_state = await dispatch_after_completion(updated_state, task, result.output, config, all_queues, state_mgr)
         if next_state is not None:
             persisted = await state_mgr.update(task.feature_id, lambda _: next_state)
             await run_terminal_cleanup(persisted, state_mgr)
 
+    except Exception as exc:
+        log.error("[%s] Task %s failed: %s", WORKER_ID, task.task_id, exc, exc_info=True)
+        retry_limit = agent_def.retry_limit if agent_def else 0
+        await _recover_task(state_mgr, task, queue_name, config, all_queues, retry_limit)
+        sys.exit(1)
+
     finally:
         for q in all_queues.values():
             await q.close()
-        await store.close()
+        if store is not None:
+            await store.close()
+
+
+async def _recover_task(
+    state_mgr,
+    task: TaskMessage,
+    queue_name: str,
+    config: Config,
+    all_queues: dict[str, TaskQueue],
+    retry_limit: int,
+) -> None:
+    """Mark a failed task for retry or permanent failure and update state."""
+    try:
+        current = await state_mgr.get(task.feature_id)
+        task_entry = next((t for t in current.tasks if t.task_id == task.task_id), None)
+        attempts = (task_entry.revision if task_entry else 1)
+
+        if attempts < retry_limit:
+            log.info("[%s] Requeueing task %s (attempt %d/%d)", WORKER_ID, task.task_id, attempts, retry_limit)
+            await state_mgr.update(
+                task.feature_id,
+                lambda s: s.with_task_update(
+                    task.task_id,
+                    status=TaskStatus.queued,
+                    worker_id=None,
+                    started_at=None,
+                ).with_event("task_requeued", task_id=task.task_id, details=f"attempt {attempts}/{retry_limit}"),
+            )
+            q = all_queues.get(queue_name)
+            if q:
+                await q.send_task(task)
+        else:
+            log.warning("[%s] Task %s exhausted retries — marking failed", WORKER_ID, task.task_id)
+            await state_mgr.update(
+                task.feature_id,
+                lambda s: s.with_task_update(task.task_id, status=TaskStatus.failed)
+                .with_status(FeatureStatus.failed)
+                .with_event("feature_failed", task_id=task.task_id, details="task exceeded retry limit"),
+            )
+    except Exception as recovery_exc:
+        log.error("[%s] Recovery update failed for %s: %s", WORKER_ID, task.task_id, recovery_exc)
 
 
 def _mark_started(state, task: TaskMessage):

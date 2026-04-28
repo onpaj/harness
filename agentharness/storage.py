@@ -1,4 +1,4 @@
-"""Artifact path helpers and backward-compatible re-exports."""
+"""Artifact path helpers and storage backend factory functions."""
 
 from __future__ import annotations
 
@@ -6,13 +6,7 @@ from agentharness.azure_artifacts import AzureArtifactStore
 from agentharness.azure_queue import AzureTaskQueue
 from agentharness.storage_protocol import RawMessage
 
-# Backward-compatible aliases
-ArtifactStore = AzureArtifactStore
-PipelineQueue = AzureTaskQueue
-
 __all__ = [
-    "ArtifactStore",
-    "PipelineQueue",
     "RawMessage",
     "AzureArtifactStore",
     "AzureTaskQueue",
@@ -64,9 +58,7 @@ def create_artifact_store(config, feature_id: str | None = None):
         if feature_id is None:
             raise ValueError("feature_id is required for GitHub artifact store")
         return GitHubArtifactStore.from_config(config, feature_id)
-    from azure.storage.blob.aio import BlobServiceClient
-    client = BlobServiceClient.from_connection_string(config.storage.connection_string)
-    return AzureArtifactStore(client, config.storage.container)
+    return AzureArtifactStore.from_config(config)
 
 
 def create_task_queue(config, queue_name: str):
@@ -82,7 +74,5 @@ def create_state_manager(config):
     if config.storage_backend == "github":
         from agentharness.github_state import GitHubStateManager
         return GitHubStateManager.from_config(config)
-    from azure.storage.blob.aio import BlobServiceClient
-    from agentharness.state_manager import StateManager
-    client = BlobServiceClient.from_connection_string(config.storage.connection_string)
-    return StateManager(client, config.storage.container)
+    from agentharness.state_manager import AzureStateManager
+    return AzureStateManager.from_config(config)

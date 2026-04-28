@@ -29,7 +29,7 @@ Each agent is a Claude Code CLI subprocess. State lives in a pluggable backend (
 ```bash
 pip install -e ".[dev]"
 cp .env.example .env
-# Choose your backend: set STORAGE_BACKEND to 'azure' (default) or 'github'
+# Choose your backend: set "storage_backend" in .pipeline/config.json
 # See Environment section below for required variables
 ```
 
@@ -156,9 +156,6 @@ agentharness observe
 | `submit <brief>` | Upload brief, return feature ID (no pipeline start) |
 | `implement <feat-id>` | Enqueue analyst task, start autonomous pipeline |
 | `observe` | Start observer: polls all queues, spawns subprocess per task |
-| `worker <queue>` | Legacy: run async worker loop on one queue |
-| `worker <queue> --concurrency N` | Legacy: run N parallel workers |
-| `start [--dev-concurrency N]` | Legacy: start all workers as background processes |
 | `watch` | Textual TUI, auto-refresh 2s |
 | `status <feat-id>` | One-shot status snapshot |
 | `list` | List all features |
@@ -167,8 +164,6 @@ agentharness observe
 ## Execution modes
 
 **Observer mode (primary):** `agentharness observe` — a single process polls all queues and spawns `agentharness _run_task` as a subprocess per message. Tasks run in isolation; the observer manages visibility renewal and graceful shutdown.
-
-**Legacy worker mode:** `agentharness worker {queue-name}` — async loop that processes tasks in-process. Useful for debugging a single queue.
 
 ## State machine
 

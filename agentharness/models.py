@@ -110,6 +110,8 @@ class FeatureState(BaseModel):
     branch_name: str | None = None
     cleanup_warning: str | None = None
     state_issue_number: int | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
 
     def with_event(self, event: str, **kwargs: Any) -> FeatureState:
         """Return new state with appended history event (immutable update)."""
@@ -132,6 +134,10 @@ class FeatureState(BaseModel):
             for t in self.tasks
         ]
         return self.model_copy(update={"tasks": new_tasks, "updated_at": datetime.now(UTC)})
+
+    def with_pr(self, number: int, url: str) -> FeatureState:
+        """Return new state with pr_number and pr_url set."""
+        return self.model_copy(update={"pr_number": number, "pr_url": url, "updated_at": datetime.now(UTC)})
 
     def with_worktree_path(self, path: str) -> FeatureState:
         """Return new state with worktree_path set. Raises if already set to a different value."""
