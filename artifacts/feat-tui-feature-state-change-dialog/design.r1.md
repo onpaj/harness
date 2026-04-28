@@ -2,89 +2,96 @@
 
 ## UX/UI Design
 
-### Screen Layout
+### Keyboard Binding
+
+The `S` key is registered on `PipelineMonitor` with `show=True` so it appears in the footer. The binding is a no-op when no feature is selected or when the selected feature is in `done` state; no visual feedback is given for the no-op case (silent guard).
+
+### Modal Layout (ASCII Wireframe)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│            Change State: feat-20260425-abc123               │
-│            Current state: developing                        │
+│  Change State — feat-20260425-abc123                        │
+│  Current state: developing                                  │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│   brainstorming          (rollback)                        │
-│   brainstormed           (rollback)                        │
-│   analyzing              (rollback)                        │
-│   architecting           (rollback)                        │
-│   designing              (rollback)                        │
-│   planning               (rollback)                        │
-│ ▶ developing             (current — restart)               │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │   brainstorming                         (rollback)    │  │
+│  │   analyzing                             (rollback)    │  │
+│  │   architecting                          (rollback)    │  │
+│  │   designing                             (rollback)    │  │
+│  │   planning                (rollback — clears 3 tasks) │  │
+│  │ ▶ developing              (current — restart)         │  │
+│  │   ─────────────────────────────────────────────────── │  │
+│  │   failed                            (mark as failed)  │  │
+│  └───────────────────────────────────────────────────────┘  │
 │                                                             │
-│   ──────────────────────────────────────────               │
-│   failed                 (mark failed)                     │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│   ↑/↓ navigate   Enter confirm   Esc cancel                │
+│       Enter to confirm  ·  Escape to cancel                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Confirmation Dialog (fail mode only)
+**Row annotations:**
+- States earlier than current: `(rollback)` suffix; if target ≤ `planning`, suffix becomes `(rollback — clears N tasks)` where N is `len(state.tasks)` (zero cost: already in memory).
+- Current state: `(current — restart)` suffix. For `dev_revision`, the `developing` row carries this suffix.
+- `failed` row: always present, separated by a horizontal rule `─────`, labelled `(mark as failed)`.
+- Arrow-key navigation highlights rows via Textual's default `ListView` focus styling.
+
+**Interaction flow:**
 
 ```
-┌──────────────────────────────────────────────┐
-│  Mark feat-20260425-abc123 as failed?        │
-│                                              │
-│  This cannot be undone automatically.        │
-│                                              │
-│           [Cancel]   [Confirm]               │
-└──────────────────────────────────────────────┘
+S keypress
+    │
+    ├─ no feature selected ──────────────────────────────► (no-op, silent)
+    ├─ feature.status == done ──────────────────────────► (no-op, silent)
+    └─ eligible feature
+           │
+           ▼
+    StateChangeModal opens (async state re-fetch on mount)
+           │
+           ├─ Escape / click-outside ──────────────────► dismiss(None) → no-op
+           └─ user selects row + Enter
+                  │
+                  ▼
+           dismiss(StateChangeResult(target_status, mode))
+                  │
+                  ▼
+           _do_apply_state_change (Textual worker)
+                  │
+                  ├─ success ──► app.notify("developing → planning") + _refresh_data()
+                  └─ StateChangeError
+                         ├─ state persisted, enqueue failed
+                         │      └─► notify(error, "State updated — press S to retry enqueue")
+                         │          + _refresh_data() [show new status]
+                         └─ state commit failed
+                                └─► notify(error, "Commit failed — please retry")
+                                    [dialog stays open with refreshed state]
 ```
 
-Uses the existing `ConfirmScreen(ModalScreen[bool])` at `tui.py:403`.
+### Component Hierarchy
 
-### State Row Rendering Rules
-
-| Row type | Label suffix | Row enabled |
-|----------|-------------|-------------|
-| Earlier state | `(rollback)` | yes |
-| Current state | `(current — restart)` | yes |
-| Separator | — | no (non-selectable) |
-| `failed` | `(mark failed)` | yes |
-
-States shown: all `FeatureStatus` enum values from `brainstorming` up to and including the feature's current state index, then separator, then `failed`. States `done` and forward of current are excluded.
-
-### Key Interactions
-
-- `S` in main screen → open `StateChangeModal` (no-op if no selected feature; notify if feature is `done`)
-- `↑`/`↓` → move cursor within `ListView`
-- `Enter` → confirm selected row:
-  - `restart`/`rollback` modes: dismiss modal immediately → call `apply_state_change` → show toast
-  - `fail` mode: push `ConfirmScreen` → on `True` dismiss modal → call `apply_state_change` → show toast
-- `Esc` → dismiss modal with `None`, no side effects
-- On backend error: show `notify()` with error message, leave modal open for retry
-
-### Toast Messages
-
-| Outcome | Message |
-|---------|---------|
-| restart | `State changed: developing → developing (restart)` |
-| rollback | `State changed: reviewing → planning (rollback)` |
-| fail | `State changed: developing → failed` |
-| enqueue failure | `State updated but re-queue failed — press S to retry` |
-| done guard | `State change unavailable for completed features` |
+```
+PipelineMonitor (Screen)
+└── StateChangeModal (ModalScreen)
+    └── Vertical
+        ├── Label            # title: "Change State — {feature_id}"
+        ├── Static           # subtitle: "Current state: {status}"
+        ├── ListView         # one ListItem per eligible target
+        │   └── ListItem × N # label + right-aligned mode annotation
+        ├── Static           # "Enter to confirm · Escape to cancel"
+        └── Static (hidden)  # inline error message (shown on commit failure)
+```
 
 ---
 
 ## Component Design
 
-### `agentharness/state_change.py` (new)
-
-Pure Python, no Textual imports. Independently testable.
+### `agentharness/state_change.py` — headless service (no Textual imports)
 
 **Responsibilities:**
-- Owns `StateChangeResult` dataclass and `StateChangeMode` literal
-- Owns `StateChangeError` exception (raised when state updated but enqueue failed after one retry)
-- Implements `apply_state_change()` — the sole entry point for all state mutation
+- Owns `StateChangeMode`, `StateChangeResult`, `StateChangeError`, `CLEAR_TASKS_STATES`.
+- Implements `apply_state_change()`: orchestrates `state_mgr.update()` → optional enqueue.
+- Builds the mutator closure passed to `state_mgr.update()`.
 
-**Interface:**
+**Public interface:**
 
 ```python
 StateChangeMode = Literal["restart", "rollback", "fail"]
@@ -95,245 +102,236 @@ class StateChangeResult:
     mode: StateChangeMode
 
 class StateChangeError(Exception):
-    persisted_status: FeatureStatus  # state was saved; enqueue failed
+    message: str
+    persisted_status: FeatureStatus   # status as committed; None if commit failed
+
+QueueFactory = Callable[[str], TaskQueue]
 
 async def apply_state_change(
     feature_id: str,
+    current_state: FeatureState,
     result: StateChangeResult,
     *,
     state_mgr: StateBackend,
-    queue_factory: Callable[[str], TaskQueue],
+    queue_factory: QueueFactory,
     config: Config,
-) -> None: ...
+) -> FeatureState: ...                 # returns persisted state snapshot
+
+CLEAR_TASKS_STATES: frozenset[FeatureStatus]  # {brainstorming, brainstormed, analyzing,
+                                               #  architecting, designing, planning}
 ```
 
-**Internal logic:**
+**Mutator contract** (must be a deterministic pure function of its snapshot argument — safe under Azure lease retry):
 
-```
-state_mgr.update(feature_id, mutator)
-  ├── fail:     s.with_status(failed).with_event(...)
-  ├── restart:  s.with_event(...)                          # status unchanged
-  └── rollback: s.with_status(target)
-                  [.with_tasks_cleared() if target in CLEAR_TASKS_STATES]
-                  .with_event(...)
+| `mode` | Mutations applied to snapshot |
+|--------|-------------------------------|
+| `"fail"` | `with_status(failed)` → `with_event(...)` |
+| `"restart"` | `with_event(...)` only; status and tasks unchanged |
+| `"rollback"` | `with_status(target)` → `with_tasks_cleared()` iff `target ∈ CLEAR_TASKS_STATES` → `with_event(...)` |
 
-→ queue_for_state(persisted.status)
-  ├── None  → skip enqueue (failed / brainstorming / brainstormed / done)
-  └── name  → build_phase_task(persisted, persisted.status, config)
-                → queue_factory(name).send_task(task)
-                  [on failure: sleep 1s, retry once, then raise StateChangeError]
-```
-
-`CLEAR_TASKS_STATES = {brainstorming, brainstormed, analyzing, architecting, designing, planning}`
-
-The update closure always rebuilds from the fresh snapshot `s`; never captures outer mutable variables, preventing duplicate events on lease-contention retries.
+**Error handling:**
+- `state_mgr.update()` raises → `StateChangeError(persisted_status=None)` — commit failed.
+- Enqueue fails on first try → retry once (same `queue_factory` call).
+- Enqueue fails on second try → `StateChangeError(persisted_status=committed_status)` — state is updated, queue is not.
 
 ---
 
-### `agentharness/tui_state_change.py` (new)
-
-Textual UI only. No direct storage I/O.
+### `agentharness/tui_state_change.py` — Textual modal (no I/O, no storage imports)
 
 **Responsibilities:**
-- Renders the `StateChangeModal` with state option rows
-- Computes the options list from the passed `FeatureState` (pure, no I/O)
-- Dismisses with `StateChangeResult | None`
+- Renders the `StateChangeModal` using the `FeatureState` snapshot passed at construction.
+- Computes eligible target list via `_options_for()` static method.
+- Dismisses with `StateChangeResult | None`.
 
-**Interface:**
+**Public interface:**
 
 ```python
-class StateChangeModal(ModalScreen[StateChangeResult | None]):
-    BINDINGS = [
-        ("escape", "dismiss(None)", "Cancel"),
-        ("enter",  "confirm",       "Confirm"),
-    ]
+@dataclass(frozen=True)
+class RowOption:
+    status: FeatureStatus
+    mode: StateChangeMode
+    label: str                # full display string including annotation
 
+class StateChangeModal(ModalScreen[StateChangeResult | None]):
     def __init__(self, feature_state: FeatureState) -> None: ...
-    def compose(self) -> ComposeResult: ...
-    def action_confirm(self) -> None: ...
 
     @staticmethod
-    def _options_for(
-        state: FeatureState,
-    ) -> list[tuple[FeatureStatus, StateChangeMode, str]]:
-        """Returns [(status, mode, label)] for all selectable rows."""
-```
+    def _options_for(state: FeatureState) -> list[RowOption]: ...
+    # Pure function — primary unit-test surface.
+    # Rows: CANONICAL_STATE_ORDER up to (and including) effective_current,
+    # plus a "failed" sentinel row.
+    # effective_current: dev_revision → developing (treated as same row).
 
-`compose()` must not perform I/O (NFR-1: < 100ms open time). All data comes from the `FeatureState` passed in `__init__`.
+CANONICAL_STATE_ORDER: list[FeatureStatus]
+# [brainstorming, brainstormed, analyzing, architecting, designing,
+#  planning, developing, reviewing, done]
+# "done" included in the constant for completeness but never returned by _options_for.
+```
 
 ---
 
-### `agentharness/dispatcher.py` (modified)
+### `agentharness/tui.py` — glue additions (minimal changes)
 
-**Additions:**
-
+**New binding:**
 ```python
-STATE_TO_QUEUE: dict[FeatureStatus, str | None] = {
-    FeatureStatus.brainstorming: None,
-    FeatureStatus.brainstormed:  None,
-    FeatureStatus.analyzing:     "analyst-queue",
-    FeatureStatus.architecting:  "architect-queue",
-    FeatureStatus.designing:     "designer-queue",
-    FeatureStatus.planning:      "planner-queue",
-    FeatureStatus.developing:    "developer-queue",
-    FeatureStatus.reviewing:     "review-queue",
-    FeatureStatus.dev_revision:  "developer-queue",
-    FeatureStatus.done:          None,
-    FeatureStatus.failed:        None,
-}
-
-def queue_for_state(status: FeatureStatus) -> str | None: ...
-
-def build_phase_task(
-    state: FeatureState,
-    target_status: FeatureStatus,
-    config: Config,
-) -> TaskMessage:
-    """Constructs a phase-restart TaskMessage, reusing existing artifact/output helpers."""
+Binding("s", "open_state_change", "Change state", show=True)
 ```
 
-**Removals/refactors:** The local `_PHASE_TO_QUEUE` dict in `tui.py` (line 54) and the inline copy inside `_resume_phase` are replaced with imports of `STATE_TO_QUEUE` / `queue_for_state`.
-
----
-
-### `agentharness/models.py` (modified)
-
-**Addition:**
-
-```python
-def with_tasks_cleared(self) -> FeatureState:
-    return self.model_copy(update={"tasks": [], "updated_at": datetime.now(UTC)})
-```
-
-Note: `with_tasks_added([])` appends an empty list and does NOT clear. The new helper is required.
-
----
-
-### `agentharness/tui.py` (modified — minimal)
-
-**Additions only:**
-- One new `Binding`: `("s", "open_state_change", "Change state")`
-- One new action (~15 lines):
+**New methods:**
 
 ```python
 async def action_open_state_change(self) -> None:
-    feature_state = self._get_selected_feature_state()
-    if feature_state is None:
+    feature = self._selected_feature()
+    if feature is None or feature.status == FeatureStatus.DONE:
         return
-    if feature_state.status == FeatureStatus.done:
-        self.notify("State change unavailable for completed features")
-        return
-    result = await self.push_screen_wait(StateChangeModal(feature_state))
+    await self.push_screen(
+        StateChangeModal(feature),
+        self._on_state_change_result,
+    )
+
+async def _on_state_change_result(
+    self, result: StateChangeResult | None
+) -> None:
     if result is None:
         return
-    try:
-        await apply_state_change(
-            feature_state.feature_id, result,
-            state_mgr=self._state_mgr,
-            queue_factory=lambda name: create_task_queue(self._config, name),
-            config=self._config,
-        )
-        self.notify(f"State changed: {feature_state.status} → {result.target_status}")
-    except StateChangeError as e:
-        self.notify(f"State updated but re-queue failed — press S to retry: {e}", severity="error")
+    self.run_worker(self._do_apply_state_change(result), exclusive=False)
+
+async def _do_apply_state_change(self, result: StateChangeResult) -> None:
+    # calls apply_state_change(...), handles StateChangeError,
+    # calls self.app.notify(...), calls self._refresh_data()
 ```
+
+All storage I/O runs inside `run_worker` — the 2-second TUI refresh loop is never blocked.
 
 ---
 
-### `agentharness/run_task.py` (modified)
+### `agentharness/dispatcher.py` — unchanged (reused)
 
-**Addition at top of `run_task()`:**
+Reused exports:
 
-```python
-# Guard: task may have been cleared by a manual rollback
-if task_msg.task_id and not any(t.task_id == task_msg.task_id for t in state.tasks):
-    await state_mgr.update(feature_id, lambda s: s.with_event(
-        "dropped_orphan_task", details=f'{{"task_id": "{task_msg.task_id}"}}'
-    ))
-    return
-```
+| Symbol | Usage |
+|--------|-------|
+| `STATE_TO_QUEUE: dict[FeatureStatus, str \| None]` | Queue name lookup in `apply_state_change` |
+| `build_phase_task(state, target_status, config) → TaskMessage` | TaskMessage construction for enqueue |
 
-Applied only when the message carries a `task_id` (developer/review tasks). Phase-level messages (analyst, architect, etc.) do not have a `task_id` and skip this guard.
+No changes to this file.
 
 ---
 
-### Canonical State Order (for modal list construction)
+### `agentharness/models.py` — unchanged (existing helpers sufficient)
 
-```python
-CANONICAL_STATE_ORDER: list[FeatureStatus] = [
-    FeatureStatus.brainstorming,
-    FeatureStatus.brainstormed,
-    FeatureStatus.analyzing,
-    FeatureStatus.architecting,
-    FeatureStatus.designing,
-    FeatureStatus.planning,
-    FeatureStatus.developing,
-    FeatureStatus.dev_revision,
-    FeatureStatus.reviewing,
-]
-# done is excluded from the list (terminal, not selectable as rollback target)
-# failed is always appended as a separate row after a separator
-```
+Reused methods on `FeatureState`:
 
-The modal computes `idx = CANONICAL_STATE_ORDER.index(current_status)` and shows `CANONICAL_STATE_ORDER[:idx+1]`, then `failed`.
+| Method | Used for |
+|--------|---------|
+| `with_status(status)` | Status mutation in mutator |
+| `with_tasks_cleared()` | Task clearing on rollback to ≤ planning |
+| `with_event(event_name, **kwargs)` | Audit log append in mutator |
+
+No new methods added.
+
+---
+
+### Test modules
+
+| File | Scope |
+|------|-------|
+| `tests/test_state_change.py` | `apply_state_change` — all six paths: restart, rollback-clear, rollback-keep, fail, no-queue (brainstorming), enqueue-failure-after-commit. Uses fake `StateBackend` and fake `TaskQueue`. |
+| `tests/test_tui_state_change.py` | `StateChangeModal._options_for()` — table-driven, no Textual runtime. Cases: brainstorming, analyzing, developing, dev_revision, reviewing, failed. |
 
 ---
 
 ## Data Schemas
 
-### `StateChangeResult` (new dataclass)
+### `StateChangeResult` (dataclass, frozen)
 
 ```python
 @dataclass(frozen=True)
 class StateChangeResult:
-    target_status: FeatureStatus
+    target_status: FeatureStatus   # enum value selected by operator
     mode: StateChangeMode          # "restart" | "rollback" | "fail"
 ```
 
-### `StateChangeError` (new exception)
+### `StateChangeError`
 
 ```python
 class StateChangeError(Exception):
-    def __init__(self, message: str, persisted_status: FeatureStatus) -> None:
-        super().__init__(message)
-        self.persisted_status = persisted_status
+    def __init__(
+        self,
+        message: str,
+        persisted_status: FeatureStatus | None,
+    ) -> None: ...
+    # persisted_status: None  → commit never completed
+    # persisted_status: value → commit succeeded, enqueue failed
 ```
 
-### History event payload (conforms to existing `HistoryEvent` schema)
+### `RowOption` (dataclass, frozen)
 
 ```python
-state.with_event(
-    event="manual_state_change",
-    details=json.dumps({
-        "from":          str(previous_status),
-        "to":            str(target_status),
-        "mode":          mode,           # "restart" | "rollback" | "fail"
-        "tasks_cleared": bool,
-        "actor":         "tui",
-    })
-)
+@dataclass(frozen=True)
+class RowOption:
+    status: FeatureStatus
+    mode: StateChangeMode
+    label: str    # e.g. "planning   (rollback — clears 5 tasks)"
 ```
 
-No schema changes to `state.json` or GitHub issue body format. `details` is an existing `str | None` field on `HistoryEvent`.
+### `CLEAR_TASKS_STATES` constant
 
-### `TaskMessage` construction (no new shape)
+```python
+CLEAR_TASKS_STATES: frozenset[FeatureStatus] = frozenset({
+    FeatureStatus.BRAINSTORMING,
+    FeatureStatus.BRAINSTORMED,
+    FeatureStatus.ANALYZING,
+    FeatureStatus.ARCHITECTING,
+    FeatureStatus.DESIGNING,
+    FeatureStatus.PLANNING,
+})
+```
 
-`build_phase_task(state, target_status, config)` returns the existing `TaskMessage` type. For phase agents (`analyst`, `architect`, `designer`, `planner`, `reviewer`) the message contains `feature_id` and phase artifact references, reusing the existing `_artifacts_for_phase` / `_output_name` helpers from `dispatcher.py`. For developer queue requeue (`developing`, `dev_revision`), the message references the most recent `in_progress` task entry's `queued_message`; if none is `in_progress`, the next `pending` task is used.
+### `CANONICAL_STATE_ORDER` constant
 
-### `STATE_TO_QUEUE` mapping (authoritative)
+```python
+CANONICAL_STATE_ORDER: list[FeatureStatus] = [
+    FeatureStatus.BRAINSTORMING,
+    FeatureStatus.BRAINSTORMED,
+    FeatureStatus.ANALYZING,
+    FeatureStatus.ARCHITECTING,
+    FeatureStatus.DESIGNING,
+    FeatureStatus.PLANNING,
+    FeatureStatus.DEVELOPING,
+    FeatureStatus.REVIEWING,
+    FeatureStatus.DONE,
+]
+```
 
-| `FeatureStatus` | Queue name |
-|-----------------|-----------|
-| `brainstorming` | `None` |
-| `brainstormed` | `None` |
-| `analyzing` | `analyst-queue` |
-| `architecting` | `architect-queue` |
-| `designing` | `designer-queue` |
-| `planning` | `planner-queue` |
-| `developing` | `developer-queue` |
-| `dev_revision` | `developer-queue` |
-| `reviewing` | `review-queue` |
-| `done` | `None` |
-| `failed` | `None` |
+`dev_revision` maps to `DEVELOPING` position for list-population. `DONE` is in the constant for completeness; `_options_for()` never returns a row for it.
 
-This dict lives in `dispatcher.py` as `STATE_TO_QUEUE`. All former in-file copies (`tui._PHASE_TO_QUEUE`, `_resume_phase` inline dict) are replaced with an import of this constant.
+### `HistoryEvent` — `details` JSON payload for `manual_state_change`
+
+Encoded as a JSON-serialized string in the existing `HistoryEvent.details` field:
+
+```json
+{
+  "from": "developing",
+  "to": "planning",
+  "mode": "rollback",
+  "tasks_cleared": true,
+  "actor": "tui"
+}
+```
+
+Field types:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `from` | `str` | `FeatureStatus.value` of state before mutation |
+| `to` | `str` | `FeatureStatus.value` of state after mutation |
+| `mode` | `"restart" \| "rollback" \| "fail"` | Operator intent |
+| `tasks_cleared` | `bool` | Whether `with_tasks_cleared()` was applied |
+| `actor` | `"tui"` | Constant; reserved for future non-TUI callers |
+
+The event is written with `with_event("manual_state_change", details=json.dumps(payload))`, keeping the event name in `HistoryEvent.event` and the structured payload in `HistoryEvent.details`.
+
+### `TaskMessage` shape for requeue (existing schema, no changes)
+
+`build_phase_task(persisted_state, target_status, config) → TaskMessage` is called with the **post-commit** `FeatureState` snapshot so that task entry references reflect the committed state. The `TaskMessage` schema is unchanged.
