@@ -22,6 +22,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Label, ListItem, ListView, RichLog, Static
 
 from agentharness.config import Config
+from agentharness.dispatcher import STATE_TO_QUEUE
 from agentharness.models import FeatureState, FeatureStatus, TaskStatus, TokenUsage
 from agentharness.state_change import (
     StateChangeError,
@@ -58,12 +59,12 @@ _STATUS_COLORS = {
 _PHASE_ORDER = ["analyzing", "architecting", "designing", "planning", "developing", "reviewing"]
 
 _PHASE_TO_QUEUE = {
-    "analyzing": "analyst-queue",
-    "architecting": "architect-queue",
-    "designing": "designer-queue",
-    "planning": "planner-queue",
-    "developing": "developer-queue",
-    "reviewing": "review-queue",
+    status.value: queue
+    for status, queue in STATE_TO_QUEUE.items()
+    if queue is not None and status.value in {
+        "analyzing", "architecting", "designing",
+        "planning", "developing", "reviewing",
+    }
 }
 
 _OBSERVER_PID_FILE = Path("logs/observer.pid")
