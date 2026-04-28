@@ -29,7 +29,7 @@ Each agent is a Claude Code CLI subprocess. State lives in a pluggable backend (
 ```bash
 pip install -e ".[dev]"
 cp .env.example .env
-# Choose your backend: set STORAGE_BACKEND to 'azure' (default) or 'github'
+# Choose your backend: set "storage_backend" in .pipeline/config.json
 # See Environment section below for required variables
 ```
 
