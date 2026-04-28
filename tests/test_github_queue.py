@@ -9,8 +9,10 @@ import pytest
 from agentharness.github_queue import (
     GitHubTaskQueue,
     _build_issue_body,
-    _parse_task_from_body,
 )
+
+# _parse_task_from_body was moved to GitHubTaskQueue as a @staticmethod
+_parse_task_from_body = GitHubTaskQueue._parse_task_from_body
 from agentharness.github_labels import (
     FEATURE_MARKER,
     STATE_BLOCKED,
@@ -252,7 +254,7 @@ async def test_move_to_dead_letter_adds_dead_letter_label_and_closes() -> None:
     queue = _make_queue(client)
     raw = RawMessage(id="7", pop_receipt="999", content="body")
 
-    await queue.move_to_dead_letter(raw, "dead-letter-queue", "conn-str")
+    await queue.move_to_dead_letter(raw, "dead-letter-queue")
 
     added_labels = client.add_labels.call_args[0][1]
     assert STATE_DEAD_LETTER in added_labels
