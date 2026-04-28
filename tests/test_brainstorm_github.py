@@ -1,4 +1,4 @@
-"""Unit tests for the GitHub backend paths in agentharness.brainstorm."""
+"""Unit tests for backend-agnostic upload_brief and enqueue_planner in agentharness.brainstorm."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from agentharness.brainstorm import _enqueue_planner_github, _upload_brief_github
+from agentharness.brainstorm import enqueue_planner, upload_brief
 from agentharness.models import FeatureStatus
 
 
@@ -16,194 +16,153 @@ from agentharness.models import FeatureStatus
 
 _FEATURE_ID = "feat-my-feature"
 _BRIEF_CONTENT = "# Feature Brief: My Feature\n\nDo something cool.\n"
-_MAIN_SHA = "abc123def456"
 
 
 def _make_config(
-    token: str = "gh-token",
-    owner: str = "test-owner",
-    runs_repo: str = "test-repo",
+    storage_backend: str = "github",
     max_revisions: int = 3,
 ) -> MagicMock:
     config = MagicMock()
-    config.storage_backend = "github"
+    config.storage_backend = storage_backend
     config.defaults.max_revisions = max_revisions
     config.defaults.dead_letter_threshold = 3
-    config.github.token = token
-    config.github.owner = owner
-    config.github.runs_repo = runs_repo
     return config
 
 
-def _make_gh_client() -> MagicMock:
-    client = MagicMock()
-    for method in (
-        "get_default_branch",
-        "get_ref",
-        "create_ref",
-        "get_content",
-        "put_content",
-        "create_issue",
-        "ensure_label",
-        "search_issues",
-        "close",
-    ):
-        setattr(client, method, AsyncMock())
-    client.get_default_branch.return_value = "main"
-    client.get_ref.return_value = {"object": {"sha": _MAIN_SHA}}
-    client.create_issue.return_value = {"number": 42, "labels": []}
-    client.search_issues.return_value = []
-    # get_content raises 404 by default (brief doesn't exist yet)
-    from agentharness.github_client import GitHubApiError
-    client.get_content.side_effect = GitHubApiError(404, "Not Found")
-    return client
+def _make_store() -> MagicMock:
+    store = MagicMock()
+    store.upload = AsyncMock()
+    store.close = AsyncMock()
+    return store
+
+
+def _make_state_mgr(feature_id: str = _FEATURE_ID) -> MagicMock:
+    from agentharness.models import FeatureState, FeatureStatus
+    mgr = MagicMock()
+    mgr.create = AsyncMock()
+    mgr.update = AsyncMock(
+        return_value=FeatureState(feature_id=feature_id, status=FeatureStatus.analyzing)
+    )
+    return mgr
+
+
+def _make_queue() -> MagicMock:
+    queue = MagicMock()
+    queue.ensure_exists = AsyncMock()
+    queue.send_task = AsyncMock()
+    queue.close = AsyncMock()
+    return queue
 
 
 # ---------------------------------------------------------------------------
-# Tests for _upload_brief_github
+# Tests for upload_brief
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_upload_brief_github_calls_in_order() -> None:
-    """_upload_brief_github calls get_ref, create_ref, put_content, state.create in order."""
+async def test_upload_brief_uploads_and_creates_state() -> None:
+    """upload_brief uploads brief artifact and creates initial state."""
     config = _make_config()
-    client = _make_gh_client()
-
-    mock_mgr_instance = MagicMock()
-    mock_mgr_instance.create = AsyncMock()
+    store = _make_store()
+    state_mgr = _make_state_mgr()
 
     with (
-        patch(
-            "agentharness.github_client.GitHubClient.from_config", return_value=client
-        ),
-        patch(
-            "agentharness.github_state.GitHubStateManager",
-            return_value=mock_mgr_instance,
-        ),
+        patch("agentharness.brainstorm.create_artifact_store", return_value=store) as mock_store_factory,
+        patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr) as mock_state_factory,
     ):
-        await _upload_brief_github(_FEATURE_ID, _BRIEF_CONTENT, config)
+        await upload_brief(_FEATURE_ID, _BRIEF_CONTENT, config)
 
-    # 1. Fetched main SHA
-    client.get_ref.assert_awaited_once_with("heads/main")
+    mock_store_factory.assert_called_once_with(config, feature_id=_FEATURE_ID)
+    mock_state_factory.assert_called_once_with(config)
 
-    # 2. Created feature branch from main SHA
-    client.create_ref.assert_awaited_once_with(
-        f"refs/heads/{_FEATURE_ID}", _MAIN_SHA
+    store.upload.assert_awaited_once_with(
+        f"artifacts/{_FEATURE_ID}/brief.md", _BRIEF_CONTENT
     )
-
-    # 3. Committed brief.md to the feature branch
-    client.put_content.assert_awaited_once()
-    put_kwargs = client.put_content.call_args
-    assert put_kwargs.kwargs["path"] == f"artifacts/{_FEATURE_ID}/brief.md"
-    assert put_kwargs.kwargs["branch"] == _FEATURE_ID
-    assert put_kwargs.kwargs["sha"] is None
-    # content must be base64-encoded
-    import base64
-    decoded = base64.b64decode(put_kwargs.kwargs["content"]).decode()
-    assert decoded == _BRIEF_CONTENT
-
-    # 4. Created the state issue
-    mock_mgr_instance.create.assert_awaited_once()
-    created_state = mock_mgr_instance.create.call_args.args[0]
+    state_mgr.create.assert_awaited_once()
+    created_state = state_mgr.create.call_args.args[0]
     assert created_state.feature_id == _FEATURE_ID
     assert created_state.status == FeatureStatus.brainstormed
 
-    # 5. Client was closed
-    client.close.assert_awaited_once()
+    # brief_content passed as keyword arg
+    assert state_mgr.create.call_args.kwargs.get("brief_content") == _BRIEF_CONTENT
+
+    store.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_upload_brief_github_closes_client_on_error() -> None:
-    """_upload_brief_github closes the client even when get_ref raises."""
+async def test_upload_brief_closes_store_on_error() -> None:
+    """upload_brief closes the store even when upload raises."""
     config = _make_config()
-    client = _make_gh_client()
-    client.get_ref.side_effect = RuntimeError("network error")
-
-    with patch(
-        "agentharness.github_client.GitHubClient.from_config", return_value=client
-    ):
-        with pytest.raises(RuntimeError, match="network error"):
-            await _upload_brief_github(_FEATURE_ID, _BRIEF_CONTENT, config)
-
-    client.close.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# Tests for _enqueue_planner_github
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_enqueue_planner_github_sends_correct_task() -> None:
-    """_enqueue_planner_github sends a TaskMessage with the right task_id and artifacts."""
-    config = _make_config()
-
-    mock_queue = MagicMock()
-    mock_queue.ensure_exists = AsyncMock()
-    mock_queue.send_task = AsyncMock()
-    mock_queue.close = AsyncMock()
-
-    from agentharness.models import FeatureState, FeatureStatus
-    mock_state_mgr = MagicMock()
-    mock_state_mgr.update = AsyncMock(
-        return_value=FeatureState(feature_id=_FEATURE_ID, status=FeatureStatus.analyzing)
-    )
+    store = _make_store()
+    store.upload.side_effect = RuntimeError("upload error")
+    state_mgr = _make_state_mgr()
 
     with (
-        patch("agentharness.storage.create_task_queue", return_value=mock_queue) as mock_create,
-        patch("agentharness.github_state.GitHubStateManager.from_config", return_value=mock_state_mgr),
+        patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+        patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
     ):
-        await _enqueue_planner_github(_FEATURE_ID, config)
+        with pytest.raises(RuntimeError, match="upload error"):
+            await upload_brief(_FEATURE_ID, _BRIEF_CONTENT, config)
 
-    # Queue was created for analyst-queue
-    mock_create.assert_called_once_with(config, "analyst-queue")
+    store.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests for enqueue_planner
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enqueue_planner_sends_correct_task() -> None:
+    """enqueue_planner sends a TaskMessage with the right task_id and artifacts."""
+    config = _make_config()
+    queue = _make_queue()
+    state_mgr = _make_state_mgr()
+
+    with (
+        patch("agentharness.brainstorm.create_task_queue", return_value=queue) as mock_queue_factory,
+        patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+    ):
+        await enqueue_planner(_FEATURE_ID, config)
+
+    mock_queue_factory.assert_called_once_with(config, "analyst-queue")
 
     # ensure_exists called before send_task
-    assert mock_queue.ensure_exists.await_count == 1
-    assert mock_queue.send_task.await_count == 1
+    assert queue.ensure_exists.await_count == 1
+    assert queue.send_task.await_count == 1
 
-    ensure_exists_order = mock_queue.method_calls.index(call.ensure_exists())
+    ensure_exists_order = queue.method_calls.index(call.ensure_exists())
     send_task_order = next(
         i
-        for i, c in enumerate(mock_queue.method_calls)
+        for i, c in enumerate(queue.method_calls)
         if c[0] == "send_task"
     )
     assert ensure_exists_order < send_task_order
 
     # Check the TaskMessage
-    task = mock_queue.send_task.call_args.args[0]
+    task = queue.send_task.call_args.args[0]
     assert task.feature_id == _FEATURE_ID
     assert task.task_id == f"{_FEATURE_ID}-analyst"
     assert task.agent_role == "analyst"
     assert task.input_artifacts == [f"artifacts/{_FEATURE_ID}/brief.md"]
     assert task.output_artifact == f"artifacts/{_FEATURE_ID}/spec.r1.md"
 
-    # Queue was closed
-    mock_queue.close.assert_awaited_once()
+    queue.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_enqueue_planner_github_closes_queue_on_error() -> None:
-    """_enqueue_planner_github closes the queue even when ensure_exists raises."""
+async def test_enqueue_planner_closes_queue_on_error() -> None:
+    """enqueue_planner closes the queue even when ensure_exists raises."""
     config = _make_config()
-
-    mock_queue = MagicMock()
-    mock_queue.ensure_exists = AsyncMock(side_effect=RuntimeError("label error"))
-    mock_queue.send_task = AsyncMock()
-    mock_queue.close = AsyncMock()
-
-    from agentharness.models import FeatureState, FeatureStatus
-    mock_state_mgr = MagicMock()
-    mock_state_mgr.update = AsyncMock(
-        return_value=FeatureState(feature_id=_FEATURE_ID, status=FeatureStatus.analyzing)
-    )
+    queue = _make_queue()
+    queue.ensure_exists.side_effect = RuntimeError("label error")
+    state_mgr = _make_state_mgr()
 
     with (
-        patch("agentharness.storage.create_task_queue", return_value=mock_queue),
-        patch("agentharness.github_state.GitHubStateManager.from_config", return_value=mock_state_mgr),
+        patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+        patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
     ):
         with pytest.raises(RuntimeError, match="label error"):
-            await _enqueue_planner_github(_FEATURE_ID, config)
+            await enqueue_planner(_FEATURE_ID, config)
 
-    mock_queue.close.assert_awaited_once()
+    queue.close.assert_awaited_once()

@@ -74,9 +74,6 @@ agentharness brainstorm                         # interactive (terminal-only, us
 agentharness submit brief.md                    # upload brief, get feature ID (no pipeline)
 agentharness implement feat-20260425-abc123     # enqueue analyst task, start pipeline
 agentharness observe                            # start observer (primary execution mode)
-agentharness worker planner-queue              # legacy: run worker for one queue
-agentharness worker developer-queue --concurrency 3
-agentharness start --dev-concurrency 3         # legacy: start all workers as background procs
 agentharness watch                              # Textual TUI, auto-refresh 2s
 agentharness status feat-20260425-abc123        # one-shot status snapshot
 agentharness list                               # all features
@@ -92,8 +89,6 @@ agentharness _run_task                          # single-task runner (reads JSON
 ## Execution modes
 
 **Observer mode (primary):** `agentharness observe` — a single process polls all queues and spawns `agentharness _run_task` as an isolated subprocess per message. For Azure backends, each queue is polled concurrently with visibility renewal (60s interval, 150s timeout). For GitHub backends, a single unified poller fetches all open issues (one API call per cycle) and handles task dispatch, stale-claim sweeping, and state cache writing. The observer handles SIGTERM/SIGINT gracefully.
-
-**Legacy worker mode:** `agentharness worker {queue-name}` — async loop that processes tasks in-process. Useful for debugging a single queue.
 
 ## State machine
 
@@ -214,9 +209,13 @@ AgentHarness supports two pluggable storage backends: **Azure** (default) and **
 
 **Uses:** Azure Blob Storage for artifacts, Azure Storage Queues for work queue, blob leases for atomic state updates.
 
+**config.json:**
+```json
+{ "storage_backend": "azure" }
+```
+
 **Environment variables:**
 ```bash
-STORAGE_BACKEND=azure  # or omit (default)
 AZURE_STORAGE_CONNECTION_STRING=...  # required
 ```
 
@@ -224,9 +223,13 @@ AZURE_STORAGE_CONNECTION_STRING=...  # required
 
 **Uses:** GitHub Issues (with labels) as work queue, git branches as artifact store, issue state (labels + JSON body) as state manager.
 
+**config.json:**
+```json
+{ "storage_backend": "github" }
+```
+
 **Environment variables:**
 ```bash
-STORAGE_BACKEND=github
 GITHUB_TOKEN=ghp_...  # required
 GITHUB_OWNER=...      # optional (auto-detected from git remote)
 GITHUB_RUNS_REPO=...  # optional (auto-detected from git remote)
@@ -236,8 +239,8 @@ GITHUB_RUNS_REPO=...  # optional (auto-detected from git remote)
 
 ```bash
 cp .env.example .env
-# Set STORAGE_BACKEND to 'azure' or 'github'
 # Set backend-specific variables above
+# Select backend: set "storage_backend" in .pipeline/config.json
 ```
 
 `.env` is loaded automatically via `python-dotenv` in `config.py`. Never commit `.env` — it's in `.gitignore`.

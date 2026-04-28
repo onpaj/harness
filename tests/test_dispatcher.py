@@ -252,6 +252,7 @@ class TestDispatchReviewResult:
         assert "task-b" in sent.task_id
 
     async def test_pass_with_no_more_tasks_marks_done(self):
+        from unittest.mock import AsyncMock
         state = _make_state_with_pending_tasks("feat-3", ["only-task"])
         state = state.with_task_update("feat-3-dev-only-task", status=TaskStatus.completed)
         review_task = TaskMessage(
@@ -265,11 +266,14 @@ class TestDispatchReviewResult:
         )
         review_output = "### task: only-task\n**Status:** PASS\n"
         queues = _make_queues()
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value=None)
 
-        result = await _dispatch_review_result(state, review_task, review_output, _make_config(), queues)
+        result = await _dispatch_review_result(state, review_task, review_output, _make_config(), queues, state_mgr)
 
         assert result.status == FeatureStatus.done
         queues["developer-queue"].send_task.assert_not_awaited()
+        state_mgr.open_review.assert_awaited_once_with("feat-3")
 
     async def test_revision_needed_enqueues_revision_task(self):
         state = _make_state_with_pending_tasks("feat-4", ["auth"])

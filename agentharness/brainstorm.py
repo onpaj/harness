@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -13,10 +12,15 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from agentharness.config import Config
-from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
+from agentharness.models import FeatureState, FeatureStatus, PipelineConfig, TaskMessage
 from agentharness.prompt_builder import load_agent_definition
-from agentharness.state_manager import StateManager
-from agentharness.storage import ArtifactStore, PipelineQueue, artifact_path
+from agentharness.storage import (
+    artifact_path,
+    create_artifact_store,
+    create_state_manager,
+    create_task_queue,
+    phase_artifact_path,
+)
 
 _BRAINSTORM_AGENT = Path(".agents/brainstorm.md")
 _BRIEF_FILENAME = "brief.md"
@@ -141,24 +145,14 @@ def start_brainstorm(config: Config | None = None) -> None:
 
 
 async def upload_brief(feature_id: str, brief_content: str, config: Config) -> None:
-    """Upload brief.md to blob storage and create initial state.json.
+    """Upload brief.md to storage and create initial state.
 
     Does NOT enqueue any pipeline tasks — call enqueue_planner() separately.
     """
-    if config.storage_backend == "github":
-        await _upload_brief_github(feature_id, brief_content, config)
-        return
-
-    from azure.storage.blob.aio import BlobServiceClient
-
-    conn_str = config.storage.connection_string
-    blob_service = BlobServiceClient.from_connection_string(conn_str)
-    store = ArtifactStore(blob_service, config.storage.container)
-    state_mgr = StateManager(blob_service, config.storage.container)
+    store = create_artifact_store(config, feature_id=feature_id)
+    state_mgr = create_state_manager(config)
 
     try:
-        await store.ensure_container_exists()
-
         brief_blob = artifact_path(feature_id, "brief.md")
         await store.upload(brief_blob, brief_content)
 
@@ -167,111 +161,15 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
             status=FeatureStatus.brainstormed,
             config=PipelineConfig(max_revisions=config.defaults.max_revisions),
         ).with_event("brief_uploaded")
-        await state_mgr.create(initial_state)
+        await state_mgr.create(initial_state, brief_content=brief_content)
+        log.info("Uploaded brief for %s", feature_id)
     finally:
         await store.close()
-        await blob_service.close()
-
-
-async def _upload_brief_github(feature_id: str, brief_content: str, config: Config) -> None:
-    """GitHub-backend implementation of upload_brief."""
-    import base64
-    from datetime import UTC, datetime
-
-    from agentharness.github_client import GitHubApiError, GitHubClient
-    from agentharness.github_state import GitHubStateManager
-
-    client = GitHubClient.from_config(config)
-    try:
-        # 1. Create feature branch from the repo's default branch (idempotent)
-        default_branch = await client.get_default_branch()
-        main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
-        try:
-            await client.create_ref(f"refs/heads/{feature_id}", main_sha)
-        except GitHubApiError as exc:
-            if exc.status_code != 422:
-                raise
-
-        # 2. Commit brief.md to the feature branch (idempotent — fetch SHA if exists)
-        brief_path = f"artifacts/{feature_id}/brief.md"
-        existing_sha: str | None = None
-        try:
-            existing = await client.get_content(brief_path, ref=feature_id)
-            existing_sha = existing.get("sha")
-        except GitHubApiError as exc:
-            if exc.status_code != 404:
-                raise
-        await client.put_content(
-            path=brief_path,
-            message=f"feat: add brief for {feature_id}",
-            content=base64.b64encode(brief_content.encode()).decode(),
-            sha=existing_sha,
-            branch=feature_id,
-        )
-
-        # 3. Create initial FeatureState and persist as parent issue
-        now = datetime.now(UTC)
-        state = FeatureState(
-            feature_id=feature_id,
-            status=FeatureStatus.brainstormed,
-            created_at=now,
-            updated_at=now,
-            config=PipelineConfig(
-                max_revisions=config.defaults.max_revisions,
-            ),
-        )
-        mgr = GitHubStateManager(client)
-        await mgr.create(state, brief_content)
-    finally:
-        await client.close()
 
 
 async def enqueue_planner(feature_id: str, config: Config) -> None:
     """Enqueue the analyst task, transitioning feature to 'analyzing' status."""
-    if config.storage_backend == "github":
-        await _enqueue_planner_github(feature_id, config)
-        return
-
-    from azure.storage.blob.aio import BlobServiceClient
-    from agentharness.models import TaskMessage
-    from agentharness.storage import phase_artifact_path
-
-    conn_str = config.storage.connection_string
-    blob_service = BlobServiceClient.from_connection_string(conn_str)
-    state_mgr = StateManager(blob_service, config.storage.container)
-
-    try:
-        brief_blob = artifact_path(feature_id, "brief.md")
-
-        task = TaskMessage(
-            feature_id=feature_id,
-            task_id=f"{feature_id}-analyzing-1",
-            input_artifacts=[brief_blob],
-            output_artifact=phase_artifact_path(feature_id, "spec", 1),
-            agent_role="analyst",
-        )
-
-        analyst_queue = PipelineQueue.from_connection_string(conn_str, "analyst-queue")
-        await analyst_queue.ensure_exists()
-        await analyst_queue.send_task(task)
-        await analyst_queue.close()
-
-        await state_mgr.update(
-            feature_id,
-            lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
-        )
-    finally:
-        await blob_service.close()
-
-
-async def _enqueue_planner_github(feature_id: str, config: Config) -> None:
-    """GitHub-backend implementation of enqueue_planner."""
-    from agentharness.github_state import GitHubStateManager
-    from agentharness.models import FeatureStatus, TaskMessage
-    from agentharness.storage import artifact_path as _artifact_path
-    from agentharness.storage import create_task_queue, phase_artifact_path
-
-    state_mgr = GitHubStateManager.from_config(config)
+    state_mgr = create_state_manager(config)
     state = await state_mgr.update(
         feature_id,
         lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
@@ -282,7 +180,7 @@ async def _enqueue_planner_github(feature_id: str, config: Config) -> None:
         task = TaskMessage(
             feature_id=feature_id,
             task_id=f"{feature_id}-analyst",
-            input_artifacts=[_artifact_path(feature_id, "brief.md")],
+            input_artifacts=[artifact_path(feature_id, "brief.md")],
             output_artifact=phase_artifact_path(feature_id, "spec", 1),
             agent_role="analyst",
             state_issue_number=state.state_issue_number,
