@@ -315,3 +315,41 @@ class TestDispatchReviewResult:
 
         assert result.status == FeatureStatus.failed
         queues["developer-queue"].send_task.assert_not_awaited()
+
+
+class TestStateToQueue:
+    def test_mapping_covers_every_feature_status(self):
+        from agentharness.dispatcher import STATE_TO_QUEUE
+        from agentharness.models import FeatureStatus
+        for status in FeatureStatus:
+            assert status in STATE_TO_QUEUE, f"Missing mapping for {status}"
+
+    def test_active_phases_have_queues(self):
+        from agentharness.dispatcher import STATE_TO_QUEUE
+        from agentharness.models import FeatureStatus
+        assert STATE_TO_QUEUE[FeatureStatus.analyzing] == "analyst-queue"
+        assert STATE_TO_QUEUE[FeatureStatus.architecting] == "architect-queue"
+        assert STATE_TO_QUEUE[FeatureStatus.designing] == "designer-queue"
+        assert STATE_TO_QUEUE[FeatureStatus.planning] == "planner-queue"
+        assert STATE_TO_QUEUE[FeatureStatus.developing] == "developer-queue"
+        assert STATE_TO_QUEUE[FeatureStatus.dev_revision] == "developer-queue"
+        assert STATE_TO_QUEUE[FeatureStatus.reviewing] == "review-queue"
+
+    def test_terminal_and_brainstorm_states_have_no_queue(self):
+        from agentharness.dispatcher import STATE_TO_QUEUE
+        from agentharness.models import FeatureStatus
+        assert STATE_TO_QUEUE[FeatureStatus.brainstorming] is None
+        assert STATE_TO_QUEUE[FeatureStatus.brainstormed] is None
+        assert STATE_TO_QUEUE[FeatureStatus.done] is None
+        assert STATE_TO_QUEUE[FeatureStatus.failed] is None
+
+    def test_queue_for_state_returns_mapped_queue(self):
+        from agentharness.dispatcher import queue_for_state
+        from agentharness.models import FeatureStatus
+        assert queue_for_state(FeatureStatus.developing) == "developer-queue"
+
+    def test_queue_for_state_returns_none_for_terminal(self):
+        from agentharness.dispatcher import queue_for_state
+        from agentharness.models import FeatureStatus
+        assert queue_for_state(FeatureStatus.failed) is None
+        assert queue_for_state(FeatureStatus.done) is None

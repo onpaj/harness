@@ -78,6 +78,29 @@ _LINEAR_TRANSITIONS: dict[str, tuple[str, str]] = {
 }
 
 
+# Authoritative state→queue mapping. Used by the dispatcher and by the
+# manual state-change service (state_change.apply_state_change).
+STATE_TO_QUEUE: dict[FeatureStatus, str | None] = {
+    FeatureStatus.brainstorming: None,
+    FeatureStatus.brainstormed:  None,
+    FeatureStatus.analyzing:     "analyst-queue",
+    FeatureStatus.architecting:  "architect-queue",
+    FeatureStatus.designing:     "designer-queue",
+    FeatureStatus.planning:      "planner-queue",
+    FeatureStatus.developing:    "developer-queue",
+    FeatureStatus.dev_revision:  "developer-queue",
+    FeatureStatus.reviewing:     "review-queue",
+    FeatureStatus.done:          None,
+    FeatureStatus.failed:        None,
+}
+
+
+def queue_for_state(status: FeatureStatus) -> str | None:
+    """Return the queue name to enqueue a task on for a given feature status, or None
+    when the status is terminal or pre-pipeline (brainstorming/brainstormed/done/failed)."""
+    return STATE_TO_QUEUE.get(status)
+
+
 async def dispatch_after_completion(
     state: FeatureState,
     completed_task: TaskMessage,
