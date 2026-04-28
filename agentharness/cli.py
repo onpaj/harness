@@ -12,6 +12,7 @@ from rich.table import Table
 from rich import box
 
 from agentharness.config import load_config
+from agentharness.storage import create_state_manager
 
 console = Console()
 
@@ -61,60 +62,6 @@ def implement(ctx: click.Context, feature_id: str) -> None:
     asyncio.run(enqueue_planner(feature_id, config))
     console.print(f"[green]Pipeline started:[/green] {feature_id}")
     console.print(f"Monitor: [bold]agentharness watch[/bold]")
-
-
-@main.command()
-@click.argument("queue_name")
-@click.option("--concurrency", default=1, show_default=True, help="Number of concurrent workers")
-@click.pass_context
-def worker(ctx: click.Context, queue_name: str, concurrency: int) -> None:
-    """Run a worker process for the given queue."""
-    config = load_config(ctx.obj.get("config_path"))
-    if queue_name not in config.queues:
-        console.print(f"[red]Unknown queue:[/red] {queue_name}")
-        console.print(f"Available queues: {', '.join(config.queue_names())}")
-        sys.exit(1)
-
-    console.print("[red]Legacy worker mode has been removed.[/red] Use [bold]agentharness observe[/bold] instead.")
-    sys.exit(1)
-
-
-@main.command("start")
-@click.option("--dev-concurrency", default=3, show_default=True, help="Concurrent developer workers")
-@click.pass_context
-def start_all(ctx: click.Context, dev_concurrency: int) -> None:
-    """Start all pipeline workers in background processes."""
-    import subprocess
-    import os
-    config = load_config(ctx.obj.get("config_path"))
-    exe = str(Path(sys.executable).parent / "agentharness")
-
-    queues = [
-        ("planner-queue", 1),
-        ("architect-queue", 1),
-        ("designer-queue", 1),
-        ("developer-queue", dev_concurrency),
-        ("review-queue", 1),
-    ]
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-
-    pids = []
-    for queue_name, concurrency in queues:
-        if queue_name not in config.queues:
-            continue
-        log_file = log_dir / f"{queue_name}.log"
-        fh = open(log_file, "a")
-        proc = subprocess.Popen(
-            [exe, "worker", queue_name, "--concurrency", str(concurrency)],
-            stdout=fh,
-            stderr=fh,
-            start_new_session=True,
-        )
-        pids.append((queue_name, proc.pid))
-        console.print(f"[green]Started[/green] {queue_name} (pid {proc.pid}) → logs/{queue_name}.log")
-
-    console.print(f"\n[bold]{len(pids)} workers running in background.[/bold] Monitor with: [bold]agentharness watch[/bold]")
 
 
 @main.command("observe")
@@ -201,7 +148,8 @@ def status(ctx: click.Context, feature_id: str) -> None:
 @main.command("init")
 @click.option("--dir", "target_dir", default=".", show_default=True, type=click.Path(), help="Project directory to initialise")
 @click.option("--force", is_flag=True, help="Overwrite existing files")
-def init_project(target_dir: str, force: bool) -> None:
+@click.pass_context
+def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
     """Copy agent definitions and pipeline config into a project directory."""
     import shutil
     data_root = Path(__file__).parent / "data"
@@ -230,8 +178,25 @@ def init_project(target_dir: str, force: bool) -> None:
 
     skills_src = data_root / "skills"
     if skills_src.exists():
+        # Determine which backend-specific skill to install based on config
+        try:
+            config = load_config(ctx.obj.get("config_path") if ctx.obj else None)
+            backend = config.storage_backend
+        except Exception:
+            backend = "azure"
+
+        # Map backend to the matching skill directory name
+        # github-storage skill will be added in Task 13; fall back to azure-storage if not yet present
+        backend_skill_name = "github-storage" if backend == "github" else "azure-storage"
+        backend_skill_src = skills_src / backend_skill_name
+        if not backend_skill_src.exists():
+            backend_skill_src = skills_src / "azure-storage"
+
         for skill_dir in skills_src.iterdir():
             if not skill_dir.is_dir():
+                continue
+            # Skip backend-specific skills that don't match this installation
+            if skill_dir.name in ("azure-storage", "github-storage") and skill_dir != backend_skill_src:
                 continue
             dst_skill = target / ".claude" / "skills" / skill_dir.name
             dst_skill.mkdir(parents=True, exist_ok=True)
@@ -268,19 +233,12 @@ def list_features(ctx: click.Context) -> None:
 
 
 async def _show_status(feature_id: str, config) -> None:
-    from azure.storage.blob.aio import BlobServiceClient
-    from agentharness.state_manager import StateManager
-    from agentharness.models import TaskStatus
-
-    blob_service = BlobServiceClient.from_connection_string(config.storage.connection_string)
-    mgr = StateManager(blob_service, config.storage.container)
+    state_mgr = create_state_manager(config)
     try:
-        state = await mgr.get(feature_id)
+        state = await state_mgr.get(feature_id)
     except KeyError:
         console.print(f"[red]Feature not found:[/red] {feature_id}")
         sys.exit(1)
-    finally:
-        await blob_service.close()
 
     console.print(f"\n[bold]Feature:[/bold] {state.feature_id}")
     console.print(f"[bold]Status:[/bold]  {_status_style(state.status)}")
@@ -319,33 +277,20 @@ async def _show_status(feature_id: str, config) -> None:
 
 
 async def _list_features(config) -> None:
-    from azure.storage.blob.aio import BlobServiceClient
-
-    blob_service = BlobServiceClient.from_connection_string(config.storage.connection_string)
-    container = blob_service.get_container_client(config.storage.container)
+    state_mgr = create_state_manager(config)
+    features = await state_mgr.list_features()
 
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
     table.add_column("Feature ID", style="cyan")
     table.add_column("Status")
     table.add_column("Updated")
 
-    try:
-        async for blob in container.list_blobs(name_starts_with="artifacts/"):
-            if blob.name.endswith("/state.json"):
-                feature_id = blob.name.split("/")[1]
-                from agentharness.state_manager import StateManager
-                mgr = StateManager(blob_service, config.storage.container)
-                try:
-                    state = await mgr.get(feature_id)
-                    table.add_row(
-                        feature_id,
-                        _status_style(state.status),
-                        _fmt_dt(state.updated_at),
-                    )
-                except Exception:
-                    table.add_row(feature_id, "[dim]unreadable[/dim]", "—")
-    finally:
-        await blob_service.close()
+    for state in features:
+        table.add_row(
+            state.feature_id,
+            _status_style(state.status),
+            _fmt_dt(state.updated_at),
+        )
 
     console.print(table)
 
