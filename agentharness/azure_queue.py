@@ -6,6 +6,7 @@ import base64
 
 from azure.storage.queue.aio import QueueClient
 
+from agentharness.config import Config
 from agentharness.models import TaskMessage
 from agentharness.storage_protocol import RawMessage
 
@@ -13,13 +14,18 @@ from agentharness.storage_protocol import RawMessage
 class AzureTaskQueue:
     """Async wrapper for a single Azure Storage Queue."""
 
-    def __init__(self, queue_client: QueueClient) -> None:
+    def __init__(self, queue_client: QueueClient, connection_string: str) -> None:
         self._client = queue_client
+        self._connection_string = connection_string
 
     @classmethod
     def from_connection_string(cls, connection_string: str, queue_name: str) -> AzureTaskQueue:
         client = QueueClient.from_connection_string(connection_string, queue_name)
-        return cls(client)
+        return cls(client, connection_string)
+
+    @classmethod
+    def from_config(cls, config: Config, queue_name: str) -> AzureTaskQueue:
+        return cls.from_connection_string(config.storage.connection_string, queue_name)
 
     async def send_task(self, task: TaskMessage, visibility_timeout: int = 0) -> None:
         payload = base64.b64encode(task.model_dump_json().encode()).decode()
@@ -59,9 +65,9 @@ class AzureTaskQueue:
         )
 
     async def move_to_dead_letter(
-        self, raw: RawMessage, dead_letter_queue_name: str, connection_string: str
+        self, raw: RawMessage, dead_letter_queue_name: str
     ) -> None:
-        dl_queue = QueueClient.from_connection_string(connection_string, dead_letter_queue_name)
+        dl_queue = QueueClient.from_connection_string(self._connection_string, dead_letter_queue_name)
         try:
             await dl_queue.create_queue()
         except Exception:

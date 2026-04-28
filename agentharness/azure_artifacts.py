@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from azure.storage.blob.aio import BlobServiceClient
 
@@ -54,6 +55,12 @@ class AzureArtifactStore:
 
     async def close(self) -> None:
         await self._service.close()
+
+    def get_work_dir(self) -> Path | None:
+        return None
+
+    async def commit_workdir_changes(self, message: str) -> bool:
+        return False
 
     def get_blob_service(self) -> BlobServiceClient:
         return self._service

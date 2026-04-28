@@ -22,12 +22,16 @@ _RETRY_BASE_SECONDS = 0.5
 _LEASE_CONTENTION_CODES = {"LeaseAlreadyPresent", "LeaseIdMissing", "LeaseLost"}
 
 
-class StateManager:
+class AzureStateManager:
     """Read and update feature state with blob lease for atomicity."""
 
     def __init__(self, blob_service: BlobServiceClient, container: str) -> None:
         self._service = blob_service
         self._container = container
+
+    @classmethod
+    def from_config(cls, config) -> AzureStateManager:
+        return cls(BlobServiceClient.from_connection_string(config.storage.connection_string), config.storage.container)
 
     def _blob_client(self, feature_id: str):
         return self._service.get_container_client(self._container).get_blob_client(
@@ -43,7 +47,7 @@ class StateManager:
         except ResourceNotFoundError:
             raise KeyError(f"No state found for feature {feature_id!r}")
 
-    async def create(self, state: FeatureState) -> None:
+    async def create(self, state: FeatureState, brief_content: str = "") -> None:
         """Write initial state (no lease needed — blob doesn't exist yet)."""
         blob = self._blob_client(state.feature_id)
         await blob.upload_blob(state.model_dump_json(), overwrite=False)
@@ -108,3 +112,27 @@ class StateManager:
     async def set_cleanup_warning(self, feature_id: str, message: str) -> None:
         """Atomically persist cleanup_warning on the feature record under blob lease."""
         await self.update(feature_id, lambda s: s.with_cleanup_warning(message))
+
+    async def list_features(self) -> list[FeatureState]:
+        """List all features by enumerating state.json blobs under artifacts/."""
+        container = self._service.get_container_client(self._container)
+        states: list[FeatureState] = []
+        async for blob in container.list_blobs(name_starts_with="artifacts/"):
+            if not blob.name.endswith("/state.json"):
+                continue
+            feature_id = blob.name.split("/")[1]
+            try:
+                state = await self.get(feature_id)
+                states.append(state)
+            except Exception:
+                log.debug("Skipping unreadable state blob: %s", blob.name)
+        return states
+
+    async def open_review(self, feature_id: str) -> str | None:
+        """Azure has no PR concept; always returns None."""
+        log.debug("open_review called for %s — no-op on Azure backend", feature_id)
+        return None
+
+
+# Backward-compatible alias — prefer AzureStateManager in new code
+StateManager = AzureStateManager

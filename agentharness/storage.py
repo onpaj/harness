@@ -82,7 +82,5 @@ def create_state_manager(config):
     if config.storage_backend == "github":
         from agentharness.github_state import GitHubStateManager
         return GitHubStateManager.from_config(config)
-    from azure.storage.blob.aio import BlobServiceClient
-    from agentharness.state_manager import StateManager
-    client = BlobServiceClient.from_connection_string(config.storage.connection_string)
-    return StateManager(client, config.storage.container)
+    from agentharness.state_manager import AzureStateManager
+    return AzureStateManager.from_config(config)
