@@ -103,7 +103,9 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
             label = artifact_label(blob_path)
             artifact_contents[label] = content
             if work_dir:
-                (work_dir / label).write_text(content)
+                dest = work_dir / blob_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(content)
 
         prompt = build_prompt(agent_def, task, artifact_contents)
         result = await run_agent(agent_def, prompt, work_dir=work_dir, worktree_path=started_state.worktree_path)

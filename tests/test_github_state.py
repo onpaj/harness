@@ -520,3 +520,24 @@ async def test_open_review_passes_feature_marker_as_label():
     assert kwargs["labels"] == [TEST_FEATURE_MARKER]
     assert kwargs["base"] == "main"
     assert kwargs["head"] == state.feature_id
+
+
+@pytest.mark.asyncio
+async def test_open_review_pr_body_closes_issue():
+    """PR body includes 'Closes #<issue_number>' when state_issue_number is set."""
+    state = _make_state(status=FeatureStatus.done)
+    state_with_issue = state.model_copy(update={"state_issue_number": 42})
+    issue = _make_issue(state_with_issue, number=42)
+    client = _mock_client()
+    client.list_issues.return_value = [issue]
+    client.get_default_branch.return_value = "main"
+    client.create_pull_request.return_value = {
+        "number": 99,
+        "html_url": "https://example/pr/99",
+    }
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+    await mgr.open_review(state_with_issue.feature_id)
+
+    _, kwargs = client.create_pull_request.call_args
+    assert "Closes #42" in kwargs["body"]

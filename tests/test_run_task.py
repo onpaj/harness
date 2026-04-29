@@ -423,6 +423,64 @@ class TestOrphanTaskGuard:
 
 
 @pytest.mark.asyncio
+class TestInputArtifactDiskWrite:
+    """Input artifacts must be materialised at work_dir/<blob_path>, preserving the
+    artifacts/{feature_id}/ prefix — never at work_dir/<basename> at the repo root."""
+
+    async def test_writes_artifact_at_full_blob_path(self, tmp_path: Path):
+        task_json = (
+            '{"task_id": "feat-x-dev-main", "feature_id": "feat-x",'
+            ' "input_artifacts": ["artifacts/feat-x/spec.r1.md"],'
+            ' "output_artifact": "artifacts/feat-x/impl/main.r1.md",'
+            ' "agent_role": "developer", "work_dir": null, "revision": 1}'
+        )
+
+        config = MagicMock()
+        config.storage_backend = "github"
+        config.queue_names.return_value = []
+        config.agent_path_for_queue.return_value = MagicMock()
+
+        from agentharness.models import FeatureState, TaskEntry, TaskStatus
+        state = FeatureState(feature_id="feat-x").with_tasks_added([
+            TaskEntry(task_id="feat-x-dev-main", phase="developing", status=TaskStatus.queued)
+        ])
+
+        mock_state_mgr = AsyncMock()
+        mock_state_mgr.get = AsyncMock(return_value=state)
+        mock_state_mgr.update = AsyncMock(return_value=state)
+
+        mock_store = AsyncMock()
+        mock_store.upload = AsyncMock()
+        mock_store.close = AsyncMock()
+        mock_store.commit_workdir_changes = AsyncMock(return_value=False)
+        mock_store.download = AsyncMock(return_value="SPEC CONTENT")
+        mock_store.get_work_dir = MagicMock(return_value=tmp_path)
+
+        mock_agent_def = MagicMock()
+        mock_agent_def.allowed_tools = ["bash", "read", "write"]
+        mock_agent_def.output_file_glob = None
+        mock_agent_def.system_prompt = "x"
+        mock_agent_def.context_files = []
+
+        mock_run_result = MagicMock()
+        mock_run_result.output = "## Status: DONE"
+        mock_run_result.tokens = None
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
+            patch("agentharness.run_task.create_task_queue"),
+            patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
+            patch("agentharness.run_task.run_agent", return_value=mock_run_result),
+            patch("agentharness.run_task.dispatch_after_completion", return_value=None),
+        ):
+            await run_task("dev-queue", task_json, config)
+
+        assert (tmp_path / "artifacts" / "feat-x" / "spec.r1.md").read_text() == "SPEC CONTENT"
+        assert not (tmp_path / "spec.r1.md").exists()
+
+
+@pytest.mark.asyncio
 class TestRunTaskGetWorkDir:
     """Verify run_task handles both None and Path from get_work_dir correctly."""
 
