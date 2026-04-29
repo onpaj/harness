@@ -4,8 +4,10 @@
     "connection_string_env": "AZURE_STORAGE_CONNECTION_STRING",
     "container": "pipeline-artifacts"
   },
+  "max_analyst_iterations": 2,
   "queues": {
     "analyst-queue":   { "agent": ".agents/analyst.md" },
+    "product-queue":   { "agent": ".agents/product.md" },
     "architect-queue": { "agent": ".agents/architect.md" },
     "designer-queue":  { "agent": ".agents/designer.md" },
     "planner-queue":   { "agent": ".agents/planner.md" },
