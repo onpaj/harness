@@ -61,6 +61,23 @@ def _make_issue(
     }
 
 
+def _make_raw_issue(
+    *,
+    number: int,
+    title: str = "Raw Feature Title",
+    body: str = "Raw issue body",
+) -> dict:
+    """Build a GitHub issue with marker label but no state JSON block."""
+    return {
+        "number": number,
+        "title": title,
+        "body": body,
+        "created_at": "2026-04-25T10:00:00Z",
+        "updated_at": "2026-04-25T10:00:00Z",
+        "labels": [{"name": TEST_FEATURE_MARKER}],
+    }
+
+
 def _mock_client(owner: str = "acme", repo: str = "runs") -> AsyncMock:
     client = AsyncMock()
     client.owner = owner
@@ -431,26 +448,87 @@ async def test_list_features_returns_correct_pairs():
 
 
 @pytest.mark.asyncio
-async def test_list_features_skips_issues_without_parseable_state():
+async def test_list_features_synthesizes_raw_issue_without_state_block():
+    """An issue with the marker label but no state JSON now appears as raw."""
     # Arrange
-    state = _make_state()
-    good_issue = _make_issue(state, number=5)
-    # Issue with TEST_FEATURE_MARKER but no parseable state JSON
-    bad_issue = {
-        "number": 6,
-        "body": "",
-        "labels": [{"name": TEST_FEATURE_MARKER}],
-    }
+    raw = _make_raw_issue(number=11, title="Add Export Endpoint")
     client = _mock_client()
-    client.list_issues.return_value = [good_issue, bad_issue]
+    client.list_issues.return_value = [raw]
     mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     results = await mgr.list_features()
 
-    # Assert — bad_issue silently skipped
+    # Assert
     assert len(results) == 1
-    assert results[0].feature_id == state.feature_id
+    state = results[0]
+    assert state.feature_id == "feat-add-export-endpoint"
+    assert state.status == FeatureStatus.brainstormed
+    assert state.state_issue_number == 11
+    assert state.branch_name == "feat-add-export-endpoint"
+    assert state.is_raw is True
+
+
+@pytest.mark.asyncio
+async def test_list_features_returns_both_raw_and_initialized_features():
+    """Both raw and initialized features appear in list_features results."""
+    # Arrange
+    initialized_state = _make_state("feat-initialized")
+    initialized = _make_issue(initialized_state, number=20)
+    raw = _make_raw_issue(number=21, title="Raw Thing")
+    client = _mock_client()
+    client.list_issues.return_value = [raw, initialized]
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+    # Act
+    results = await mgr.list_features()
+
+    # Assert
+    feature_ids = {s.feature_id for s in results}
+    assert feature_ids == {"feat-initialized", "feat-raw-thing"}
+    raw_state = next(s for s in results if s.feature_id == "feat-raw-thing")
+    init_state = next(s for s in results if s.feature_id == "feat-initialized")
+    assert raw_state.is_raw is True
+    assert init_state.is_raw is False
+
+
+@pytest.mark.asyncio
+async def test_list_features_dedup_two_raw_issues_keeps_newest():
+    """When two raw issues slug to the same feature_id, the higher number wins."""
+    # Arrange
+    older = _make_raw_issue(number=1, title="Same Title")
+    newer = _make_raw_issue(number=5, title="Same Title")
+    client = _mock_client()
+    client.list_issues.return_value = [newer, older]
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+    # Act
+    results = await mgr.list_features()
+
+    # Assert
+    assert len(results) == 1
+    assert results[0].state_issue_number == 5
+
+
+@pytest.mark.asyncio
+async def test_list_features_dedup_raw_vs_initialized_keeps_newest():
+    """Raw and initialized issues with the same slug → newest wins per existing rule."""
+    # Arrange
+    initialized_state = _make_state("feat-shared-slug")
+    initialized = _make_issue(initialized_state, number=2)
+    raw = _make_raw_issue(number=8, title="Shared Slug")  # slugs to feat-shared-slug
+    client = _mock_client()
+    client.list_issues.return_value = [raw, initialized]
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+    # Act
+    results = await mgr.list_features()
+
+    # Assert
+    assert len(results) == 1
+    # raw issue 8 is newer than initialized issue 2 → raw wins
+    assert results[0].state_issue_number == 8
+    assert results[0].is_raw is True
 
 
 @pytest.mark.asyncio
@@ -541,6 +619,135 @@ async def test_open_review_pr_body_closes_issue():
 
     _, kwargs = client.create_pull_request.call_args
     assert "Closes #42" in kwargs["body"]
+
+
+# ---------------------------------------------------------------------------
+# patch_existing_issue
+# ---------------------------------------------------------------------------
+
+
+class TestPatchExistingIssue:
+    @pytest.mark.asyncio
+    async def test_appends_state_block_when_absent(self):
+        from agentharness.github_state import _STATE_BLOCK_RE, parse_state_from_issue
+        state = _make_state("feat-x", status=FeatureStatus.brainstormed)
+        client = _mock_client()
+        client.get_issue.return_value = {
+            "number": 5,
+            "body": "Original brief content here.",
+            "labels": [{"name": TEST_FEATURE_MARKER}],
+        }
+        mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+        await mgr.patch_existing_issue(5, state, brief_content="Original brief content here.")
+
+        client.update_issue.assert_awaited_once()
+        call_kwargs = client.update_issue.call_args[1]
+        new_body = call_kwargs["body"]
+        assert "Original brief content here." in new_body
+        assert _STATE_BLOCK_RE.search(new_body) is not None
+        parsed = parse_state_from_issue({"body": new_body})
+        assert parsed is not None
+        assert parsed.feature_id == "feat-x"
+
+    @pytest.mark.asyncio
+    async def test_replaces_existing_state_block(self):
+        from agentharness.github_state import _build_state_block, parse_state_from_issue
+        old_state = _make_state("feat-x", status=FeatureStatus.brainstormed)
+        new_state = _make_state("feat-x", status=FeatureStatus.analyzing)
+        old_body = f"Brief content.\n\n{_build_state_block(old_state)}"
+        client = _mock_client()
+        client.get_issue.return_value = {
+            "number": 5,
+            "body": old_body,
+            "labels": [{"name": TEST_FEATURE_MARKER}],
+        }
+        mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+        await mgr.patch_existing_issue(5, new_state)
+
+        new_body = client.update_issue.call_args[1]["body"]
+        assert new_body.count("```agentharness-state") == 1
+        parsed = parse_state_from_issue({"body": new_body})
+        assert parsed is not None
+        assert parsed.status == FeatureStatus.analyzing
+
+    @pytest.mark.asyncio
+    async def test_adds_feat_brainstormed_label(self):
+        from agentharness.github_labels import FEAT_BRAINSTORMED
+        state = _make_state("feat-x", status=FeatureStatus.brainstormed)
+        client = _mock_client()
+        client.get_issue.return_value = {
+            "number": 5,
+            "body": "",
+            "labels": [{"name": TEST_FEATURE_MARKER}],
+        }
+        mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+        await mgr.patch_existing_issue(5, state)
+
+        client.ensure_labels.assert_awaited_once()
+        names_arg = client.ensure_labels.call_args[0][0]
+        assert FEAT_BRAINSTORMED in names_arg
+        client.add_labels.assert_awaited_once_with(5, [FEAT_BRAINSTORMED])
+
+    @pytest.mark.asyncio
+    async def test_does_not_remove_feature_marker_label(self):
+        state = _make_state("feat-x", status=FeatureStatus.brainstormed)
+        client = _mock_client()
+        client.get_issue.return_value = {
+            "number": 5,
+            "body": "",
+            "labels": [{"name": TEST_FEATURE_MARKER}],
+        }
+        mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+        await mgr.patch_existing_issue(5, state)
+
+        client.remove_label.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_idempotent_two_calls_yield_same_body(self):
+        """Two consecutive calls with the same state produce byte-identical bodies."""
+        state = _make_state("feat-x", status=FeatureStatus.brainstormed)
+        client = _mock_client()
+        first_body_holder = {"body": "Some brief text."}
+
+        async def get_issue_stub(_n: int) -> dict:
+            return {"number": 5, "body": first_body_holder["body"], "labels": [{"name": TEST_FEATURE_MARKER}]}
+
+        async def update_issue_stub(_n: int, *, body: str) -> dict:
+            first_body_holder["body"] = body
+            return {"number": 5}
+
+        client.get_issue.side_effect = get_issue_stub
+        client.update_issue.side_effect = update_issue_stub
+        mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+        await mgr.patch_existing_issue(5, state, brief_content="Some brief text.")
+        body_after_first = first_body_holder["body"]
+
+        await mgr.patch_existing_issue(5, state, brief_content="Some brief text.")
+        body_after_second = first_body_holder["body"]
+
+        assert body_after_first == body_after_second
+
+    @pytest.mark.asyncio
+    async def test_brief_content_preserved_when_already_in_body(self):
+        """If the existing body already contains the brief, patch must not duplicate it."""
+        state = _make_state("feat-x", status=FeatureStatus.brainstormed)
+        client = _mock_client()
+        client.get_issue.return_value = {
+            "number": 5,
+            "body": "My brief content.",
+            "labels": [{"name": TEST_FEATURE_MARKER}],
+        }
+        mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+        await mgr.patch_existing_issue(5, state, brief_content="My brief content.")
+
+        new_body = client.update_issue.call_args[1]["body"]
+        assert new_body.count("My brief content.") == 1
 
 
 # ---------------------------------------------------------------------------
