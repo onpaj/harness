@@ -72,7 +72,6 @@ async def run_terminal_cleanup(state: FeatureState, state_manager) -> None:
 
 # Maps feature status → (next_status, next_queue_key)
 _LINEAR_TRANSITIONS: dict[str, tuple[str, str]] = {
-    "analyzing": ("architecting", "architect-queue"),
     "architecting": ("designing", "designer-queue"),
     "designing": ("planning", "planner-queue"),
 }
@@ -84,6 +83,7 @@ STATE_TO_QUEUE: dict[FeatureStatus, str | None] = {
     FeatureStatus.brainstorming: None,
     FeatureStatus.brainstormed:  None,
     FeatureStatus.analyzing:     "analyst-queue",
+    FeatureStatus.questioning:   "product-queue",
     FeatureStatus.architecting:  "architect-queue",
     FeatureStatus.designing:     "designer-queue",
     FeatureStatus.planning:      "planner-queue",
@@ -115,7 +115,26 @@ async def dispatch_after_completion(
     """
     status = state.status
 
-    if status in (FeatureStatus.analyzing, FeatureStatus.architecting, FeatureStatus.designing):
+    if status == FeatureStatus.analyzing:
+        analyst_status = _parse_analyst_status(agent_output)
+        cfg = state.config
+        cap_reached = cfg.current_analyst_iteration >= cfg.max_analyst_iterations
+        if analyst_status == "COMPLETE" or cap_reached:
+            if analyst_status == "HAS_QUESTIONS" and cap_reached:
+                log.warning(
+                    "max_analyst_iterations cap reached — proceeding to architecting "
+                    "(feature_id=%s, current=%d, max=%d)",
+                    state.feature_id,
+                    cfg.current_analyst_iteration,
+                    cfg.max_analyst_iterations,
+                )
+            return await _dispatch_linear_to(state, "architecting", "architect-queue", config, queues)
+        return await _dispatch_questioning(state, config, queues)
+
+    if status == FeatureStatus.questioning:
+        return await _dispatch_analyst_rerun(state, config, queues)
+
+    if status in (FeatureStatus.architecting, FeatureStatus.designing):
         return await _dispatch_linear(state, status, config, queues)
 
     if status == FeatureStatus.planning:
@@ -146,8 +165,47 @@ async def _dispatch_linear(
     feature_id = state.feature_id
     revision = 1
 
-    input_artifacts = _artifacts_for_phase(feature_id, next_status)
+    input_artifacts = _artifacts_for_phase(state, next_status)
     output_artifact = phase_artifact_path(feature_id, _output_name(next_status), revision)
+
+    task = TaskMessage(
+        feature_id=feature_id,
+        task_id=f"{feature_id}-{next_status}-1",
+        input_artifacts=input_artifacts,
+        output_artifact=output_artifact,
+        agent_role=agent_path.stem,
+        state_issue_number=state.state_issue_number,
+    )
+    await next_queue.send_task(task)
+    log.info("Enqueued %s task for feature %s", next_status, feature_id)
+
+    phase_info = PhaseInfo(status=PhaseStatus.pending)
+    return (
+        state
+        .with_status(FeatureStatus(next_status))
+        .with_phase(next_status, phase_info)
+        .with_event("phase_enqueued", phase=next_status)
+    )
+
+
+async def _dispatch_linear_to(
+    state: FeatureState,
+    next_status: str,
+    queue_key: str,
+    config: Config,
+    queues: dict[str, TaskQueue],
+) -> FeatureState:
+    """Like _dispatch_linear but with explicit destination. Used when the
+    transition is not in _LINEAR_TRANSITIONS."""
+    next_queue = queues.get(queue_key)
+    if not next_queue:
+        raise RuntimeError(f"Queue {queue_key!r} not found")
+
+    agent_path = config.agent_path_for_queue(queue_key)
+    feature_id = state.feature_id
+
+    input_artifacts = _artifacts_for_phase(state, next_status)
+    output_artifact = phase_artifact_path(feature_id, _output_name(next_status), 1)
 
     task = TaskMessage(
         feature_id=feature_id,
@@ -184,7 +242,7 @@ async def _dispatch_fan_out(
         feature_id=feature_id,
         task_id=f"{feature_id}-dev-main",
         input_artifacts=[
-            phase_artifact_path(feature_id, "spec", 1),
+            phase_artifact_path(feature_id, "spec", _latest_spec_revision(state)),
             phase_artifact_path(feature_id, "arch-review", 1),
             phase_artifact_path(feature_id, "design", 1),
             phase_artifact_path(feature_id, "task-plan", 1),
@@ -209,6 +267,78 @@ async def _dispatch_fan_out(
         .with_status(FeatureStatus.developing)
         .with_tasks_added([task_entry])
         .with_event("developer_dispatched", phase="developing", details="orchestrator task enqueued")
+    )
+
+
+async def _dispatch_questioning(
+    state: FeatureState,
+    config: Config,
+    queues: dict[str, TaskQueue],
+) -> FeatureState:
+    """Enqueue the product agent to answer open questions in the latest spec."""
+    product_queue = queues.get("product-queue")
+    if not product_queue:
+        raise RuntimeError("product-queue not found")
+
+    feature_id = state.feature_id
+    spec_rev = _latest_spec_revision(state)
+
+    task = TaskMessage(
+        feature_id=feature_id,
+        task_id=f"{feature_id}-questioning-r{spec_rev}",
+        input_artifacts=_artifacts_for_phase(state, "questioning"),
+        output_artifact=phase_artifact_path(feature_id, "answers", spec_rev),
+        agent_role="product",
+        state_issue_number=state.state_issue_number,
+    )
+    await product_queue.send_task(task)
+    log.info("Enqueued product task %s for feature %s", task.task_id, feature_id)
+
+    return (
+        state
+        .with_status(FeatureStatus.questioning)
+        .with_phase("questioning", PhaseInfo(status=PhaseStatus.pending))
+        .with_event("phase_enqueued", phase="questioning")
+    )
+
+
+async def _dispatch_analyst_rerun(
+    state: FeatureState,
+    config: Config,
+    queues: dict[str, TaskQueue],
+) -> FeatureState:
+    """Increment analyst iteration counter and re-enqueue the analyst task."""
+    analyst_queue = queues.get("analyst-queue")
+    if not analyst_queue:
+        raise RuntimeError("analyst-queue not found")
+
+    incremented = state.with_analyst_iteration_incremented()
+    feature_id = incremented.feature_id
+    spec_rev = _latest_spec_revision(incremented)  # iter+1 after increment
+
+    task = TaskMessage(
+        feature_id=feature_id,
+        task_id=f"{feature_id}-analyzing-r{spec_rev}",
+        input_artifacts=_artifacts_for_phase(incremented, "analyzing"),
+        output_artifact=phase_artifact_path(feature_id, "spec", spec_rev),
+        agent_role="analyst",
+        state_issue_number=incremented.state_issue_number,
+    )
+    await analyst_queue.send_task(task)
+    log.info(
+        "Re-enqueued analyst task %s for feature %s (iter=%d)",
+        task.task_id, feature_id, incremented.config.current_analyst_iteration,
+    )
+
+    return (
+        incremented
+        .with_status(FeatureStatus.analyzing)
+        .with_phase("analyzing", PhaseInfo(status=PhaseStatus.pending))
+        .with_event(
+            "phase_enqueued",
+            phase="analyzing",
+            details=f"analyst iteration {incremented.config.current_analyst_iteration}",
+        )
     )
 
 
@@ -257,7 +387,7 @@ async def _enqueue_per_task_review(
         feature_id=feature_id,
         task_id=f"{feature_id}-review-{task_name}-r{revision}",
         input_artifacts=[
-            phase_artifact_path(feature_id, "spec", 1),
+            phase_artifact_path(feature_id, "spec", _latest_spec_revision(state)),
             phase_artifact_path(feature_id, "arch-review", 1),
             dev_task.output_artifact,
         ],
@@ -381,6 +511,27 @@ def _parse_developer_status(output: str) -> str:
     return match.group(1) if match else "DONE"
 
 
+_ANALYST_STATUS_RE = re.compile(
+    r"^##\s+Status:\s*(\S+)\s*$", re.MULTILINE
+)
+
+
+def _parse_analyst_status(output: str) -> str:
+    """Parse analyst's '## Status:' line. Safe default: COMPLETE."""
+    match = _ANALYST_STATUS_RE.search(output)
+    if match and match.group(1) == "HAS_QUESTIONS":
+        return "HAS_QUESTIONS"
+    return "COMPLETE"
+
+
+def _latest_spec_revision(state: FeatureState) -> int:
+    """Return the revision number of the most recent spec.
+
+    Invariant: analyst run N produces spec.r{N+1}.md where N = current_analyst_iteration.
+    """
+    return state.config.current_analyst_iteration + 1
+
+
 def _task_name_from_id(task_id: str, feature_id: str) -> str:
     """Extract task name from IDs like '{feature_id}-dev-{task_name}[-r{N}]'."""
     prefix = f"{feature_id}-dev-"
@@ -412,25 +563,38 @@ def _impl_work_dir(feature_id: str) -> str:
     return f"implementations/{feature_id}"
 
 
-def _artifacts_for_phase(feature_id: str, phase: str) -> list[str]:
+def _artifacts_for_phase(state: FeatureState, phase: str) -> list[str]:
     """Return input artifact paths for a given pipeline phase."""
-    mapping: dict[str, list[str]] = {
-        "analyzing": [f"artifacts/{feature_id}/brief.md"],
-        "architecting": [
-            phase_artifact_path(feature_id, "spec", 1),
+    feature_id = state.feature_id
+    iter_n = state.config.current_analyst_iteration
+    spec_rev = _latest_spec_revision(state)  # = iter_n + 1
+
+    if phase == "analyzing":
+        artifacts = [f"artifacts/{feature_id}/brief.md"]
+        artifacts += [phase_artifact_path(feature_id, "spec", i) for i in range(1, spec_rev)]
+        artifacts += [phase_artifact_path(feature_id, "answers", i) for i in range(1, iter_n + 1)]
+        return artifacts
+
+    if phase == "questioning":
+        result = [
             f"artifacts/{feature_id}/brief.md",
-        ],
-        "designing": [
-            phase_artifact_path(feature_id, "spec", 1),
-            phase_artifact_path(feature_id, "arch-review", 1),
-        ],
-        "planning": [
-            phase_artifact_path(feature_id, "spec", 1),
+            phase_artifact_path(feature_id, "spec", spec_rev),
+        ]
+        result += [phase_artifact_path(feature_id, "answers", i) for i in range(1, iter_n + 1)]
+        return result
+
+    latest_spec = phase_artifact_path(feature_id, "spec", spec_rev)
+    if phase == "architecting":
+        return [latest_spec, f"artifacts/{feature_id}/brief.md"]
+    if phase == "designing":
+        return [latest_spec, phase_artifact_path(feature_id, "arch-review", 1)]
+    if phase == "planning":
+        return [
+            latest_spec,
             phase_artifact_path(feature_id, "arch-review", 1),
             phase_artifact_path(feature_id, "design", 1),
-        ],
-    }
-    return mapping.get(phase, [])
+        ]
+    return []
 
 
 def _output_name(phase: str) -> str:
@@ -527,7 +691,7 @@ def build_phase_task(
             feature_id=feature_id,
             task_id=f"{feature_id}-review-{task_name}-r{revision}",
             input_artifacts=[
-                phase_artifact_path(feature_id, "spec", 1),
+                phase_artifact_path(feature_id, "spec", _latest_spec_revision(state)),
                 phase_artifact_path(feature_id, "arch-review", 1),
                 dev_task.output_artifact,
             ],
@@ -539,14 +703,26 @@ def build_phase_task(
             state_issue_number=state.state_issue_number,
         )
 
-    # Phase agents: analyzing, architecting, designing, planning
+    # Phase agents: analyzing, questioning, architecting, designing, planning
     phase = target_status.value
-    input_artifacts = _artifacts_for_phase(feature_id, phase)
-    output_artifact = phase_artifact_path(feature_id, _output_name(phase), 1)
+    input_artifacts = _artifacts_for_phase(state, phase)
+
+    if phase == "analyzing":
+        spec_rev = _latest_spec_revision(state)
+        output_artifact = phase_artifact_path(feature_id, "spec", spec_rev)
+        task_id = f"{feature_id}-analyzing-r{spec_rev}"
+    elif phase == "questioning":
+        spec_rev = _latest_spec_revision(state)
+        output_artifact = phase_artifact_path(feature_id, "answers", spec_rev)
+        task_id = f"{feature_id}-questioning-r{spec_rev}"
+    else:
+        output_artifact = phase_artifact_path(feature_id, _output_name(phase), 1)
+        task_id = f"{feature_id}-{phase}-1"
+
     agent_role = config.agent_path_for_queue(queue_name).stem
     return TaskMessage(
         feature_id=feature_id,
-        task_id=f"{feature_id}-{phase}-1",
+        task_id=task_id,
         input_artifacts=input_artifacts,
         output_artifact=output_artifact,
         agent_role=agent_role,

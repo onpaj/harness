@@ -22,6 +22,7 @@ class TestOptionsFor:
             FeatureStatus.brainstorming,
             FeatureStatus.brainstormed,
             FeatureStatus.analyzing,
+            FeatureStatus.questioning,
             FeatureStatus.architecting,
             FeatureStatus.designing,
             FeatureStatus.planning,

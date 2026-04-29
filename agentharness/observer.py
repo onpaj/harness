@@ -280,7 +280,10 @@ async def _handle_implement_issue(
             status=FeatureStatus.brainstormed,
             created_at=now,
             updated_at=now,
-            config=PipelineConfig(max_revisions=config.defaults.max_revisions),
+            config=PipelineConfig(
+                max_revisions=config.defaults.max_revisions,
+                max_analyst_iterations=config.max_analyst_iterations,
+            ),
             branch_name=branch_name,
         )
         await GitHubStateManager(client, feature_marker=config.github.feature_marker).create(state, body)

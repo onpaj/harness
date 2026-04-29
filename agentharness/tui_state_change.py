@@ -23,6 +23,7 @@ CANONICAL_STATE_ORDER: list[FeatureStatus] = [
     FeatureStatus.brainstorming,
     FeatureStatus.brainstormed,
     FeatureStatus.analyzing,
+    FeatureStatus.questioning,
     FeatureStatus.architecting,
     FeatureStatus.designing,
     FeatureStatus.planning,

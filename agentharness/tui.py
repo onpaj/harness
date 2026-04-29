@@ -41,6 +41,7 @@ _STATUS_ICONS = {
     FeatureStatus.reviewing: "▶",
     FeatureStatus.dev_revision: "↺",
     FeatureStatus.analyzing: "◌",
+    FeatureStatus.questioning: "◌",
     FeatureStatus.planning: "◌",
     FeatureStatus.architecting: "◌",
     FeatureStatus.designing: "◌",
@@ -54,15 +55,16 @@ _STATUS_COLORS = {
     FeatureStatus.developing: "yellow",
     FeatureStatus.reviewing: "yellow",
     FeatureStatus.dev_revision: "magenta",
+    FeatureStatus.questioning: "cyan",
 }
 
-_PHASE_ORDER = ["analyzing", "architecting", "designing", "planning", "developing", "reviewing"]
+_PHASE_ORDER = ["analyzing", "questioning", "architecting", "designing", "planning", "developing", "reviewing"]
 
 _PHASE_TO_QUEUE = {
     status.value: queue
     for status, queue in STATE_TO_QUEUE.items()
     if queue is not None and status.value in {
-        "analyzing", "architecting", "designing",
+        "analyzing", "questioning", "architecting", "designing",
         "planning", "developing", "reviewing",
     }
 }
@@ -230,7 +232,12 @@ class TaskPanel(DataTable):
 
     def update_tasks(self, state: FeatureState) -> None:
         total = _fmt_tokens(state.total_tokens_used())
-        self.border_title = f"Tasks  —  total: {total}" if total != "—" else "Tasks"
+        title = f"Tasks  —  total: {total}" if total != "—" else "Tasks"
+        cfg = state.config
+        if cfg.current_analyst_iteration > 0:
+            cap_note = " (cap)" if cfg.current_analyst_iteration >= cfg.max_analyst_iterations else ""
+            title = f"{title}  —  analyst: {cfg.current_analyst_iteration} / {cfg.max_analyst_iterations}{cap_note}"
+        self.border_title = title
         new_rows, new_ids = self._build_task_rows(state)
         if new_ids == self._row_task_ids:
             for row_idx, row_data in enumerate(new_rows):

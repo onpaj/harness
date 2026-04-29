@@ -148,3 +148,110 @@ class TestWithTasksCleared:
         assert state.tasks == []
         cleared = state.with_tasks_cleared()
         assert cleared.tasks == []
+
+
+class TestQuestioningEnumValue:
+    def test_questioning_is_a_valid_status(self):
+        assert FeatureStatus("questioning") == FeatureStatus.questioning
+
+    def test_questioning_serialises_to_string(self):
+        state = FeatureState(feature_id="feat-q", status=FeatureStatus.questioning)
+        payload = state.model_dump_json()
+        assert '"status":"questioning"' in payload
+
+    def test_questioning_round_trips_through_json(self):
+        state = FeatureState(feature_id="feat-q", status=FeatureStatus.questioning)
+        restored = FeatureState.model_validate_json(state.model_dump_json())
+        assert restored.status == FeatureStatus.questioning
+
+
+class TestPipelineConfigAnalystFields:
+    def test_defaults(self):
+        from agentharness.models import PipelineConfig
+        cfg = PipelineConfig()
+        assert cfg.max_analyst_iterations == 2
+        assert cfg.current_analyst_iteration == 0
+
+    def test_explicit_values(self):
+        from agentharness.models import PipelineConfig
+        cfg = PipelineConfig(max_analyst_iterations=5, current_analyst_iteration=3)
+        assert cfg.max_analyst_iterations == 5
+        assert cfg.current_analyst_iteration == 3
+
+    def test_zero_max_iterations_allowed(self):
+        from agentharness.models import PipelineConfig
+        cfg = PipelineConfig(max_analyst_iterations=0)
+        assert cfg.max_analyst_iterations == 0
+
+    def test_negative_max_iterations_rejected(self):
+        from agentharness.models import PipelineConfig
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PipelineConfig(max_analyst_iterations=-1)
+
+    def test_negative_current_iteration_rejected(self):
+        from agentharness.models import PipelineConfig
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            PipelineConfig(current_analyst_iteration=-1)
+
+    def test_legacy_state_json_without_new_fields_deserializes(self):
+        from agentharness.models import PipelineConfig
+        legacy_cfg_json = '{"max_revisions": 3, "current_revision_round": 0}'
+        cfg = PipelineConfig.model_validate_json(legacy_cfg_json)
+        assert cfg.max_analyst_iterations == 2
+        assert cfg.current_analyst_iteration == 0
+
+
+class TestWithAnalystIterationIncremented:
+    def _state(self, current: int = 0) -> FeatureState:
+        from agentharness.models import PipelineConfig
+        return FeatureState(
+            feature_id="feat-it",
+            config=PipelineConfig(current_analyst_iteration=current),
+        )
+
+    def test_increments_counter_by_one(self):
+        state = self._state(current=0)
+        updated = state.with_analyst_iteration_incremented()
+        assert updated.config.current_analyst_iteration == 1
+
+    def test_subsequent_increment_continues(self):
+        state = self._state(current=1)
+        updated = state.with_analyst_iteration_incremented()
+        assert updated.config.current_analyst_iteration == 2
+
+    def test_original_state_unchanged(self):
+        state = self._state(current=0)
+        state.with_analyst_iteration_incremented()
+        assert state.config.current_analyst_iteration == 0
+
+    def test_max_iterations_preserved(self):
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-it",
+            config=PipelineConfig(max_analyst_iterations=5, current_analyst_iteration=2),
+        )
+        updated = state.with_analyst_iteration_incremented()
+        assert updated.config.max_analyst_iterations == 5
+        assert updated.config.current_analyst_iteration == 3
+
+    def test_other_fields_preserved(self):
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-it",
+            status=FeatureStatus.questioning,
+            config=PipelineConfig(current_analyst_iteration=0),
+        )
+        updated = state.with_analyst_iteration_incremented()
+        assert updated.feature_id == "feat-it"
+        assert updated.status == FeatureStatus.questioning
+
+    def test_updated_at_advances(self):
+        from datetime import UTC, datetime
+        state = self._state(current=0)
+        state = state.model_copy(update={"updated_at": datetime.now(UTC)})
+        original = state.updated_at
+        time.sleep(0.001)
+        updated = state.with_analyst_iteration_incremented()
+        assert updated.updated_at > original

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentharness.config import Config
 from agentharness.dispatcher import (
+    dispatch_after_completion,
     _dispatch_review_result,
     _dispatch_serial_next,
     _open_feature_pr,
@@ -19,6 +20,156 @@ from agentharness.models import (
     TaskStatus,
 )
 
+
+
+class TestParseAnalystStatus:
+    def test_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("# Spec\n\n## Status: COMPLETE\n") == "COMPLETE"
+
+    def test_has_questions(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("# Spec\n\n## Status: HAS_QUESTIONS\n") == "HAS_QUESTIONS"
+
+    def test_missing_status_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("# Spec body without status line.") == "COMPLETE"
+
+    def test_empty_string_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("") == "COMPLETE"
+
+    def test_lowercase_value_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status: has_questions\n") == "COMPLETE"
+
+    def test_mixed_case_value_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status: Has_Questions\n") == "COMPLETE"
+
+    def test_garbage_value_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status: WAT\n") == "COMPLETE"
+
+    def test_status_at_end_of_file_no_trailing_newline(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("body\n## Status: HAS_QUESTIONS") == "HAS_QUESTIONS"
+
+    def test_extra_whitespace_around_value(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status:   HAS_QUESTIONS  \n") == "HAS_QUESTIONS"
+
+
+class TestLatestSpecRevision:
+    def test_initial_state_returns_one(self):
+        from agentharness.dispatcher import _latest_spec_revision
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-x",
+            config=PipelineConfig(current_analyst_iteration=0),
+        )
+        assert _latest_spec_revision(state) == 1
+
+    def test_after_one_increment_returns_two(self):
+        from agentharness.dispatcher import _latest_spec_revision
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-x",
+            config=PipelineConfig(current_analyst_iteration=1),
+        )
+        assert _latest_spec_revision(state) == 2
+
+    def test_after_two_increments_returns_three(self):
+        from agentharness.dispatcher import _latest_spec_revision
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-x",
+            config=PipelineConfig(current_analyst_iteration=2),
+        )
+        assert _latest_spec_revision(state) == 3
+
+
+class TestArtifactsForPhase:
+    def _state(self, current: int = 0, status: FeatureStatus = FeatureStatus.analyzing) -> FeatureState:
+        from agentharness.models import PipelineConfig
+        return FeatureState(
+            feature_id="feat-a",
+            status=status,
+            config=PipelineConfig(current_analyst_iteration=current),
+        )
+
+    def test_analyzing_initial_returns_brief_only(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=0)
+        artifacts = _artifacts_for_phase(state, "analyzing")
+        assert artifacts == ["artifacts/feat-a/brief.md"]
+
+    def test_analyzing_after_one_loop_includes_spec_and_answers_r1(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=1)
+        artifacts = _artifacts_for_phase(state, "analyzing")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r1.md",
+            "artifacts/feat-a/answers.r1.md",
+        ]
+
+    def test_analyzing_after_two_loops_includes_specs_and_answers_r1_r2(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=2)
+        artifacts = _artifacts_for_phase(state, "analyzing")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r1.md",
+            "artifacts/feat-a/spec.r2.md",
+            "artifacts/feat-a/answers.r1.md",
+            "artifacts/feat-a/answers.r2.md",
+        ]
+
+    def test_questioning_first_iteration_includes_spec_r1_no_answers(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=0, status=FeatureStatus.questioning)
+        artifacts = _artifacts_for_phase(state, "questioning")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r1.md",
+        ]
+
+    def test_questioning_second_iteration_includes_spec_r2_and_answers_r1(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=1, status=FeatureStatus.questioning)
+        artifacts = _artifacts_for_phase(state, "questioning")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r2.md",
+            "artifacts/feat-a/answers.r1.md",
+        ]
+
+    def test_architecting_uses_latest_spec(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=2)
+        artifacts = _artifacts_for_phase(state, "architecting")
+        assert "artifacts/feat-a/spec.r3.md" in artifacts
+        assert "artifacts/feat-a/brief.md" in artifacts
+
+    def test_designing_uses_latest_spec(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=1)
+        artifacts = _artifacts_for_phase(state, "designing")
+        assert "artifacts/feat-a/spec.r2.md" in artifacts
+        assert "artifacts/feat-a/arch-review.r1.md" in artifacts
+
+    def test_planning_uses_latest_spec(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=2)
+        artifacts = _artifacts_for_phase(state, "planning")
+        assert "artifacts/feat-a/spec.r3.md" in artifacts
+        assert "artifacts/feat-a/design.r1.md" in artifacts
+
+    def test_unknown_phase_returns_empty_list(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=0)
+        assert _artifacts_for_phase(state, "nonexistent") == []
 
 
 class TestParseReviewResult:
@@ -419,6 +570,7 @@ class TestBuildPhaseTask:
         from pathlib import Path
         agent_paths = {
             "analyst-queue":   Path(".agents/analyst.md"),
+            "product-queue":   Path(".agents/product.md"),
             "architect-queue": Path(".agents/architect.md"),
             "designer-queue":  Path(".agents/designer.md"),
             "planner-queue":   Path(".agents/planner.md"),
@@ -433,7 +585,7 @@ class TestBuildPhaseTask:
         state = FeatureState(feature_id="feat-x", status=FeatureStatus.analyzing)
         task = build_phase_task(state, FeatureStatus.analyzing, self._config())
         assert task.feature_id == "feat-x"
-        assert task.task_id == "feat-x-analyzing-1"
+        assert task.task_id == "feat-x-analyzing-r1"
         assert task.agent_role == "analyst"
         assert task.input_artifacts == ["artifacts/feat-x/brief.md"]
         assert task.output_artifact == "artifacts/feat-x/spec.r1.md"
@@ -526,6 +678,238 @@ class TestBuildPhaseTask:
         state = FeatureState(feature_id="feat-x", status=FeatureStatus.failed)
         with pytest.raises(ValueError, match="no enqueueable task"):
             build_phase_task(state, FeatureStatus.failed, self._config())
+
+
+def test_linear_transitions_no_longer_includes_analyzing():
+    from agentharness.dispatcher import _LINEAR_TRANSITIONS
+    assert "analyzing" not in _LINEAR_TRANSITIONS
+
+
+def _make_questioning_queues() -> dict:
+    q = AsyncMock()
+    q.send_task = AsyncMock()
+    return {
+        "product-queue": q,
+        "architect-queue": AsyncMock(send_task=AsyncMock()),
+        "developer-queue": AsyncMock(send_task=AsyncMock()),
+        "review-queue": AsyncMock(send_task=AsyncMock()),
+        "analyst-queue": AsyncMock(send_task=AsyncMock()),
+    }
+
+
+def _make_questioning_config() -> MagicMock:
+    from pathlib import Path
+    cfg = MagicMock()
+    cfg.agent_path_for_queue.side_effect = lambda q: {
+        "product-queue": Path(".agents/product.md"),
+        "analyst-queue": Path(".agents/analyst.md"),
+        "architect-queue": Path(".agents/architect.md"),
+        "designer-queue": Path(".agents/designer.md"),
+        "planner-queue": Path(".agents/planner.md"),
+    }[q]
+    return cfg
+
+
+@pytest.mark.asyncio
+class TestDispatchQuestioning:
+    async def test_enqueues_product_task_first_iteration(self):
+        from agentharness.dispatcher import _dispatch_questioning
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-q",
+            status=FeatureStatus.analyzing,
+            config=PipelineConfig(current_analyst_iteration=0, max_analyst_iterations=2),
+            state_issue_number=99,
+        )
+        queues = _make_questioning_queues()
+        result = await _dispatch_questioning(state, _make_questioning_config(), queues)
+        assert result.status == FeatureStatus.questioning
+        queues["product-queue"].send_task.assert_awaited_once()
+        sent = queues["product-queue"].send_task.call_args[0][0]
+        assert sent.task_id == "feat-q-questioning-r1"
+        assert sent.agent_role == "product"
+        assert sent.output_artifact == "artifacts/feat-q/answers.r1.md"
+        assert "artifacts/feat-q/brief.md" in sent.input_artifacts
+        assert "artifacts/feat-q/spec.r1.md" in sent.input_artifacts
+        assert sent.state_issue_number == 99
+
+    async def test_enqueues_product_task_second_iteration(self):
+        from agentharness.dispatcher import _dispatch_questioning
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-q",
+            status=FeatureStatus.analyzing,
+            config=PipelineConfig(current_analyst_iteration=1, max_analyst_iterations=2),
+        )
+        queues = _make_questioning_queues()
+        result = await _dispatch_questioning(state, _make_questioning_config(), queues)
+        sent = queues["product-queue"].send_task.call_args[0][0]
+        assert sent.task_id == "feat-q-questioning-r2"
+        assert sent.output_artifact == "artifacts/feat-q/answers.r2.md"
+        assert "artifacts/feat-q/spec.r2.md" in sent.input_artifacts
+        assert "artifacts/feat-q/answers.r1.md" in sent.input_artifacts
+        assert result.status == FeatureStatus.questioning
+
+    async def test_raises_when_product_queue_missing(self):
+        from agentharness.dispatcher import _dispatch_questioning
+        from agentharness.models import PipelineConfig
+        state = FeatureState(feature_id="feat-q", config=PipelineConfig())
+        with pytest.raises(RuntimeError, match="product-queue"):
+            await _dispatch_questioning(state, _make_questioning_config(), {})
+
+
+@pytest.mark.asyncio
+class TestDispatchAnalystRerun:
+    async def test_increments_counter_and_enqueues_analyst(self):
+        from agentharness.dispatcher import _dispatch_analyst_rerun
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-rr",
+            status=FeatureStatus.questioning,
+            config=PipelineConfig(current_analyst_iteration=0, max_analyst_iterations=2),
+            state_issue_number=12,
+        )
+        queues = _make_questioning_queues()
+        result = await _dispatch_analyst_rerun(state, _make_questioning_config(), queues)
+        assert result.config.current_analyst_iteration == 1
+        assert result.status == FeatureStatus.analyzing
+        queues["analyst-queue"].send_task.assert_awaited_once()
+        sent = queues["analyst-queue"].send_task.call_args[0][0]
+        assert sent.task_id == "feat-rr-analyzing-r2"
+        assert sent.output_artifact == "artifacts/feat-rr/spec.r2.md"
+        assert sent.agent_role == "analyst"
+        assert "artifacts/feat-rr/brief.md" in sent.input_artifacts
+        assert "artifacts/feat-rr/spec.r1.md" in sent.input_artifacts
+        assert "artifacts/feat-rr/answers.r1.md" in sent.input_artifacts
+        assert sent.state_issue_number == 12
+
+    async def test_raises_when_analyst_queue_missing(self):
+        from agentharness.dispatcher import _dispatch_analyst_rerun
+        from agentharness.models import PipelineConfig
+        state = FeatureState(feature_id="feat-rr", config=PipelineConfig())
+        with pytest.raises(RuntimeError, match="analyst-queue"):
+            await _dispatch_analyst_rerun(state, _make_questioning_config(), {})
+
+
+@pytest.mark.asyncio
+class TestDispatchAfterCompletionAnalyzing:
+    def _state(self, current: int = 0, max_iter: int = 2) -> FeatureState:
+        from agentharness.models import PipelineConfig
+        return FeatureState(
+            feature_id="feat-d",
+            status=FeatureStatus.analyzing,
+            config=PipelineConfig(
+                current_analyst_iteration=current,
+                max_analyst_iterations=max_iter,
+            ),
+        )
+
+    def _analyst_task(self) -> TaskMessage:
+        return TaskMessage(
+            feature_id="feat-d",
+            task_id="feat-d-analyzing-r1",
+            input_artifacts=["artifacts/feat-d/brief.md"],
+            output_artifact="artifacts/feat-d/spec.r1.md",
+            agent_role="analyst",
+        )
+
+    async def test_complete_status_transitions_to_architecting(self):
+        state = self._state()
+        queues = _make_questioning_queues()
+        result = await dispatch_after_completion(
+            state, self._analyst_task(), "spec body\n\n## Status: COMPLETE\n",
+            _make_questioning_config(), queues,
+        )
+        assert result.status == FeatureStatus.architecting
+        queues["architect-queue"].send_task.assert_awaited_once()
+        queues["product-queue"].send_task.assert_not_awaited()
+
+    async def test_has_questions_under_cap_transitions_to_questioning(self):
+        state = self._state(current=0, max_iter=2)
+        queues = _make_questioning_queues()
+        result = await dispatch_after_completion(
+            state, self._analyst_task(), "spec body\n\n## Status: HAS_QUESTIONS\n",
+            _make_questioning_config(), queues,
+        )
+        assert result.status == FeatureStatus.questioning
+        queues["product-queue"].send_task.assert_awaited_once()
+        queues["architect-queue"].send_task.assert_not_awaited()
+
+    async def test_has_questions_at_cap_transitions_to_architecting(self, caplog):
+        import logging
+        state = self._state(current=2, max_iter=2)
+        queues = _make_questioning_queues()
+        with caplog.at_level(logging.WARNING, logger="agentharness.dispatcher"):
+            result = await dispatch_after_completion(
+                state, self._analyst_task(), "spec body\n\n## Status: HAS_QUESTIONS\n",
+                _make_questioning_config(), queues,
+            )
+        assert result.status == FeatureStatus.architecting
+        queues["product-queue"].send_task.assert_not_awaited()
+        assert any("max_analyst_iterations cap reached" in r.message for r in caplog.records)
+
+    async def test_cap_zero_disables_loop(self):
+        state = self._state(current=0, max_iter=0)
+        queues = _make_questioning_queues()
+        result = await dispatch_after_completion(
+            state, self._analyst_task(), "spec\n\n## Status: HAS_QUESTIONS\n",
+            _make_questioning_config(), queues,
+        )
+        assert result.status == FeatureStatus.architecting
+        queues["product-queue"].send_task.assert_not_awaited()
+
+    async def test_questioning_complete_transitions_to_analyzing_with_increment(self):
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-d",
+            status=FeatureStatus.questioning,
+            config=PipelineConfig(current_analyst_iteration=0, max_analyst_iterations=2),
+        )
+        product_task = TaskMessage(
+            feature_id="feat-d",
+            task_id="feat-d-questioning-r1",
+            input_artifacts=[],
+            output_artifact="artifacts/feat-d/answers.r1.md",
+            agent_role="product",
+        )
+        queues = _make_questioning_queues()
+        result = await dispatch_after_completion(
+            state, product_task, "### Question 1\n... answers ...\n",
+            _make_questioning_config(), queues,
+        )
+        assert result.status == FeatureStatus.analyzing
+        assert result.config.current_analyst_iteration == 1
+        queues["analyst-queue"].send_task.assert_awaited_once()
+
+
+class TestBuildPhaseTaskQuestioning:
+    def test_phase_agent_task_for_questioning(self):
+        from agentharness.dispatcher import build_phase_task
+        from agentharness.models import PipelineConfig
+        cfg = TestBuildPhaseTask()._config()
+        state = FeatureState(
+            feature_id="feat-q",
+            status=FeatureStatus.questioning,
+            config=PipelineConfig(current_analyst_iteration=0),
+        )
+        task = build_phase_task(state, FeatureStatus.questioning, cfg)
+        assert task.task_id == "feat-q-questioning-r1"
+        assert task.agent_role == "product"
+        assert task.output_artifact == "artifacts/feat-q/answers.r1.md"
+        assert "artifacts/feat-q/spec.r1.md" in task.input_artifacts
+
+    def test_phase_agent_task_for_analyzing_is_revision_aware(self):
+        from agentharness.dispatcher import build_phase_task
+        from agentharness.models import PipelineConfig
+        cfg = TestBuildPhaseTask()._config()
+        state = FeatureState(
+            feature_id="feat-x",
+            status=FeatureStatus.analyzing,
+            config=PipelineConfig(current_analyst_iteration=1),
+        )
+        task = build_phase_task(state, FeatureStatus.analyzing, cfg)
+        assert task.task_id == "feat-x-analyzing-r2"
+        assert task.output_artifact == "artifacts/feat-x/spec.r2.md"
 
 
 @pytest.mark.asyncio

@@ -160,7 +160,10 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
         initial_state = FeatureState(
             feature_id=feature_id,
             status=FeatureStatus.brainstormed,
-            config=PipelineConfig(max_revisions=config.defaults.max_revisions),
+            config=PipelineConfig(
+                max_revisions=config.defaults.max_revisions,
+                max_analyst_iterations=config.max_analyst_iterations,
+            ),
             branch_name=branch_name,
         ).with_event("brief_uploaded")
         await state_mgr.create(initial_state, brief_content=brief_content)

@@ -70,3 +70,27 @@ Write a complete `spec.md` with this structure:
 Be specific and complete. Vague requirements lead to bad implementations. If the brief is unclear on something important, make a reasonable assumption and note it in Open Questions.
 
 Output only the specification markdown — no preamble, no explanation.
+
+## Status line (required)
+
+At the very end of your output, emit exactly one of:
+
+```
+## Status: COMPLETE
+```
+
+(when `## Open Questions` is empty, absent, or contains only "None.")
+
+or
+
+```
+## Status: HAS_QUESTIONS
+```
+
+(when `## Open Questions` has at least one question.)
+
+The keyword is case-sensitive. The downstream dispatcher parses this line to decide whether to invoke the product agent before continuing.
+
+## Reading prior answers
+
+When your input artifacts include `answers.r{N}.md` files, read them in ascending revision order (`answers.r1.md` first). For each answer, modify or remove the corresponding question and update any sections it affects. Do not reproduce answered questions in `## Open Questions`. Produce a single, complete, self-contained spec — do not diff against prior revisions.

@@ -344,11 +344,13 @@ class TestOrphanTaskGuard:
         mock_store = AsyncMock()
         mock_store.upload = AsyncMock()
         mock_store.close = AsyncMock()
+        mock_store.get_work_dir = MagicMock(return_value=None)
 
         mock_agent_def = MagicMock()
         mock_agent_def.allowed_tools = []
         mock_agent_def.system_prompt = "x"
         mock_agent_def.context_files = []
+        mock_agent_def.output_file_glob = None
 
         mock_run_result = MagicMock()
         mock_run_result.output = "## Status: DONE"
@@ -395,11 +397,13 @@ class TestOrphanTaskGuard:
         mock_store = AsyncMock()
         mock_store.upload = AsyncMock()
         mock_store.close = AsyncMock()
+        mock_store.get_work_dir = MagicMock(return_value=None)
 
         mock_agent_def = MagicMock()
         mock_agent_def.allowed_tools = []
         mock_agent_def.system_prompt = "x"
         mock_agent_def.context_files = []
+        mock_agent_def.output_file_glob = None
 
         mock_run_result = MagicMock()
         mock_run_result.output = "spec content"
