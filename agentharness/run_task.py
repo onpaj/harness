@@ -152,8 +152,10 @@ async def _recover_task(
     """Mark a failed task for retry or permanent failure and update state."""
     try:
         current = await state_mgr.get(task.feature_id)
-        task_entry = next((t for t in current.tasks if t.task_id == task.task_id), None)
-        attempts = (task_entry.revision if task_entry else 1)
+        attempts = sum(
+            1 for e in current.history
+            if e.event == "task_requeued" and e.task_id == task.task_id
+        ) + 1
 
         if attempts < retry_limit:
             log.info("[%s] Requeueing task %s (attempt %d/%d)", WORKER_ID, task.task_id, attempts, retry_limit)

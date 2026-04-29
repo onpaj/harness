@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agentharness.run_task import _parse_task_sections, _upload_task_contexts, run_task
+from agentharness.run_task import _parse_task_sections, _upload_task_contexts, run_task, _recover_task
 
 
 class TestParseTaskSections:
@@ -134,6 +134,97 @@ def _make_run_task_fixtures(storage_backend: str = "azure"):
     mock_run_result.tokens = None
 
     return task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result
+
+
+@pytest.mark.asyncio
+class TestRecoverTask:
+    """Verify _recover_task increments attempt count via history events."""
+
+    def _make_state(self, task_id: str, requeued_count: int):
+        from agentharness.models import FeatureState, FeatureStatus, HistoryEvent
+        state = FeatureState(feature_id="feat-x")
+        history = [
+            HistoryEvent(event="task_requeued", task_id=task_id)
+            for _ in range(requeued_count)
+        ]
+        return state.model_copy(update={"history": history})
+
+    def _make_task(self, task_id: str):
+        from agentharness.models import TaskMessage
+        return TaskMessage(
+            task_id=task_id,
+            feature_id="feat-x",
+            queue_name="analyst-queue",
+            input_artifacts=[],
+            output_artifact="artifacts/feat-x/spec.r1.md",
+            agent_role="analyst",
+        )
+
+    async def test_first_failure_requeues(self):
+        task = self._make_task("feat-x-analyzing-1")
+        state = self._make_state(task.task_id, requeued_count=0)
+
+        state_mgr = AsyncMock()
+        state_mgr.get = AsyncMock(return_value=state)
+        state_mgr.update = AsyncMock(return_value=state)
+
+        mock_queue = AsyncMock()
+        all_queues = {"analyst-queue": mock_queue}
+
+        await _recover_task(state_mgr, task, "analyst-queue", MagicMock(), all_queues, retry_limit=3)
+
+        state_mgr.update.assert_awaited_once()
+        mock_queue.send_task.assert_awaited_once_with(task)
+
+    async def test_second_failure_requeues(self):
+        task = self._make_task("feat-x-analyzing-1")
+        state = self._make_state(task.task_id, requeued_count=1)
+
+        state_mgr = AsyncMock()
+        state_mgr.get = AsyncMock(return_value=state)
+        state_mgr.update = AsyncMock(return_value=state)
+
+        mock_queue = AsyncMock()
+        all_queues = {"analyst-queue": mock_queue}
+
+        await _recover_task(state_mgr, task, "analyst-queue", MagicMock(), all_queues, retry_limit=3)
+
+        mock_queue.send_task.assert_awaited_once_with(task)
+
+    async def test_exhausted_retries_marks_failed(self):
+        task = self._make_task("feat-x-analyzing-1")
+        # 2 prior requeues → attempts=3, 3 < 3 is False → mark failed
+        state = self._make_state(task.task_id, requeued_count=2)
+
+        state_mgr = AsyncMock()
+        state_mgr.get = AsyncMock(return_value=state)
+        state_mgr.update = AsyncMock(return_value=state)
+
+        mock_queue = AsyncMock()
+        all_queues = {"analyst-queue": mock_queue}
+
+        await _recover_task(state_mgr, task, "analyst-queue", MagicMock(), all_queues, retry_limit=3)
+
+        mock_queue.send_task.assert_not_awaited()
+        state_mgr.update.assert_awaited_once()
+
+    async def test_phase_agent_without_task_entry_loops_no_more(self):
+        """Regression: phase agents with no TaskEntry used to loop forever at attempt 1."""
+        task = self._make_task("feat-x-analyzing-1")
+        # Simulate the old broken state: 5 requeued events already recorded
+        state = self._make_state(task.task_id, requeued_count=5)
+
+        state_mgr = AsyncMock()
+        state_mgr.get = AsyncMock(return_value=state)
+        state_mgr.update = AsyncMock(return_value=state)
+
+        mock_queue = AsyncMock()
+        all_queues = {"analyst-queue": mock_queue}
+
+        await _recover_task(state_mgr, task, "analyst-queue", MagicMock(), all_queues, retry_limit=3)
+
+        # With 5 prior events, attempts=6 >= 3, so it should mark failed not requeue
+        mock_queue.send_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio

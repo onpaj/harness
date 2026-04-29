@@ -345,7 +345,9 @@ async def _run_subprocess(
     log.info("Spawning subprocess for %s → %s", task.task_id, log_file)
 
     try:
-        with open(log_file, "w") as fh:
+        with open(log_file, "a") as fh:
+            from datetime import datetime
+            fh.write(f"\n--- run {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
             proc = await asyncio.create_subprocess_exec(
                 exe, "run-task", queue_name,
                 stdin=asyncio.subprocess.PIPE,

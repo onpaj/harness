@@ -94,9 +94,11 @@ async def _run_git(*args: str, cwd: Path | None = None) -> bytes:
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
+        err = stderr.decode(errors="replace").strip()
+        out = stdout.decode(errors="replace").strip()
         raise RuntimeError(
             f"git {' '.join(args)} failed (exit {proc.returncode}): "
-            f"{stderr.decode(errors='replace').strip()}"
+            f"{err or out}"
         )
     return stdout
 
