@@ -17,7 +17,6 @@ import re
 from typing import TYPE_CHECKING, Callable
 
 from agentharness.github_labels import (
-    FEATURE_MARKER,
     FEATURE_STATUS_TO_LABEL,
     FEAT_STATUS_LABELS,
     LABEL_TO_FEATURE_STATUS,
@@ -120,14 +119,23 @@ def _feature_id_from_issue(issue: dict) -> str | None:
 class GitHubStateManager:
     """StateBackend implementation backed by GitHub Issues."""
 
-    def __init__(self, client: GitHubClient) -> None:
+    def __init__(
+        self,
+        client: GitHubClient,
+        *,
+        feature_marker: str,
+    ) -> None:
         self._client = client
+        self._feature_marker = feature_marker
 
     @classmethod
     def from_config(cls, config: Config) -> GitHubStateManager:
         from agentharness.github_client import GitHubClient
 
-        return cls(client=GitHubClient.from_config(config))
+        return cls(
+            client=GitHubClient.from_config(config),
+            feature_marker=config.github.feature_marker,
+        )
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -158,7 +166,7 @@ class GitHubStateManager:
 
         Raises ``KeyError`` if no issue is found.
         """
-        items = await self._client.list_issues(labels=[FEATURE_MARKER])
+        items = await self._client.list_issues(labels=[self._feature_marker])
         for issue in items:
             candidate_id = _feature_id_from_issue(issue)
             if candidate_id is None:
@@ -204,14 +212,14 @@ class GitHubStateManager:
         agentharness-state block holding the serialized FeatureState JSON.
         """
         status_label = FEATURE_STATUS_TO_LABEL[state.status]
-        await self._client.ensure_labels([FEATURE_MARKER, status_label], color="0075ca")
+        await self._client.ensure_labels([self._feature_marker, status_label], color="0075ca")
 
         title = _feature_issue_title(state.feature_id)
         body = _replace_state_block(brief_content, state)
         issue = await self._client.create_issue(
             title=title,
             body=body,
-            labels=[FEATURE_MARKER, status_label],
+            labels=[self._feature_marker, status_label],
         )
         issue_number: int = issue["number"]
         updated = state.model_copy(update={"state_issue_number": issue_number})
@@ -282,7 +290,7 @@ class GitHubStateManager:
         same feature_id appears in multiple issues, only the highest-numbered
         issue (most recent) is kept.
         """
-        items = await self._client.list_issues(labels=[FEATURE_MARKER], direction="desc")
+        items = await self._client.list_issues(labels=[self._feature_marker], direction="desc")
 
         # feature_id -> (issue_number, issue_dict) — keep newest issue per feature
         seen: dict[str, tuple[int, dict]] = {}
@@ -292,7 +300,7 @@ class GitHubStateManager:
                 log.warning(
                     "Issue #%d has %s label but no parseable state JSON — skipping",
                     issue["number"],
-                    FEATURE_MARKER,
+                    self._feature_marker,
                 )
                 continue
             issue_number: int = issue["number"]
@@ -353,6 +361,7 @@ class GitHubStateManager:
                 body=_build_pr_body(state),
                 head=feature_id,
                 base=default_branch,
+                labels=[self._feature_marker],
             )
             pr_url = pr.get("html_url")
             if not pr_url:

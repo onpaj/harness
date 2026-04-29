@@ -204,6 +204,40 @@ class TestGitHubConfigAutoDetect:
         assert cfg.runs_repo == "override-repo"
 
 
+class TestGitHubConfigFeatureMarker:
+    def test_github_config_default_feature_marker(self):
+        """GitHubConfig.feature_marker defaults to 'agent' when not specified."""
+        cfg = GitHubConfig()
+        assert cfg.feature_marker == "agent"
+
+    def test_github_config_accepts_custom_feature_marker(self):
+        """GitHubConfig.feature_marker accepts a user-supplied value."""
+        cfg = GitHubConfig(feature_marker="my-label")
+        assert cfg.feature_marker == "my-label"
+
+    def test_load_config_reads_feature_marker_from_json(self, tmp_path: Path):
+        """load_config wires github.feature_marker from config.json."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "storage_backend": "github",
+            "github": {"feature_marker": "custom-marker"},
+            "queues": {},
+        }))
+        config = load_config(config_path)
+        assert config.github.feature_marker == "custom-marker"
+
+    def test_load_config_defaults_feature_marker_when_missing(self, tmp_path: Path):
+        """load_config falls back to 'agent' when github.feature_marker is omitted."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "storage_backend": "github",
+            "github": {},
+            "queues": {},
+        }))
+        config = load_config(config_path)
+        assert config.github.feature_marker == "agent"
+
+
 class TestExistingBehaviorUnchanged:
     def test_queues_and_agent_paths_still_parsed(self, tmp_path):
         data = {
@@ -228,3 +262,29 @@ class TestExistingBehaviorUnchanged:
         cfg_path = write_config(tmp_path, data)
         config = load_config(cfg_path)
         assert config.storage.container == "my-container"
+
+
+class TestStorageFactoriesThreadFeatureMarker:
+    def test_storage_factories_thread_feature_marker_to_github_classes(self, tmp_path: Path, monkeypatch):
+        """Both factories produce GitHub instances carrying the configured marker."""
+        import os
+        from agentharness.storage import create_state_manager, create_task_queue
+
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_dummy_for_test")
+        monkeypatch.setenv("GITHUB_OWNER", "acme")
+        monkeypatch.setenv("GITHUB_RUNS_REPO", "runs")
+
+        config_path = tmp_path / ".pipeline" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "storage_backend": "github",
+            "github": {"feature_marker": "wired-through"},
+            "queues": {"analyst-queue": {"agent": ".agents/analyst.md"}},
+        }))
+        config = load_config(config_path)
+
+        queue = create_task_queue(config, "analyst-queue")
+        state = create_state_manager(config)
+
+        assert queue._feature_marker == "wired-through"
+        assert state._feature_marker == "wired-through"
