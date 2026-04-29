@@ -13,6 +13,7 @@ class FeatureStatus(str, Enum):
     brainstorming = "brainstorming"
     brainstormed = "brainstormed"
     analyzing = "analyzing"
+    questioning = "questioning"
     architecting = "architecting"
     designing = "designing"
     planning = "planning"
@@ -94,6 +95,8 @@ class HistoryEvent(BaseModel):
 class PipelineConfig(BaseModel):
     max_revisions: int = 3
     current_revision_round: int = 0
+    max_analyst_iterations: int = Field(default=2, ge=0)
+    current_analyst_iteration: int = Field(default=0, ge=0)
 
 
 class FeatureState(BaseModel):
@@ -121,6 +124,13 @@ class FeatureState(BaseModel):
     def with_status(self, status: FeatureStatus) -> FeatureState:
         """Return new state with updated feature status."""
         return self.model_copy(update={"status": status, "updated_at": datetime.now(UTC)})
+
+    def with_analyst_iteration_incremented(self) -> FeatureState:
+        """Return new state with config.current_analyst_iteration += 1."""
+        new_config = self.config.model_copy(
+            update={"current_analyst_iteration": self.config.current_analyst_iteration + 1}
+        )
+        return self.model_copy(update={"config": new_config, "updated_at": datetime.now(UTC)})
 
     def with_phase(self, phase: str, info: PhaseInfo) -> FeatureState:
         """Return new state with updated phase info."""

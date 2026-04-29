@@ -84,6 +84,7 @@ STATE_TO_QUEUE: dict[FeatureStatus, str | None] = {
     FeatureStatus.brainstorming: None,
     FeatureStatus.brainstormed:  None,
     FeatureStatus.analyzing:     "analyst-queue",
+    FeatureStatus.questioning:   "product-agent-queue",
     FeatureStatus.architecting:  "architect-queue",
     FeatureStatus.designing:     "designer-queue",
     FeatureStatus.planning:      "planner-queue",
