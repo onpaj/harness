@@ -26,6 +26,7 @@ def _make_config(
     config.storage_backend = storage_backend
     config.defaults.max_revisions = max_revisions
     config.defaults.dead_letter_threshold = 3
+    config.max_analyst_iterations = 2
     return config
 
 
