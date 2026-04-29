@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
 
 _BASE_URL = "https://api.github.com"
 _ACCEPT_HEADER = "application/vnd.github+json"
+
+log = logging.getLogger(__name__)
 
 
 class GitHubApiError(Exception):
@@ -295,10 +298,33 @@ class GitHubClient:
     # ------------------------------------------------------------------
 
     async def create_pull_request(
-        self, title: str, body: str, head: str, base: str
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        labels: list[str] | None = None,
     ) -> dict:
-        return await self._request(
+        pr = await self._request(
             "POST",
             self._repo_url("/pulls"),
             json={"title": title, "body": body, "head": head, "base": base},
         )
+        if labels:
+            number = pr["number"]
+            try:
+                await self._request(
+                    "POST",
+                    self._repo_url(f"/issues/{number}/labels"),
+                    json={"labels": labels},
+                )
+            except Exception:
+                log.error(
+                    "Failed to apply labels %r to PR #%s in %s/%s; PR is created but unlabeled",
+                    labels,
+                    number,
+                    self.owner,
+                    self.repo,
+                )
+                raise
+        return pr

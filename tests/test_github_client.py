@@ -414,3 +414,87 @@ async def test_create_ref_sends_correct_payload() -> None:
 
     payload = client._client.request.call_args.kwargs["json"]
     assert payload == {"ref": "refs/heads/feat-x", "sha": "deadbeef"}
+
+
+# ---------------------------------------------------------------------------
+# create_pull_request with labels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_without_labels_makes_one_call() -> None:
+    """When labels is None, only POST /pulls is called."""
+    client = _make_client()
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value={"number": 1, "html_url": "u"})
+    ) as mock_request:
+        result = await client.create_pull_request(
+            title="t", body="b", head="feat", base="main"
+        )
+    assert result == {"number": 1, "html_url": "u"}
+    assert mock_request.await_count == 1
+    method, url = mock_request.call_args[0][:2]
+    assert method == "POST"
+    assert url.endswith("/pulls")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_with_empty_labels_makes_one_call() -> None:
+    """Empty list labels=[] is treated like None — no second call."""
+    client = _make_client()
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value={"number": 1})
+    ) as mock_request:
+        await client.create_pull_request(
+            title="t", body="b", head="feat", base="main", labels=[]
+        )
+    assert mock_request.await_count == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_with_labels_applies_them_via_issues_endpoint() -> None:
+    """When labels is non-empty, a second POST /issues/{n}/labels call is made."""
+    client = _make_client()
+    responses = [
+        {"number": 42, "html_url": "https://example/pr/42"},  # POST /pulls
+        [{"name": "agent"}],                                   # POST /issues/42/labels
+    ]
+    with patch.object(
+        client, "_request", new=AsyncMock(side_effect=responses)
+    ) as mock_request:
+        result = await client.create_pull_request(
+            title="t", body="b", head="feat", base="main", labels=["agent"]
+        )
+    assert result == {"number": 42, "html_url": "https://example/pr/42"}
+    assert mock_request.await_count == 2
+    second_method, second_url = mock_request.await_args_list[1].args[:2]
+    assert second_method == "POST"
+    assert second_url.endswith("/issues/42/labels")
+    second_kwargs = mock_request.await_args_list[1].kwargs
+    assert second_kwargs["json"] == {"labels": ["agent"]}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_reraises_when_label_apply_fails() -> None:
+    """If label application fails, the error propagates (no rollback)."""
+    client = _make_client()
+    responses = [
+        {"number": 99, "html_url": "u"},
+        RuntimeError("rate limited"),
+    ]
+
+    async def _side_effect(*args, **kwargs):
+        item = responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    with patch.object(client, "_request", new=AsyncMock(side_effect=_side_effect)):
+        with pytest.raises(RuntimeError, match="rate limited"):
+            await client.create_pull_request(
+                title="t", body="b", head="feat", base="main", labels=["agent"]
+            )
+    await client.close()
