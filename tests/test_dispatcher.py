@@ -21,6 +21,156 @@ from agentharness.models import (
 
 
 
+class TestParseAnalystStatus:
+    def test_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("# Spec\n\n## Status: COMPLETE\n") == "COMPLETE"
+
+    def test_has_questions(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("# Spec\n\n## Status: HAS_QUESTIONS\n") == "HAS_QUESTIONS"
+
+    def test_missing_status_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("# Spec body without status line.") == "COMPLETE"
+
+    def test_empty_string_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("") == "COMPLETE"
+
+    def test_lowercase_value_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status: has_questions\n") == "COMPLETE"
+
+    def test_mixed_case_value_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status: Has_Questions\n") == "COMPLETE"
+
+    def test_garbage_value_defaults_to_complete(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status: WAT\n") == "COMPLETE"
+
+    def test_status_at_end_of_file_no_trailing_newline(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("body\n## Status: HAS_QUESTIONS") == "HAS_QUESTIONS"
+
+    def test_extra_whitespace_around_value(self):
+        from agentharness.dispatcher import _parse_analyst_status
+        assert _parse_analyst_status("## Status:   HAS_QUESTIONS  \n") == "HAS_QUESTIONS"
+
+
+class TestLatestSpecRevision:
+    def test_initial_state_returns_one(self):
+        from agentharness.dispatcher import _latest_spec_revision
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-x",
+            config=PipelineConfig(current_analyst_iteration=0),
+        )
+        assert _latest_spec_revision(state) == 1
+
+    def test_after_one_increment_returns_two(self):
+        from agentharness.dispatcher import _latest_spec_revision
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-x",
+            config=PipelineConfig(current_analyst_iteration=1),
+        )
+        assert _latest_spec_revision(state) == 2
+
+    def test_after_two_increments_returns_three(self):
+        from agentharness.dispatcher import _latest_spec_revision
+        from agentharness.models import PipelineConfig
+        state = FeatureState(
+            feature_id="feat-x",
+            config=PipelineConfig(current_analyst_iteration=2),
+        )
+        assert _latest_spec_revision(state) == 3
+
+
+class TestArtifactsForPhase:
+    def _state(self, current: int = 0, status: FeatureStatus = FeatureStatus.analyzing) -> FeatureState:
+        from agentharness.models import PipelineConfig
+        return FeatureState(
+            feature_id="feat-a",
+            status=status,
+            config=PipelineConfig(current_analyst_iteration=current),
+        )
+
+    def test_analyzing_initial_returns_brief_only(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=0)
+        artifacts = _artifacts_for_phase(state, "analyzing")
+        assert artifacts == ["artifacts/feat-a/brief.md"]
+
+    def test_analyzing_after_one_loop_includes_spec_and_answers_r1(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=1)
+        artifacts = _artifacts_for_phase(state, "analyzing")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r1.md",
+            "artifacts/feat-a/answers.r1.md",
+        ]
+
+    def test_analyzing_after_two_loops_includes_specs_and_answers_r1_r2(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=2)
+        artifacts = _artifacts_for_phase(state, "analyzing")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r1.md",
+            "artifacts/feat-a/spec.r2.md",
+            "artifacts/feat-a/answers.r1.md",
+            "artifacts/feat-a/answers.r2.md",
+        ]
+
+    def test_questioning_first_iteration_includes_spec_r1_no_answers(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=0, status=FeatureStatus.questioning)
+        artifacts = _artifacts_for_phase(state, "questioning")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r1.md",
+        ]
+
+    def test_questioning_second_iteration_includes_spec_r2_and_answers_r1(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=1, status=FeatureStatus.questioning)
+        artifacts = _artifacts_for_phase(state, "questioning")
+        assert artifacts == [
+            "artifacts/feat-a/brief.md",
+            "artifacts/feat-a/spec.r2.md",
+            "artifacts/feat-a/answers.r1.md",
+        ]
+
+    def test_architecting_uses_latest_spec(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=2)
+        artifacts = _artifacts_for_phase(state, "architecting")
+        assert "artifacts/feat-a/spec.r3.md" in artifacts
+        assert "artifacts/feat-a/brief.md" in artifacts
+
+    def test_designing_uses_latest_spec(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=1)
+        artifacts = _artifacts_for_phase(state, "designing")
+        assert "artifacts/feat-a/spec.r2.md" in artifacts
+        assert "artifacts/feat-a/arch-review.r1.md" in artifacts
+
+    def test_planning_uses_latest_spec(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=2)
+        artifacts = _artifacts_for_phase(state, "planning")
+        assert "artifacts/feat-a/spec.r3.md" in artifacts
+        assert "artifacts/feat-a/design.r1.md" in artifacts
+
+    def test_unknown_phase_returns_empty_list(self):
+        from agentharness.dispatcher import _artifacts_for_phase
+        state = self._state(current=0)
+        assert _artifacts_for_phase(state, "nonexistent") == []
+
+
 class TestParseReviewResult:
     def test_all_pass_returns_empty(self):
         review = (
