@@ -202,6 +202,60 @@ async def test_enqueue_planner_closes_queue_on_error() -> None:
     queue.close.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_enqueue_planner_closes_state_mgr_always() -> None:
+    """enqueue_planner closes state_mgr in all paths (success and error)."""
+    import tempfile
+
+    config = _make_config()
+    queue = _make_queue()
+    state_mgr = _make_state_mgr()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _make_store(work_dir=tmp)
+
+        with (
+            patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch(
+                "agentharness.brainstorm._fetch_brief_for_feature",
+                new=AsyncMock(return_value=_BRIEF_CONTENT),
+            ),
+        ):
+            await enqueue_planner(_FEATURE_ID, config)
+
+    state_mgr.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_planner_closes_state_mgr_on_error() -> None:
+    """enqueue_planner closes state_mgr even when queue.send_task raises."""
+    import tempfile
+
+    config = _make_config()
+    queue = _make_queue()
+    queue.send_task.side_effect = RuntimeError("send error")
+    state_mgr = _make_state_mgr()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _make_store(work_dir=tmp)
+
+        with (
+            patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch(
+                "agentharness.brainstorm._fetch_brief_for_feature",
+                new=AsyncMock(return_value=_BRIEF_CONTENT),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="send error"):
+                await enqueue_planner(_FEATURE_ID, config)
+
+    state_mgr.close.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # _slug_from_brief delegation
 # ---------------------------------------------------------------------------

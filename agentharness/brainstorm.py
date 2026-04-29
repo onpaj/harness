@@ -180,66 +180,68 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
     from datetime import UTC, datetime
 
     state_mgr = create_state_manager(config)
+    try:
+        if config.storage_backend == "github":
+            try:
+                await state_mgr.get(feature_id)
+            except KeyError:
+                await _convert_raw_issue(feature_id, config)
 
-    if config.storage_backend == "github":
-        try:
-            await state_mgr.get(feature_id)
-        except KeyError:
-            await _convert_raw_issue(feature_id, config)
-
-    state = await state_mgr.update(
-        feature_id,
-        lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
-    )
-
-    work_dir_str: str | None = None
-
-    if config.storage_backend == "github":
-        branch_name = state.branch_name or feature_id
-        brief_content = await _fetch_brief_for_feature(state, config)
-
-        store = create_artifact_store(config, feature_id=branch_name)
-        try:
-            # Ensure the clone exists and the feature branch is checked out.
-            await store._ensure_clone()
-            await store._checkout_or_create(branch_name)
-
-            # Write brief.md to the worktree so the analyst finds it immediately.
-            work_dir = store.get_work_dir()
-            (work_dir / "brief.md").write_text(brief_content, encoding="utf-8")
-            work_dir_str = str(work_dir)
-
-            # Also commit brief.md to the branch so artifact downloads succeed.
-            await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
-        finally:
-            await store.close()
-
-        # Persist branch_name and worktree_path so run_task can find the clone.
         state = await state_mgr.update(
             feature_id,
-            lambda s: s.model_copy(update={
-                "branch_name": branch_name,
-                "worktree_path": work_dir_str,
-                "updated_at": datetime.now(UTC),
-            }),
+            lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
         )
 
-    queue = create_task_queue(config, "analyst-queue")
-    try:
-        task = TaskMessage(
-            feature_id=feature_id,
-            task_id=f"{feature_id}-analyst",
-            input_artifacts=[artifact_path(feature_id, "brief.md")],
-            output_artifact=phase_artifact_path(feature_id, "spec", 1),
-            agent_role="analyst",
-            state_issue_number=state.state_issue_number,
-            work_dir=work_dir_str,
-        )
-        await queue.ensure_exists()
-        await queue.send_task(task)
-        log.info("Enqueued analyst task for %s", feature_id)
+        work_dir_str: str | None = None
+
+        if config.storage_backend == "github":
+            branch_name = state.branch_name or feature_id
+            brief_content = await _fetch_brief_for_feature(state, config)
+
+            store = create_artifact_store(config, feature_id=branch_name)
+            try:
+                # Ensure the clone exists and the feature branch is checked out.
+                await store._ensure_clone()
+                await store._checkout_or_create(branch_name)
+
+                # Write brief.md to the worktree so the analyst finds it immediately.
+                work_dir = store.get_work_dir()
+                (work_dir / "brief.md").write_text(brief_content, encoding="utf-8")
+                work_dir_str = str(work_dir)
+
+                # Also commit brief.md to the branch so artifact downloads succeed.
+                await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
+            finally:
+                await store.close()
+
+            # Persist branch_name and worktree_path so run_task can find the clone.
+            state = await state_mgr.update(
+                feature_id,
+                lambda s: s.model_copy(update={
+                    "branch_name": branch_name,
+                    "worktree_path": work_dir_str,
+                    "updated_at": datetime.now(UTC),
+                }),
+            )
+
+        queue = create_task_queue(config, "analyst-queue")
+        try:
+            task = TaskMessage(
+                feature_id=feature_id,
+                task_id=f"{feature_id}-analyst",
+                input_artifacts=[artifact_path(feature_id, "brief.md")],
+                output_artifact=phase_artifact_path(feature_id, "spec", 1),
+                agent_role="analyst",
+                state_issue_number=state.state_issue_number,
+                work_dir=work_dir_str,
+            )
+            await queue.ensure_exists()
+            await queue.send_task(task)
+            log.info("Enqueued analyst task for %s", feature_id)
+        finally:
+            await queue.close()
     finally:
-        await queue.close()
+        await state_mgr.close()
 
 
 async def _fetch_brief_for_feature(state: FeatureState, config: Config) -> str:

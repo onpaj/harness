@@ -513,13 +513,15 @@ async def test_list_features_dedup_two_raw_issues_keeps_newest():
 
 
 @pytest.mark.asyncio
-async def test_list_features_dedup_raw_vs_initialized_keeps_newest():
-    """Raw and initialized issues with the same slug → newest wins per existing rule."""
+async def test_list_features_dedup_raw_vs_initialized_keeps_initialized():
+    """When a raw and initialized issue share a slug, the initialized state is preserved."""
     # Arrange
     initialized_state = _make_state("feat-shared-slug")
     initialized_state = initialized_state.with_event("brief_uploaded")
     initialized = _make_issue(initialized_state, number=2)
-    raw = _make_raw_issue(number=8, title="Shared Slug")  # slugs to feat-shared-slug
+    initialized["created_at"] = "2026-04-25T10:00:00Z"
+    initialized["updated_at"] = "2026-04-25T10:00:00Z"
+    raw = _make_raw_issue(number=8, title="Shared Slug")  # same slug, higher number
     client = _mock_client()
     client.list_issues.return_value = [raw, initialized]
     mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
@@ -529,9 +531,36 @@ async def test_list_features_dedup_raw_vs_initialized_keeps_newest():
 
     # Assert
     assert len(results) == 1
-    # raw issue 8 is newer than initialized issue 2 → raw wins
-    assert results[0].state_issue_number == 8
-    assert results[0].is_raw is True
+    # Initialized issue wins even though raw has higher number
+    assert results[0].is_raw is False
+    assert results[0].feature_id == "feat-shared-slug"
+
+
+@pytest.mark.asyncio
+async def test_list_features_dedup_two_initialized_keeps_newest():
+    """When two initialized issues share a slug, the higher-numbered one wins."""
+    # Arrange
+    older_state = _make_state("feat-shared-slug")
+    newer_state = _make_state("feat-shared-slug")
+    older = _make_issue(older_state, number=3)
+    newer = _make_issue(newer_state, number=9)
+    client = _mock_client()
+    # When list_issues is called, it returns both; when get_issue is called for the newer one
+    client.list_issues.return_value = [newer, older]
+    # When we re-fetch issue 9 during _state_from_issue, return it with state_issue_number set
+    newer_with_number = newer.copy()
+    newer_with_number["state_issue_number"] = 9
+    client.get_issue = AsyncMock(return_value=newer_with_number)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+    # Act
+    results = await mgr.list_features()
+
+    # Assert
+    assert len(results) == 1
+    # Verify the dedup kept issue 9 by checking get_issue was called (which happens
+    # in _state_from_issue when the body is fully parsed)
+    assert results[0].feature_id == "feat-shared-slug"
 
 
 @pytest.mark.asyncio

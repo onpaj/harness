@@ -405,7 +405,7 @@ class GitHubStateManager:
         """
         items = await self._client.list_issues(labels=[self._feature_marker], direction="desc")
 
-        # feature_id -> (issue_number, issue_dict, parsed_state_or_None) — newest wins
+        # feature_id -> (issue_number, issue_dict, parsed_state_or_None) — prefer initialized, else newest
         seen: dict[str, tuple[int, dict, FeatureState | None]] = {}
         for issue in items:
             parsed = self._parse_state_from_issue(issue)
@@ -415,7 +415,13 @@ class GitHubStateManager:
                 title = issue.get("title") or ""
                 feature_id = f"feat-{slug_title(title)}"
             existing = seen.get(feature_id)
-            if existing is None or issue["number"] > existing[0]:
+            if existing is None:
+                seen[feature_id] = (issue["number"], issue, parsed)
+            elif parsed is not None and existing[2] is None:
+                # Prefer initialized over raw regardless of issue number
+                seen[feature_id] = (issue["number"], issue, parsed)
+            elif (parsed is None) == (existing[2] is None) and issue["number"] > existing[0]:
+                # Same type: take the newer one
                 seen[feature_id] = (issue["number"], issue, parsed)
 
         sorted_triples = sorted(seen.values(), key=lambda t: t[0], reverse=True)
