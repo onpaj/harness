@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentharness.github_labels import (
-    FEATURE_MARKER,
     FEATURE_STATUS_TO_LABEL,
     FEAT_ANALYZING,
     FEAT_DEVELOPING,
@@ -26,6 +25,7 @@ from agentharness.github_state import (
 )
 from agentharness.models import FeatureState, FeatureStatus
 
+TEST_FEATURE_MARKER = "test-marker"
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -53,7 +53,7 @@ def _make_issue(
     """Build a minimal GitHub issue dict with state embedded in the body."""
     feat_lbl = _feature_label(state.feature_id)
     status_lbl = FEATURE_STATUS_TO_LABEL[state.status]
-    label_names = [FEATURE_MARKER, feat_lbl, status_lbl] + (extra_labels or [])
+    label_names = [TEST_FEATURE_MARKER, feat_lbl, status_lbl] + (extra_labels or [])
     return {
         "number": number,
         "body": _replace_state_block(brief_content, state),
@@ -129,22 +129,22 @@ async def test_create_calls_ensure_label_and_create_issue():
     state = _make_state()
     client = _mock_client()
     client.create_issue.return_value = {"number": 42}
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     await mgr.create(state)
 
-    # Assert — ensure_labels called with FEATURE_MARKER and status label
+    # Assert — ensure_labels called with TEST_FEATURE_MARKER and status label
     client.ensure_labels.assert_awaited_once()
     labels_arg, _ = client.ensure_labels.call_args
-    assert FEATURE_MARKER in labels_arg[0]
+    assert TEST_FEATURE_MARKER in labels_arg[0]
     assert FEATURE_STATUS_TO_LABEL[state.status] in labels_arg[0]
 
     # Assert — create_issue called with correct labels and title
     client.create_issue.assert_awaited_once()
     _, kwargs = client.create_issue.call_args
     assert kwargs["title"] == _feature_issue_title(state.feature_id)
-    assert FEATURE_MARKER in kwargs["labels"]
+    assert TEST_FEATURE_MARKER in kwargs["labels"]
     assert FEATURE_STATUS_TO_LABEL[state.status] in kwargs["labels"]
 
 
@@ -155,7 +155,7 @@ async def test_create_embeds_state_json_in_issue_body():
     brief = "# Feature Brief\n\nSome description."
     client = _mock_client()
     client.create_issue.return_value = {"number": 42}
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     await mgr.create(state, brief_content=brief)
@@ -175,7 +175,7 @@ async def test_create_does_not_create_comment():
     state = _make_state()
     client = _mock_client()
     client.create_issue.return_value = {"number": 42}
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     await mgr.create(state)
@@ -196,7 +196,7 @@ async def test_get_reconstructs_feature_state():
     issue = _make_issue(state)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     result = await mgr.get(state.feature_id)
@@ -213,7 +213,7 @@ async def test_get_does_not_call_list_comments_when_body_has_state():
     issue = _make_issue(state)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     await mgr.get(state.feature_id)
@@ -230,13 +230,13 @@ async def test_get_overrides_status_from_label():
     issue = _make_issue(state, number=7)
     # Override label to say developing
     issue["labels"] = [
-        {"name": FEATURE_MARKER},
+        {"name": TEST_FEATURE_MARKER},
         {"name": _feature_label(state.feature_id)},
         {"name": FEAT_DEVELOPING},
     ]
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     result = await mgr.get(state.feature_id)
@@ -251,7 +251,7 @@ async def test_get_raises_key_error_when_not_found():
     # Arrange
     client = _mock_client()
     client.list_issues.return_value = []
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act / Assert
     with pytest.raises(KeyError, match="No state found for feature"):
@@ -270,7 +270,7 @@ async def test_update_rewrites_issue_body_without_label_swap_when_status_unchang
     issue = _make_issue(state, number=10)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     worktree = "/tmp/wt"
     new_state = await mgr.update(
@@ -299,7 +299,7 @@ async def test_update_body_preserves_brief_and_embeds_new_state():
     issue = _make_issue(state, number=10, brief_content=brief)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     new_state = await mgr.update(state.feature_id, lambda s: s.with_status(FeatureStatus.planning))
 
@@ -319,7 +319,7 @@ async def test_update_swaps_feat_labels_when_status_changes():
     issue = _make_issue(state, number=11)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act — bump status to done
     new_state = await mgr.update(
@@ -345,7 +345,7 @@ async def test_update_returns_new_state():
     issue = _make_issue(state, number=5)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     returned = await mgr.update(state.feature_id, lambda s: s)
@@ -366,7 +366,7 @@ async def test_set_worktree_path_calls_update():
     issue = _make_issue(state, number=3)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     await mgr.set_worktree_path(state.feature_id, "/some/path")
@@ -391,7 +391,7 @@ async def test_set_cleanup_warning_calls_update():
     issue = _make_issue(state, number=4)
     client = _mock_client()
     client.list_issues.return_value = [issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     await mgr.set_cleanup_warning(state.feature_id, "disk full")
@@ -419,7 +419,7 @@ async def test_list_features_returns_correct_pairs():
     client = _mock_client()
     # list_issues returns newest first (higher number first)
     client.list_issues.return_value = [issue_b, issue_a]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     results = await mgr.list_features()
@@ -435,15 +435,15 @@ async def test_list_features_skips_issues_without_parseable_state():
     # Arrange
     state = _make_state()
     good_issue = _make_issue(state, number=5)
-    # Issue with FEATURE_MARKER but no parseable state JSON
+    # Issue with TEST_FEATURE_MARKER but no parseable state JSON
     bad_issue = {
         "number": 6,
         "body": "",
-        "labels": [{"name": FEATURE_MARKER}],
+        "labels": [{"name": TEST_FEATURE_MARKER}],
     }
     client = _mock_client()
     client.list_issues.return_value = [good_issue, bad_issue]
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     results = await mgr.list_features()
@@ -458,7 +458,7 @@ async def test_list_features_returns_empty_when_no_issues():
     # Arrange
     client = _mock_client()
     client.list_issues.return_value = []
-    mgr = GitHubStateManager(client)
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     results = await mgr.list_features()
@@ -478,6 +478,7 @@ def test_from_config_creates_instance():
     config.github.token = "ghp_test"
     config.github.owner = "acme"
     config.github.runs_repo = "runs"
+    config.github.feature_marker = "configured-marker"
 
     with patch(
         "agentharness.github_client.GitHubClient.from_config",
@@ -489,3 +490,33 @@ def test_from_config_creates_instance():
         # Assert
         mock_from_config.assert_called_once_with(config)
         assert isinstance(mgr, GitHubStateManager)
+        assert mgr._feature_marker == "configured-marker"
+
+
+# ---------------------------------------------------------------------------
+# open_review
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_review_passes_feature_marker_as_label():
+    """The final PR is created with the configured feature_marker label."""
+    state = _make_state(status=FeatureStatus.done)
+    issue = _make_issue(state, number=20)
+    client = _mock_client()
+    client.list_issues.return_value = [issue]
+    client.get_default_branch.return_value = "main"
+    client.create_pull_request.return_value = {
+        "number": 99,
+        "html_url": "https://example/pr/99",
+    }
+    mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
+
+    pr_url = await mgr.open_review(state.feature_id)
+
+    assert pr_url == "https://example/pr/99"
+    client.create_pull_request.assert_awaited_once()
+    _, kwargs = client.create_pull_request.call_args
+    assert kwargs["labels"] == [TEST_FEATURE_MARKER]
+    assert kwargs["base"] == "main"
+    assert kwargs["head"] == state.feature_id
