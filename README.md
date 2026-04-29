@@ -334,6 +334,21 @@ GITHUB_TOKEN=ghp_...
 # GITHUB_RUNS_REPO=repo    # optional (auto-detected from git remote)
 ```
 
+**`feature_marker`** (optional, default: `"agent"`)
+
+Label applied to feature-tracking issues and the final pull request. Set a distinct value when running multiple AgentHarness deployments in the same GitHub organization.
+
+```json
+{
+  "storage_backend": "github",
+  "github": {
+    "feature_marker": "my-project-agent"
+  }
+}
+```
+
+**Migration from earlier versions:** the legacy hardcoded marker was `"agentharness-feature"`. After upgrade, in-flight features tracked under that label become invisible. To preserve legacy behavior, set `"feature_marker": "agentharness-feature"` in your config; otherwise rename existing labels in GitHub UI to `"agent"` (or your chosen marker).
+
 **No manual setup needed** — issues and branches are created dynamically.
 
 ## Environment

@@ -114,7 +114,7 @@ async def _unified_github_poll(
     import time
 
     from agentharness.github_client import GitHubClient
-    from agentharness.github_labels import FEATURE_MARKER, IMPLEMENT_LABEL, LABEL_TO_QUEUE_NAME, STATE_IN_PROGRESS, STATE_QUEUED
+    from agentharness.github_labels import IMPLEMENT_LABEL, LABEL_TO_QUEUE_NAME, STATE_IN_PROGRESS, STATE_QUEUED
     from agentharness.github_queue import GitHubTaskQueue
     poll_interval = config.defaults.github_poll_interval_seconds
     client = GitHubClient.from_config(config)
@@ -144,7 +144,7 @@ async def _unified_github_poll(
                 )
 
             try:
-                issues = await client.list_issues(labels=[FEATURE_MARKER])
+                issues = await client.list_issues(labels=[config.github.feature_marker])
             except Exception as exc:
                 log.warning("GitHub unified poll failed: %s", exc)
                 await asyncio.sleep(poll_interval)
@@ -206,7 +206,7 @@ async def _unified_github_poll(
             # 3. Write state cache
             if now - last_cache >= _STATE_CACHE_INTERVAL:
                 last_cache = now
-                states = await _collect_states(client, issues)
+                states = await _collect_states(client, issues, config)
                 try:
                     STATE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
                     STATE_CACHE_PATH.write_text(json.dumps(states))
@@ -283,7 +283,7 @@ async def _handle_implement_issue(
             config=PipelineConfig(max_revisions=config.defaults.max_revisions),
             branch_name=branch_name,
         )
-        await GitHubStateManager(client).create(state, body)
+        await GitHubStateManager(client, feature_marker=config.github.feature_marker).create(state, body)
 
         await client.create_comment(
             number,
@@ -302,7 +302,7 @@ async def _handle_implement_issue(
         bootstrapping.discard(number)
 
 
-async def _collect_states(client: "GitHubClient", issues: list[dict]) -> list[dict]:
+async def _collect_states(client: "GitHubClient", issues: list[dict], config: Config) -> list[dict]:
     """Parse FeatureState from tracking issues only, skipping task queue issues.
 
     Deduplicates by feature_id, keeping the highest-numbered issue per feature.
@@ -318,7 +318,7 @@ async def _collect_states(client: "GitHubClient", issues: list[dict]) -> list[di
         state = parse_state_from_issue(issue)
         if state is None:
             try:
-                mgr = GitHubStateManager(client)
+                mgr = GitHubStateManager(client, feature_marker=config.github.feature_marker)
                 state = await mgr._state_from_issue(issue)
             except Exception:
                 continue

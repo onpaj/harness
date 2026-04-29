@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 from agentharness.github_labels import (
     CLAIMED_BY_PREFIX,
-    FEATURE_MARKER,
     IMPLEMENT_LABEL,
     QUEUE_NAME_TO_LABEL,
     STATE_BLOCKED,
@@ -63,11 +62,14 @@ class GitHubTaskQueue:
         client: GitHubClient,
         queue_name: str,
         worker_id: str,
+        *,
+        feature_marker: str,
     ) -> None:
         self._client = client
         self._queue_name = queue_name
         self._worker_id = worker_id
         self._queue_label = QUEUE_NAME_TO_LABEL.get(queue_name, f"queue:{queue_name}")
+        self._feature_marker = feature_marker
 
     @staticmethod
     def _parse_task_from_body(body: str) -> TaskMessage:
@@ -86,6 +88,7 @@ class GitHubTaskQueue:
             client=client,
             queue_name=queue_name,
             worker_id=_default_worker_id(),
+            feature_marker=config.github.feature_marker,
         )
 
     @classmethod
@@ -103,7 +106,7 @@ class GitHubTaskQueue:
             STATE_COMPLETED,
             STATE_DEAD_LETTER,
             STATE_BLOCKED,
-            FEATURE_MARKER,
+            config.github.feature_marker,
             IMPLEMENT_LABEL,
         ]
         await client.ensure_labels(all_labels)
@@ -116,7 +119,7 @@ class GitHubTaskQueue:
     async def send_task(self, task: TaskMessage, visibility_timeout: int = 0) -> None:
         """Create a GitHub issue representing the enqueued task."""
         state_label = STATE_BLOCKED if visibility_timeout > 0 else STATE_QUEUED
-        labels = [self._queue_label, state_label, FEATURE_MARKER]
+        labels = [self._queue_label, state_label, self._feature_marker]
         title = f"[{self._queue_name}] {task.task_id}"
         body = _build_issue_body(task)
         await self._client.create_issue(title=title, body=body, labels=labels)
@@ -254,7 +257,7 @@ class GitHubTaskQueue:
             STATE_COMPLETED,
             STATE_DEAD_LETTER,
             STATE_BLOCKED,
-            FEATURE_MARKER,
+            self._feature_marker,
         ]
         await self._client.ensure_labels(labels_needed)
 

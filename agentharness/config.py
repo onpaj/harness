@@ -76,6 +76,7 @@ class GitHubConfig(BaseModel):
     owner_env: str = "GITHUB_OWNER"      # optional — falls back to git remote
     runs_repo_env: str = "GITHUB_RUNS_REPO"  # optional — falls back to git remote
     clone_dir: str = ".worktrees"
+    feature_marker: str = "agent"
 
     @property
     def token(self) -> str:

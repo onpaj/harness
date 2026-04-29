@@ -14,7 +14,6 @@ from agentharness.github_queue import (
 # _parse_task_from_body was moved to GitHubTaskQueue as a @staticmethod
 _parse_task_from_body = GitHubTaskQueue._parse_task_from_body
 from agentharness.github_labels import (
-    FEATURE_MARKER,
     STATE_BLOCKED,
     STATE_COMPLETED,
     STATE_DEAD_LETTER,
@@ -31,6 +30,7 @@ from agentharness.storage_protocol import RawMessage
 _QUEUE_NAME = "analyst-queue"
 _WORKER_ID = "test-host-1234"
 _QUEUE_LABEL = "queue:analyst"
+TEST_FEATURE_MARKER = "test-marker"
 
 
 def _make_task(task_id: str = "task-001") -> TaskMessage:
@@ -70,6 +70,7 @@ def _make_queue(client: MagicMock | None = None) -> GitHubTaskQueue:
         client=client or _make_client(),
         queue_name=_QUEUE_NAME,
         worker_id=_WORKER_ID,
+        feature_marker=TEST_FEATURE_MARKER,
     )
 
 
@@ -107,7 +108,7 @@ async def test_send_task_creates_issue_with_correct_labels() -> None:
     client.create_issue.assert_called_once()
     _, kwargs = client.create_issue.call_args
     assert kwargs["title"] == f"[{_QUEUE_NAME}] {task.task_id}"
-    assert set(kwargs["labels"]) == {_QUEUE_LABEL, STATE_QUEUED, FEATURE_MARKER}
+    assert set(kwargs["labels"]) == {_QUEUE_LABEL, STATE_QUEUED, TEST_FEATURE_MARKER}
     assert "agentharness-task" in kwargs["body"]
 
 
@@ -353,7 +354,7 @@ async def test_ensure_exists_calls_ensure_labels_with_all_required_labels() -> N
         STATE_COMPLETED,
         STATE_DEAD_LETTER,
         STATE_BLOCKED,
-        FEATURE_MARKER,
+        TEST_FEATURE_MARKER,
     }
     assert expected.issubset(called_labels)
 
