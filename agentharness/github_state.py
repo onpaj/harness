@@ -38,6 +38,25 @@ _STATE_BLOCK_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Slug helper — single source of truth shared between synthesis and matching.
+#
+# Algorithm contract (must match the /convertforagent skill byte-for-byte):
+#   1. lowercase
+#   2. replace runs of non-[a-z0-9] with a single "-"
+#   3. strip leading/trailing "-"
+#   4. truncate to 40 characters
+#
+# Any change here affects feature_id derivation across the entire pipeline.
+# ---------------------------------------------------------------------------
+
+
+def slug_title(title: str) -> str:
+    """Return a 40-char URL-safe slug of *title* (matches /convertforagent)."""
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return s[:40]
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -109,6 +128,46 @@ def _feature_id_from_issue(issue: dict) -> str | None:
     """Extract the feature_id from the agentharness-state JSON block in the issue body."""
     state = parse_state_from_issue(issue)
     return state.feature_id if state else None
+
+
+def _parse_iso_timestamp(value: str | None) -> "datetime | None":
+    """Parse a GitHub ISO-8601 timestamp into a UTC datetime, or None."""
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    cleaned = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(cleaned)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _synthesize_raw_state(issue: dict) -> FeatureState:
+    """Build a synthetic FeatureState for a labelled issue without a state block.
+
+    Used by ``GitHubStateManager.list_features`` to surface raw issues in the TUI.
+    The resulting state has ``is_raw is True`` (empty history) — that flag is the
+    canonical signal that the issue still needs ``_convert_raw_issue`` before it
+    can transition out of ``brainstormed``.
+    """
+    title = issue.get("title") or ""
+    feature_id = f"feat-{slug_title(title)}"
+
+    fields: dict = {
+        "feature_id": feature_id,
+        "status": FeatureStatus.brainstormed,
+        "state_issue_number": int(issue["number"]),
+        "branch_name": feature_id,
+    }
+    created_at = _parse_iso_timestamp(issue.get("created_at"))
+    if created_at is not None:
+        fields["created_at"] = created_at
+    updated_at = _parse_iso_timestamp(issue.get("updated_at"))
+    if updated_at is not None:
+        fields["updated_at"] = updated_at
+
+    return FeatureState(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +285,54 @@ class GitHubStateManager:
         await self._client.update_issue(issue_number, body=_replace_state_block(brief_content, updated))
         log.debug("Created state issue #%d for feature %s", issue_number, state.feature_id)
 
+    async def patch_existing_issue(
+        self,
+        issue_number: int,
+        state: FeatureState,
+        brief_content: str = "",
+    ) -> None:
+        """Embed harness state into an *existing* GitHub issue (no issue creation).
+
+        Side effects:
+          1. Ensure ``feature_marker`` and ``feat:brainstormed`` labels exist in
+             the repo (idempotent).
+          2. Add ``feat:brainstormed`` to the target issue. The original
+             ``feature_marker`` label is left untouched.
+          3. PATCH the issue body to carry an ``agentharness-state`` block —
+             appending if absent, replacing if present.
+
+        Idempotent: re-calling with the same *state* yields a byte-identical body.
+        """
+        from agentharness.github_labels import FEAT_BRAINSTORMED
+
+        await self._client.ensure_labels(
+            [self._feature_marker, FEAT_BRAINSTORMED],
+            color="0075ca",
+        )
+        await self._client.add_labels(issue_number, [FEAT_BRAINSTORMED])
+
+        issue = await self._client.get_issue(issue_number)
+        existing_body = issue.get("body") or ""
+
+        # If the brief is provided and is not already in the body, prepend it.
+        if brief_content and brief_content not in existing_body:
+            base_body = (
+                f"{existing_body}\n\n{brief_content}".strip()
+                if existing_body.strip()
+                else brief_content
+            )
+        else:
+            base_body = existing_body
+
+        new_body = _replace_state_block(base_body, state)
+        await self._client.update_issue(issue_number, body=new_body)
+
+        log.info(
+            "Patched existing issue #%d with state for feature %s",
+            issue_number,
+            state.feature_id,
+        )
+
     async def get(self, feature_id: str, issue_number: int | None = None) -> FeatureState:
         """Fetch and reconstruct the FeatureState for the given feature_id.
 
@@ -286,40 +393,53 @@ class GitHubStateManager:
     async def list_features(self) -> list[FeatureState]:
         """Return all known features as parsed FeatureState objects.
 
-        Results are sorted by issue number descending (newest first). If the
-        same feature_id appears in multiple issues, only the highest-numbered
-        issue (most recent) is kept.
+        Issues that carry the ``feature_marker`` label but do not embed an
+        ``agentharness-state`` JSON block are surfaced as *synthetic* raw states
+        (``status=brainstormed``, ``history=[]``). They are not persisted in
+        synthetic form — the next ``patch_existing_issue`` call writes the real
+        state block. ``state.is_raw`` distinguishes raw from initialised states.
+
+        Results are sorted by issue number descending (newest first). When the
+        same ``feature_id`` appears in multiple issues, only the highest-numbered
+        issue is kept (raw + initialised dedup using the same rule).
         """
         items = await self._client.list_issues(labels=[self._feature_marker], direction="desc")
 
-        # feature_id -> (issue_number, issue_dict) — keep newest issue per feature
-        seen: dict[str, tuple[int, dict]] = {}
+        # feature_id -> (issue_number, issue_dict, parsed_state_or_None) — prefer initialized, else newest
+        seen: dict[str, tuple[int, dict, FeatureState | None]] = {}
         for issue in items:
-            feature_id = _feature_id_from_issue(issue)
-            if feature_id is None:
-                log.warning(
-                    "Issue #%d has %s label but no parseable state JSON — skipping",
-                    issue["number"],
-                    self._feature_marker,
-                )
-                continue
-            issue_number: int = issue["number"]
+            parsed = self._parse_state_from_issue(issue)
+            if parsed is not None:
+                feature_id = parsed.feature_id
+            else:
+                title = issue.get("title") or ""
+                feature_id = f"feat-{slug_title(title)}"
             existing = seen.get(feature_id)
-            if existing is None or issue_number > existing[0]:
-                seen[feature_id] = (issue_number, issue)
+            if existing is None:
+                seen[feature_id] = (issue["number"], issue, parsed)
+            elif parsed is not None and existing[2] is None:
+                # Prefer initialized over raw regardless of issue number
+                seen[feature_id] = (issue["number"], issue, parsed)
+            elif (parsed is None) == (existing[2] is None) and issue["number"] > existing[0]:
+                # Same type: take the newer one
+                seen[feature_id] = (issue["number"], issue, parsed)
 
-        sorted_pairs = sorted(seen.values(), key=lambda pair: pair[0], reverse=True)
+        sorted_triples = sorted(seen.values(), key=lambda t: t[0], reverse=True)
 
         states: list[FeatureState] = []
-        for _issue_number, issue in sorted_pairs:
+        for _issue_number, issue, parsed in sorted_triples:
+            if parsed is None:
+                states.append(_synthesize_raw_state(issue))
+                continue
             try:
                 state = await self._state_from_issue(issue)
                 states.append(state)
             except Exception:
-                log.warning(
-                    "Could not parse state for issue #%d — skipping",
+                log.debug(
+                    "Could not reconstruct state for issue #%d — synthesising as raw",
                     issue["number"],
                 )
+                states.append(_synthesize_raw_state(issue))
         return states
 
     async def close(self) -> None:

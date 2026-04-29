@@ -72,3 +72,61 @@ class TestOptionsFor:
         opts = StateChangeModal._options_for(_state(FeatureStatus.done))
         # done is excluded from the list; we still allow marking failed manually
         assert all(s != FeatureStatus.done for s, _, _ in opts)
+
+
+# ---------------------------------------------------------------------------
+# action_open_state_change — raw feature guard
+# ---------------------------------------------------------------------------
+
+
+class TestActionOpenStateChangeRawGuard:
+    """Tests the pure decision logic: is_raw → notify-and-return; not raw → fall through."""
+
+    def test_raw_feature_emits_notification_and_returns(self):
+        raw = FeatureState(feature_id="feat-raw", status=FeatureStatus.brainstormed)
+        assert raw.is_raw is True
+
+        notifications: list[tuple[str, str]] = []
+        opened: list[str] = []
+
+        def notify(msg: str, severity: str = "information") -> None:
+            notifications.append((msg, severity))
+
+        def push_screen(_modal, _on_result) -> None:
+            opened.append("modal")
+
+        # Transcription of the new guard branch
+        def action(state: FeatureState) -> None:
+            if state.is_raw:
+                notify("Convert to harness feature first (press i)", "warning")
+                return
+            push_screen(object(), lambda _r: None)
+
+        action(raw)
+        assert notifications == [("Convert to harness feature first (press i)", "warning")]
+        assert opened == []
+
+    def test_initialized_feature_opens_modal(self):
+        initialized = FeatureState(
+            feature_id="feat-init", status=FeatureStatus.analyzing,
+        ).with_event("brief_uploaded")
+        assert initialized.is_raw is False
+
+        notifications: list[tuple[str, str]] = []
+        opened: list[str] = []
+
+        def notify(msg: str, severity: str = "information") -> None:
+            notifications.append((msg, severity))
+
+        def push_screen(_modal, _on_result) -> None:
+            opened.append("modal")
+
+        def action(state: FeatureState) -> None:
+            if state.is_raw:
+                notify("Convert to harness feature first (press i)", "warning")
+                return
+            push_screen(object(), lambda _r: None)
+
+        action(initialized)
+        assert notifications == []
+        assert opened == ["modal"]

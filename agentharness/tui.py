@@ -659,6 +659,12 @@ class PipelineMonitor(App):
         if state is None:
             self.notify("Selected feature has no cached state.", severity="warning")
             return
+        if state.is_raw:
+            self.notify(
+                "Convert to harness feature first (press i)",
+                severity="warning",
+            )
+            return
         if state.status == FeatureStatus.done:
             self.notify(
                 "State change unavailable for completed features.",

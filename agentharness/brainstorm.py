@@ -12,6 +12,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from agentharness.config import Config
+from agentharness.github_client import GitHubClient
 from agentharness.models import FeatureState, FeatureStatus, PipelineConfig, TaskMessage
 from agentharness.prompt_builder import load_agent_definition
 from agentharness.storage import (
@@ -27,13 +28,15 @@ _BRIEF_FILENAME = "brief.md"
 
 
 def _slug_from_brief(brief_content: str) -> str:
+    """Extract the H1 line from *brief_content* and slug it via slug_title."""
     import re
+    from agentharness.github_state import slug_title
+
     for line in brief_content.splitlines():
         line = line.strip()
         if line.startswith("# "):
             title = re.sub(r"^#\s*(Feature Brief:\s*)?", "", line, flags=re.IGNORECASE)
-            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-            return slug[:40]
+            return slug_title(title)
     return "untitled"
 
 
@@ -177,59 +180,68 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
     from datetime import UTC, datetime
 
     state_mgr = create_state_manager(config)
-    state = await state_mgr.update(
-        feature_id,
-        lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
-    )
+    try:
+        if config.storage_backend == "github":
+            try:
+                await state_mgr.get(feature_id)
+            except KeyError:
+                await _convert_raw_issue(feature_id, config)
 
-    work_dir_str: str | None = None
-
-    if config.storage_backend == "github":
-        branch_name = state.branch_name or feature_id
-        brief_content = await _fetch_brief_for_feature(state, config)
-
-        store = create_artifact_store(config, feature_id=branch_name)
-        try:
-            # Ensure the clone exists and the feature branch is checked out.
-            await store._ensure_clone()
-            await store._checkout_or_create(branch_name)
-
-            # Write brief.md to the worktree so the analyst finds it immediately.
-            work_dir = store.get_work_dir()
-            (work_dir / "brief.md").write_text(brief_content, encoding="utf-8")
-            work_dir_str = str(work_dir)
-
-            # Also commit brief.md to the branch so artifact downloads succeed.
-            await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
-        finally:
-            await store.close()
-
-        # Persist branch_name and worktree_path so run_task can find the clone.
         state = await state_mgr.update(
             feature_id,
-            lambda s: s.model_copy(update={
-                "branch_name": branch_name,
-                "worktree_path": work_dir_str,
-                "updated_at": datetime.now(UTC),
-            }),
+            lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
         )
 
-    queue = create_task_queue(config, "analyst-queue")
-    try:
-        task = TaskMessage(
-            feature_id=feature_id,
-            task_id=f"{feature_id}-analyst",
-            input_artifacts=[artifact_path(feature_id, "brief.md")],
-            output_artifact=phase_artifact_path(feature_id, "spec", 1),
-            agent_role="analyst",
-            state_issue_number=state.state_issue_number,
-            work_dir=work_dir_str,
-        )
-        await queue.ensure_exists()
-        await queue.send_task(task)
-        log.info("Enqueued analyst task for %s", feature_id)
+        work_dir_str: str | None = None
+
+        if config.storage_backend == "github":
+            branch_name = state.branch_name or feature_id
+            brief_content = await _fetch_brief_for_feature(state, config)
+
+            store = create_artifact_store(config, feature_id=branch_name)
+            try:
+                # Ensure the clone exists and the feature branch is checked out.
+                await store._ensure_clone()
+                await store._checkout_or_create(branch_name)
+
+                # Write brief.md to the worktree so the analyst finds it immediately.
+                work_dir = store.get_work_dir()
+                (work_dir / "brief.md").write_text(brief_content, encoding="utf-8")
+                work_dir_str = str(work_dir)
+
+                # Also commit brief.md to the branch so artifact downloads succeed.
+                await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
+            finally:
+                await store.close()
+
+            # Persist branch_name and worktree_path so run_task can find the clone.
+            state = await state_mgr.update(
+                feature_id,
+                lambda s: s.model_copy(update={
+                    "branch_name": branch_name,
+                    "worktree_path": work_dir_str,
+                    "updated_at": datetime.now(UTC),
+                }),
+            )
+
+        queue = create_task_queue(config, "analyst-queue")
+        try:
+            task = TaskMessage(
+                feature_id=feature_id,
+                task_id=f"{feature_id}-analyst",
+                input_artifacts=[artifact_path(feature_id, "brief.md")],
+                output_artifact=phase_artifact_path(feature_id, "spec", 1),
+                agent_role="analyst",
+                state_issue_number=state.state_issue_number,
+                work_dir=work_dir_str,
+            )
+            await queue.ensure_exists()
+            await queue.send_task(task)
+            log.info("Enqueued analyst task for %s", feature_id)
+        finally:
+            await queue.close()
     finally:
-        await queue.close()
+        await state_mgr.close()
 
 
 async def _fetch_brief_for_feature(state: FeatureState, config: Config) -> str:
@@ -247,6 +259,80 @@ async def _fetch_brief_for_feature(state: FeatureState, config: Config) -> str:
         return extract_brief_from_issue_body(body)
     finally:
         await client.close()
+
+
+async def _convert_raw_issue(feature_id: str, config: Config) -> None:
+    """Convert a labelled-but-not-initialised GitHub issue into a harness feature.
+
+    Performs the in-Python equivalent of the ``/convertforagent`` skill:
+      1. Find the open issue whose title slug matches *feature_id*.
+      2. Create the feature branch (idempotent; existing branch is tolerated).
+      3. Upload the issue body as ``artifacts/{feature_id}/brief.md``.
+      4. Patch the issue with labels + state JSON block.
+
+    Idempotent on retry: branch creation is 422-tolerant, artifact upload
+    overwrites any existing ``brief.md``, and ``patch_existing_issue`` replaces
+    the state block in place. Raises ``ValueError`` if no open issue matches.
+    """
+    from agentharness.github_client import GitHubApiError
+    from agentharness.github_state import slug_title
+
+    expected_slug = feature_id.removeprefix("feat-")
+
+    gh_client = GitHubClient.from_config(config)
+    store = create_artifact_store(config, feature_id=feature_id)
+    state_mgr = create_state_manager(config)
+    try:
+        # 1. Find the matching issue
+        issues = await gh_client.list_issues(labels=[config.github.feature_marker])
+        match: dict | None = None
+        for issue in issues:
+            title = issue.get("title") or ""
+            if slug_title(title) == expected_slug:
+                match = issue
+                break
+        if match is None:
+            raise ValueError(
+                f"no raw issue found for {feature_id!r} "
+                f"(no open issue with label {config.github.feature_marker!r} "
+                f"slugs to {expected_slug!r})"
+            )
+        issue_number = int(match["number"])
+        brief_content = match.get("body") or ""
+
+        # 2. Create branch (tolerate 'already exists')
+        default_branch = await gh_client.get_default_branch()
+        ref = await gh_client.get_ref(f"heads/{default_branch}")
+        sha = ref["object"]["sha"]
+        try:
+            await gh_client.create_ref(f"refs/heads/{feature_id}", sha)
+            log.info("Created feature branch %s", feature_id)
+        except GitHubApiError as exc:
+            if exc.status_code == 422:
+                log.info("Feature branch %s already exists — skipping creation", feature_id)
+            else:
+                raise
+
+        # 3. Upload brief
+        await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
+
+        # 4. Build state and patch the issue
+        state = FeatureState(
+            feature_id=feature_id,
+            status=FeatureStatus.brainstormed,
+            state_issue_number=issue_number,
+            branch_name=feature_id,
+            config=PipelineConfig(
+                max_revisions=config.defaults.max_revisions,
+                max_analyst_iterations=config.max_analyst_iterations,
+            ),
+        ).with_event("brief_uploaded")
+        await state_mgr.patch_existing_issue(issue_number, state, brief_content=brief_content)
+        log.info("Auto-converted raw issue #%d → feature %s", issue_number, feature_id)
+    finally:
+        await gh_client.close()
+        await store.close()
+        await state_mgr.close()
 
 
 async def upload_brief_file(brief_path: Path, config: Config) -> str:
