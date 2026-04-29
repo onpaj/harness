@@ -255,3 +255,22 @@ class TestWithAnalystIterationIncremented:
         time.sleep(0.001)
         updated = state.with_analyst_iteration_incremented()
         assert updated.updated_at > original
+
+
+class TestFeatureStateIsRaw:
+    def test_is_raw_true_for_empty_history(self):
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.brainstormed)
+        assert state.is_raw is True
+
+    def test_is_raw_false_after_brief_uploaded_event(self):
+        state = FeatureState(
+            feature_id="feat-x",
+            status=FeatureStatus.brainstormed,
+        ).with_event("brief_uploaded")
+        assert state.is_raw is False
+
+    def test_is_raw_is_not_persisted_in_serialised_form(self):
+        """Computed properties must not appear in model_dump output."""
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.brainstormed)
+        dumped = state.model_dump()
+        assert "is_raw" not in dumped

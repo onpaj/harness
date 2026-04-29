@@ -186,6 +186,17 @@ class FeatureState(BaseModel):
                 result = result + task.tokens_used
         return result
 
+    @property
+    def is_raw(self) -> bool:
+        """True when this state was synthesised from a labelled issue with no state block.
+
+        A raw feature has no recorded history events; the canonical signal is the
+        absence of the ``brief_uploaded`` event that ``upload_brief`` emits. Only
+        meaningful for ``FeatureState`` objects produced by ``list_features()`` or
+        synthesised locally; do not trust after a write round-trip via ``get()``.
+        """
+        return not self.history
+
     def tasks_for_phase(self, phase: str) -> list[TaskEntry]:
         return [t for t in self.tasks if t.phase == phase]
 
