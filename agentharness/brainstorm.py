@@ -12,6 +12,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from agentharness.config import Config
+from agentharness.github_client import GitHubClient
 from agentharness.models import FeatureState, FeatureStatus, PipelineConfig, TaskMessage
 from agentharness.prompt_builder import load_agent_definition
 from agentharness.storage import (
@@ -249,6 +250,80 @@ async def _fetch_brief_for_feature(state: FeatureState, config: Config) -> str:
         return extract_brief_from_issue_body(body)
     finally:
         await client.close()
+
+
+async def _convert_raw_issue(feature_id: str, config: Config) -> None:
+    """Convert a labelled-but-not-initialised GitHub issue into a harness feature.
+
+    Performs the in-Python equivalent of the ``/convertforagent`` skill:
+      1. Find the open issue whose title slug matches *feature_id*.
+      2. Create the feature branch (idempotent; existing branch is tolerated).
+      3. Upload the issue body as ``artifacts/{feature_id}/brief.md``.
+      4. Patch the issue with labels + state JSON block.
+
+    Idempotent on retry: branch creation is 422-tolerant, artifact upload
+    overwrites any existing ``brief.md``, and ``patch_existing_issue`` replaces
+    the state block in place. Raises ``ValueError`` if no open issue matches.
+    """
+    from agentharness.github_client import GitHubApiError
+    from agentharness.github_state import slug_title
+
+    expected_slug = feature_id.removeprefix("feat-")
+
+    gh_client = GitHubClient.from_config(config)
+    store = create_artifact_store(config, feature_id=feature_id)
+    state_mgr = create_state_manager(config)
+    try:
+        # 1. Find the matching issue
+        issues = await gh_client.list_issues(labels=[config.github.feature_marker])
+        match: dict | None = None
+        for issue in issues:
+            title = issue.get("title") or ""
+            if slug_title(title) == expected_slug:
+                match = issue
+                break
+        if match is None:
+            raise ValueError(
+                f"no raw issue found for {feature_id!r} "
+                f"(no open issue with label {config.github.feature_marker!r} "
+                f"slugs to {expected_slug!r})"
+            )
+        issue_number = int(match["number"])
+        brief_content = match.get("body") or ""
+
+        # 2. Create branch (tolerate 'already exists')
+        default_branch = await gh_client.get_default_branch()
+        ref = await gh_client.get_ref(f"heads/{default_branch}")
+        sha = ref["object"]["sha"]
+        try:
+            await gh_client.create_ref(f"refs/heads/{feature_id}", sha)
+            log.info("Created feature branch %s", feature_id)
+        except GitHubApiError as exc:
+            if exc.status_code == 422:
+                log.info("Feature branch %s already exists — skipping creation", feature_id)
+            else:
+                raise
+
+        # 3. Upload brief
+        await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
+
+        # 4. Build state and patch the issue
+        state = FeatureState(
+            feature_id=feature_id,
+            status=FeatureStatus.brainstormed,
+            state_issue_number=issue_number,
+            branch_name=feature_id,
+            config=PipelineConfig(
+                max_revisions=config.defaults.max_revisions,
+                max_analyst_iterations=config.max_analyst_iterations,
+            ),
+        ).with_event("brief_uploaded")
+        await state_mgr.patch_existing_issue(issue_number, state, brief_content=brief_content)
+        log.info("Auto-converted raw issue #%d → feature %s", issue_number, feature_id)
+    finally:
+        await gh_client.close()
+        await store.close()
+        await state_mgr.close()
 
 
 async def upload_brief_file(brief_path: Path, config: Config) -> str:

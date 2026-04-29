@@ -48,6 +48,7 @@ def _make_state_mgr(feature_id: str = _FEATURE_ID) -> MagicMock:
     mgr.update = AsyncMock(
         return_value=FeatureState(feature_id=feature_id, status=FeatureStatus.analyzing)
     )
+    mgr.close = AsyncMock()
     return mgr
 
 
@@ -216,3 +217,159 @@ class TestSlugFromBriefDelegates:
         from agentharness.brainstorm import _slug_from_brief
         from agentharness.github_state import slug_title
         assert _slug_from_brief("# Add User Export Endpoint\n") == slug_title("Add User Export Endpoint")
+
+
+# ---------------------------------------------------------------------------
+# _convert_raw_issue
+# ---------------------------------------------------------------------------
+
+
+class TestConvertRawIssue:
+    @staticmethod
+    def _raw_issue(*, number: int = 7, title: str, body: str = "Issue body content.") -> dict:
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "created_at": "2026-04-25T10:00:00Z",
+            "updated_at": "2026-04-25T10:00:00Z",
+            "labels": [{"name": "agent"}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_happy_path_creates_branch_uploads_brief_patches_issue(self):
+        from agentharness.brainstorm import _convert_raw_issue
+        from agentharness.models import FeatureStatus
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        gh_client = AsyncMock()
+        gh_client.list_issues.return_value = [
+            TestConvertRawIssue._raw_issue(number=7, title="Add Export Endpoint")
+        ]
+        gh_client.get_default_branch.return_value = "main"
+        gh_client.get_ref.return_value = {"object": {"sha": "abc123"}}
+        gh_client.create_ref = AsyncMock(return_value={"ref": "refs/heads/feat-add-export-endpoint"})
+        gh_client.close = AsyncMock()
+
+        store = _make_store(work_dir="/clone/feat-add-export-endpoint")
+        state_mgr = MagicMock()
+        state_mgr.patch_existing_issue = AsyncMock()
+        state_mgr.close = AsyncMock()
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            await _convert_raw_issue("feat-add-export-endpoint", config)
+
+        # Branch creation
+        gh_client.create_ref.assert_awaited_once()
+        ref_args = gh_client.create_ref.call_args
+        assert ref_args.args[0] == "refs/heads/feat-add-export-endpoint"
+        assert ref_args.args[1] == "abc123"
+
+        # Brief artifact upload
+        store.upload.assert_awaited_once_with(
+            "artifacts/feat-add-export-endpoint/brief.md",
+            "Issue body content.",
+        )
+
+        # Issue patch
+        state_mgr.patch_existing_issue.assert_awaited_once()
+        call_args = state_mgr.patch_existing_issue.call_args
+        assert call_args.args[0] == 7  # issue number
+        patched_state = call_args.args[1]
+        assert patched_state.feature_id == "feat-add-export-endpoint"
+        assert patched_state.status == FeatureStatus.brainstormed
+        assert patched_state.state_issue_number == 7
+        assert patched_state.branch_name == "feat-add-export-endpoint"
+        assert call_args.kwargs.get("brief_content") == "Issue body content."
+
+    @pytest.mark.asyncio
+    async def test_branch_already_exists_is_tolerated(self):
+        """A 422 on create_ref means the branch exists; conversion still completes."""
+        from agentharness.brainstorm import _convert_raw_issue
+        from agentharness.github_client import GitHubApiError
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        gh_client = AsyncMock()
+        gh_client.list_issues.return_value = [
+            TestConvertRawIssue._raw_issue(number=7, title="Already Exists")
+        ]
+        gh_client.get_default_branch.return_value = "main"
+        gh_client.get_ref.return_value = {"object": {"sha": "abc123"}}
+        gh_client.create_ref.side_effect = GitHubApiError(422, "Reference already exists")
+        gh_client.close = AsyncMock()
+
+        store = _make_store(work_dir="/clone/feat-already-exists")
+        state_mgr = MagicMock()
+        state_mgr.patch_existing_issue = AsyncMock()
+        state_mgr.close = AsyncMock()
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            # Must not raise
+            await _convert_raw_issue("feat-already-exists", config)
+
+        # Subsequent steps still run
+        store.upload.assert_awaited_once()
+        state_mgr.patch_existing_issue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_matching_issue_raises_value_error(self):
+        from agentharness.brainstorm import _convert_raw_issue
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        gh_client = AsyncMock()
+        gh_client.list_issues.return_value = [
+            TestConvertRawIssue._raw_issue(number=7, title="Different Title")
+        ]
+        gh_client.close = AsyncMock()
+
+        with patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client):
+            with pytest.raises(ValueError, match="feat-no-such-feature"):
+                await _convert_raw_issue("feat-no-such-feature", config)
+
+    @pytest.mark.asyncio
+    async def test_closes_resources_even_on_error(self):
+        """If patch_existing_issue raises, we still close client/store/state_mgr."""
+        from agentharness.brainstorm import _convert_raw_issue
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        gh_client = AsyncMock()
+        gh_client.list_issues.return_value = [
+            TestConvertRawIssue._raw_issue(number=7, title="Boom Title")
+        ]
+        gh_client.get_default_branch.return_value = "main"
+        gh_client.get_ref.return_value = {"object": {"sha": "abc123"}}
+        gh_client.create_ref = AsyncMock(return_value={})
+        gh_client.close = AsyncMock()
+
+        store = _make_store()
+        state_mgr = MagicMock()
+        state_mgr.patch_existing_issue = AsyncMock(side_effect=RuntimeError("api down"))
+        state_mgr.close = AsyncMock()
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            with pytest.raises(RuntimeError, match="api down"):
+                await _convert_raw_issue("feat-boom-title", config)
+
+        gh_client.close.assert_awaited_once()
+        store.close.assert_awaited_once()
+        state_mgr.close.assert_awaited_once()
