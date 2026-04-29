@@ -20,6 +20,7 @@ from agentharness.github_labels import (
     FEATURE_STATUS_TO_LABEL,
     FEAT_STATUS_LABELS,
     LABEL_TO_FEATURE_STATUS,
+    TASK_STATE_LABELS,
 )
 from agentharness.models import FeatureState, FeatureStatus
 
@@ -408,6 +409,10 @@ class GitHubStateManager:
         # feature_id -> (issue_number, issue_dict, parsed_state_or_None) — prefer initialized, else newest
         seen: dict[str, tuple[int, dict, FeatureState | None]] = {}
         for issue in items:
+            # Guard: skip stale queue issues that still carry feature_marker (e.g. from before
+            # the agent-subtask migration). Task issues always have a task-state label.
+            if {lbl["name"] for lbl in issue.get("labels", [])} & TASK_STATE_LABELS:
+                continue
             parsed = self._parse_state_from_issue(issue)
             if parsed is not None:
                 feature_id = parsed.feature_id

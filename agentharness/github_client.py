@@ -176,7 +176,7 @@ class GitHubClient:
             page += 1
         if state != "all":
             all_results = [i for i in all_results if i.get("state") == state]
-        return all_results
+        return [i for i in all_results if "pull_request" not in i]
 
     async def search_issues(
         self, query: str, sort: str = "created", order: str = "asc"

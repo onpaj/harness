@@ -237,6 +237,16 @@ class TestGitHubConfigFeatureMarker:
         config = load_config(config_path)
         assert config.github.feature_marker == "agent"
 
+    def test_github_config_default_subtask_marker(self):
+        """GitHubConfig.subtask_marker defaults to 'agent-subtask' when not specified."""
+        cfg = GitHubConfig()
+        assert cfg.subtask_marker == "agent-subtask"
+
+    def test_github_config_accepts_custom_subtask_marker(self):
+        """GitHubConfig.subtask_marker accepts a user-supplied value."""
+        cfg = GitHubConfig(subtask_marker="my-subtask-label")
+        assert cfg.subtask_marker == "my-subtask-label"
+
 
 class TestExistingBehaviorUnchanged:
     def test_queues_and_agent_paths_still_parsed(self, tmp_path):
@@ -286,7 +296,7 @@ class TestStorageFactoriesThreadFeatureMarker:
         queue = create_task_queue(config, "analyst-queue")
         state = create_state_manager(config)
 
-        assert queue._feature_marker == "wired-through"
+        assert queue._subtask_marker == "agent-subtask"
         assert state._feature_marker == "wired-through"
 
 

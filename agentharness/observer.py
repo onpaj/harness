@@ -144,7 +144,14 @@ async def _unified_github_poll(
                 )
 
             try:
-                issues = await client.list_issues(labels=[config.github.feature_marker])
+                feat_issues, subtask_issues = await asyncio.gather(
+                    client.list_issues(labels=[config.github.feature_marker]),
+                    client.list_issues(labels=[config.github.subtask_marker]),
+                )
+                seen: dict[int, dict] = {issue["number"]: issue for issue in feat_issues}
+                for issue in subtask_issues:
+                    seen.setdefault(issue["number"], issue)
+                issues = list(seen.values())
             except Exception as exc:
                 log.warning("GitHub unified poll failed: %s", exc)
                 await asyncio.sleep(poll_interval)

@@ -77,6 +77,7 @@ class GitHubConfig(BaseModel):
     runs_repo_env: str = "GITHUB_RUNS_REPO"  # optional — falls back to git remote
     clone_dir: str = ".worktrees"
     feature_marker: str = "agent"
+    subtask_marker: str = "agent-subtask"
 
     @property
     def token(self) -> str:
