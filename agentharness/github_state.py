@@ -38,6 +38,25 @@ _STATE_BLOCK_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Slug helper — single source of truth shared between synthesis and matching.
+#
+# Algorithm contract (must match the /convertforagent skill byte-for-byte):
+#   1. lowercase
+#   2. replace runs of non-[a-z0-9] with a single "-"
+#   3. strip leading/trailing "-"
+#   4. truncate to 40 characters
+#
+# Any change here affects feature_id derivation across the entire pipeline.
+# ---------------------------------------------------------------------------
+
+
+def slug_title(title: str) -> str:
+    """Return a 40-char URL-safe slug of *title* (matches /convertforagent)."""
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return s[:40]
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

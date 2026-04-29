@@ -27,13 +27,15 @@ _BRIEF_FILENAME = "brief.md"
 
 
 def _slug_from_brief(brief_content: str) -> str:
+    """Extract the H1 line from *brief_content* and slug it via slug_title."""
     import re
+    from agentharness.github_state import slug_title
+
     for line in brief_content.splitlines():
         line = line.strip()
         if line.startswith("# "):
             title = re.sub(r"^#\s*(Feature Brief:\s*)?", "", line, flags=re.IGNORECASE)
-            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-            return slug[:40]
+            return slug_title(title)
     return "untitled"
 
 

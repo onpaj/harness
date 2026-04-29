@@ -541,3 +541,40 @@ async def test_open_review_pr_body_closes_issue():
 
     _, kwargs = client.create_pull_request.call_args
     assert "Closes #42" in kwargs["body"]
+
+
+# ---------------------------------------------------------------------------
+# slug_title
+# ---------------------------------------------------------------------------
+
+
+class TestSlugTitle:
+    """The slug algorithm must match /convertforagent byte-for-byte."""
+
+    def test_lowercases_and_replaces_non_alnum_with_dash(self):
+        from agentharness.github_state import slug_title
+        assert slug_title("My Feature!") == "my-feature"
+
+    def test_strips_leading_and_trailing_dashes(self):
+        from agentharness.github_state import slug_title
+        assert slug_title("  Hello  ") == "hello"
+        assert slug_title("---X---") == "x"
+
+    def test_collapses_consecutive_separators(self):
+        from agentharness.github_state import slug_title
+        assert slug_title("foo   bar___baz") == "foo-bar-baz"
+
+    def test_truncates_to_40_chars(self):
+        from agentharness.github_state import slug_title
+        title = "a" * 60
+        result = slug_title(title)
+        assert len(result) == 40
+        assert result == "a" * 40
+
+    def test_preserves_digits(self):
+        from agentharness.github_state import slug_title
+        assert slug_title("Add v2 Endpoint") == "add-v2-endpoint"
+
+    def test_strips_unicode_to_dashes(self):
+        from agentharness.github_state import slug_title
+        assert slug_title("café résumé") == "caf-r-sum"

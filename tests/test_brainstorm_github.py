@@ -196,3 +196,23 @@ async def test_enqueue_planner_closes_queue_on_error() -> None:
                 await enqueue_planner(_FEATURE_ID, config)
 
     queue.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _slug_from_brief delegation
+# ---------------------------------------------------------------------------
+
+
+class TestSlugFromBriefDelegates:
+    def test_brief_h1_passed_through_slug_title(self):
+        from agentharness.brainstorm import _slug_from_brief
+        assert _slug_from_brief("# Feature Brief: My Cool Thing\n\nbody") == "my-cool-thing"
+
+    def test_no_h1_yields_untitled(self):
+        from agentharness.brainstorm import _slug_from_brief
+        assert _slug_from_brief("body without heading") == "untitled"
+
+    def test_round_trip_with_slug_title(self):
+        from agentharness.brainstorm import _slug_from_brief
+        from agentharness.github_state import slug_title
+        assert _slug_from_brief("# Add User Export Endpoint\n") == slug_title("Add User Export Endpoint")
