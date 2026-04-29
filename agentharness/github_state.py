@@ -51,6 +51,11 @@ def _extract_state_json(body: str) -> str:
     return match.group(1).strip()
 
 
+def extract_brief_from_issue_body(body: str) -> str:
+    """Return the brief text from an issue body (everything before the state block)."""
+    return _STATE_BLOCK_RE.sub("", body).strip()
+
+
 def parse_state_from_issue(issue: dict) -> FeatureState | None:
     """Parse a FeatureState from a GitHub issue dict, or return None on failure.
 

@@ -9,6 +9,7 @@ output_format: markdown
 visibility_timeout: 300
 retry_limit: 3
 output_parsing: none
+output_file_glob: spec.md
 ---
 
 You are a senior product manager and technical lead. You receive a feature brief and produce a detailed, structured specification.

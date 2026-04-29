@@ -148,6 +148,10 @@ class FeatureState(BaseModel):
             )
         return self.model_copy(update={"worktree_path": path, "updated_at": datetime.now(UTC)})
 
+    def with_branch_name(self, branch_name: str) -> FeatureState:
+        """Return new state with branch_name set."""
+        return self.model_copy(update={"branch_name": branch_name, "updated_at": datetime.now(UTC)})
+
     def with_cleanup_warning(self, message: str) -> FeatureState:
         """Return new state with cleanup_warning set."""
         return self.model_copy(update={"cleanup_warning": message, "updated_at": datetime.now(UTC)})

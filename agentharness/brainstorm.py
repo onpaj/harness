@@ -156,10 +156,12 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
         brief_blob = artifact_path(feature_id, "brief.md")
         await store.upload(brief_blob, brief_content)
 
+        branch_name = feature_id if config.storage_backend == "github" else None
         initial_state = FeatureState(
             feature_id=feature_id,
             status=FeatureStatus.brainstormed,
             config=PipelineConfig(max_revisions=config.defaults.max_revisions),
+            branch_name=branch_name,
         ).with_event("brief_uploaded")
         await state_mgr.create(initial_state, brief_content=brief_content)
         log.info("Uploaded brief for %s", feature_id)
@@ -169,11 +171,45 @@ async def upload_brief(feature_id: str, brief_content: str, config: Config) -> N
 
 async def enqueue_planner(feature_id: str, config: Config) -> None:
     """Enqueue the analyst task, transitioning feature to 'analyzing' status."""
+    from datetime import UTC, datetime
+
     state_mgr = create_state_manager(config)
     state = await state_mgr.update(
         feature_id,
         lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
     )
+
+    work_dir_str: str | None = None
+
+    if config.storage_backend == "github":
+        branch_name = state.branch_name or feature_id
+        brief_content = await _fetch_brief_for_feature(state, config)
+
+        store = create_artifact_store(config, feature_id=branch_name)
+        try:
+            # Ensure the clone exists and the feature branch is checked out.
+            await store._ensure_clone()
+            await store._checkout_or_create(branch_name)
+
+            # Write brief.md to the worktree so the analyst finds it immediately.
+            work_dir = store.get_work_dir()
+            (work_dir / "brief.md").write_text(brief_content, encoding="utf-8")
+            work_dir_str = str(work_dir)
+
+            # Also commit brief.md to the branch so artifact downloads succeed.
+            await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
+        finally:
+            await store.close()
+
+        # Persist branch_name and worktree_path so run_task can find the clone.
+        state = await state_mgr.update(
+            feature_id,
+            lambda s: s.model_copy(update={
+                "branch_name": branch_name,
+                "worktree_path": work_dir_str,
+                "updated_at": datetime.now(UTC),
+            }),
+        )
 
     queue = create_task_queue(config, "analyst-queue")
     try:
@@ -184,12 +220,30 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
             output_artifact=phase_artifact_path(feature_id, "spec", 1),
             agent_role="analyst",
             state_issue_number=state.state_issue_number,
+            work_dir=work_dir_str,
         )
         await queue.ensure_exists()
         await queue.send_task(task)
         log.info("Enqueued analyst task for %s", feature_id)
     finally:
         await queue.close()
+
+
+async def _fetch_brief_for_feature(state: FeatureState, config: Config) -> str:
+    """Return the feature brief text from the GitHub state issue body."""
+    if state.state_issue_number is None:
+        log.warning("No state_issue_number on state; returning empty brief")
+        return ""
+    from agentharness.github_client import GitHubClient
+    from agentharness.github_state import extract_brief_from_issue_body
+
+    client = GitHubClient.from_config(config)
+    try:
+        issue = await client.get_issue(state.state_issue_number)
+        body = issue.get("body") or ""
+        return extract_brief_from_issue_body(body)
+    finally:
+        await client.close()
 
 
 async def upload_brief_file(brief_path: Path, config: Config) -> str:

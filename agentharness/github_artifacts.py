@@ -161,6 +161,13 @@ class GitHubArtifactStore:
     # ArtifactStorage protocol
     # ------------------------------------------------------------------
 
+    async def _checkout_or_create(self, branch_name: str) -> None:
+        """Checkout *branch_name* if it exists locally/remotely, else create it."""
+        try:
+            await _run_git("-C", str(self._clone_root), "checkout", branch_name)
+        except RuntimeError:
+            await _run_git("-C", str(self._clone_root), "checkout", "-b", branch_name)
+
     async def upload(self, path: str, content: str | bytes) -> None:
         """Write *content* to *path* on the feature branch and push."""
         await self._ensure_clone()
@@ -173,13 +180,9 @@ class GitHubArtifactStore:
                 "fetch", "origin", self._feature_id,
             )
         except RuntimeError:
-            # Branch may not exist on remote yet; proceed.
             pass
 
-        await _run_git(
-            "-C", str(self._clone_root),
-            "checkout", self._feature_id,
-        )
+        await self._checkout_or_create(self._feature_id)
 
         # Write the file into the working tree.
         dest = self._clone_root / path

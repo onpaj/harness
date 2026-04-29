@@ -29,10 +29,14 @@ def _make_config(
     return config
 
 
-def _make_store() -> MagicMock:
+def _make_store(work_dir: str = "/clone/feat-my-feature") -> MagicMock:
+    from pathlib import Path
     store = MagicMock()
     store.upload = AsyncMock()
     store.close = AsyncMock()
+    store._ensure_clone = AsyncMock()
+    store._checkout_or_create = AsyncMock()
+    store.get_work_dir = MagicMock(return_value=Path(work_dir))
     return store
 
 
@@ -114,55 +118,80 @@ async def test_upload_brief_closes_store_on_error() -> None:
 
 @pytest.mark.asyncio
 async def test_enqueue_planner_sends_correct_task() -> None:
-    """enqueue_planner sends a TaskMessage with the right task_id and artifacts."""
+    """enqueue_planner creates a worktree clone, writes brief.md, and sends analyst task."""
+    import tempfile
+    from pathlib import Path
+
     config = _make_config()
     queue = _make_queue()
     state_mgr = _make_state_mgr()
 
-    with (
-        patch("agentharness.brainstorm.create_task_queue", return_value=queue) as mock_queue_factory,
-        patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
-    ):
-        await enqueue_planner(_FEATURE_ID, config)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _make_store(work_dir=tmp)
 
-    mock_queue_factory.assert_called_once_with(config, "analyst-queue")
+        with (
+            patch("agentharness.brainstorm.create_task_queue", return_value=queue) as mock_queue_factory,
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch(
+                "agentharness.brainstorm._fetch_brief_for_feature",
+                new=AsyncMock(return_value=_BRIEF_CONTENT),
+            ),
+        ):
+            await enqueue_planner(_FEATURE_ID, config)
 
-    # ensure_exists called before send_task
-    assert queue.ensure_exists.await_count == 1
-    assert queue.send_task.await_count == 1
+        mock_queue_factory.assert_called_once_with(config, "analyst-queue")
 
-    ensure_exists_order = queue.method_calls.index(call.ensure_exists())
-    send_task_order = next(
-        i
-        for i, c in enumerate(queue.method_calls)
-        if c[0] == "send_task"
-    )
-    assert ensure_exists_order < send_task_order
+        # ensure_exists called before send_task
+        assert queue.ensure_exists.await_count == 1
+        assert queue.send_task.await_count == 1
 
-    # Check the TaskMessage
-    task = queue.send_task.call_args.args[0]
-    assert task.feature_id == _FEATURE_ID
-    assert task.task_id == f"{_FEATURE_ID}-analyst"
-    assert task.agent_role == "analyst"
-    assert task.input_artifacts == [f"artifacts/{_FEATURE_ID}/brief.md"]
-    assert task.output_artifact == f"artifacts/{_FEATURE_ID}/spec.r1.md"
+        ensure_exists_order = queue.method_calls.index(call.ensure_exists())
+        send_task_order = next(
+            i
+            for i, c in enumerate(queue.method_calls)
+            if c[0] == "send_task"
+        )
+        assert ensure_exists_order < send_task_order
 
-    queue.close.assert_awaited_once()
+        # Check the TaskMessage
+        task = queue.send_task.call_args.args[0]
+        assert task.feature_id == _FEATURE_ID
+        assert task.task_id == f"{_FEATURE_ID}-analyst"
+        assert task.agent_role == "analyst"
+        assert task.input_artifacts == [f"artifacts/{_FEATURE_ID}/brief.md"]
+        assert task.output_artifact == f"artifacts/{_FEATURE_ID}/spec.r1.md"
+        assert task.work_dir == tmp
+
+        # brief.md should be written to the worktree
+        assert (Path(tmp) / "brief.md").read_text() == _BRIEF_CONTENT
+
+        queue.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_enqueue_planner_closes_queue_on_error() -> None:
     """enqueue_planner closes the queue even when ensure_exists raises."""
+    import tempfile
+
     config = _make_config()
     queue = _make_queue()
     queue.ensure_exists.side_effect = RuntimeError("label error")
     state_mgr = _make_state_mgr()
 
-    with (
-        patch("agentharness.brainstorm.create_task_queue", return_value=queue),
-        patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
-    ):
-        with pytest.raises(RuntimeError, match="label error"):
-            await enqueue_planner(_FEATURE_ID, config)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _make_store(work_dir=tmp)
+
+        with (
+            patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch(
+                "agentharness.brainstorm._fetch_brief_for_feature",
+                new=AsyncMock(return_value=_BRIEF_CONTENT),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="label error"):
+                await enqueue_planner(_FEATURE_ID, config)
 
     queue.close.assert_awaited_once()

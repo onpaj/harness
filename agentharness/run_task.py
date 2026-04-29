@@ -111,8 +111,8 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         if agent_def.output_file_glob and work_dir:
             result = _resolve_output_file(result, agent_def.output_file_glob, work_dir)
 
-        if agent_def.allowed_tools:
-            committed = await store.commit_workdir_changes(f"agent: developer implementation {task.task_id}")
+        if agent_def.allowed_tools or agent_def.output_file_glob:
+            committed = await store.commit_workdir_changes(f"agent: {agent_def.id} output {task.task_id}")
             if committed:
                 log.info("[%s] Committed workdir changes for task %s", WORKER_ID, task.task_id)
             else:

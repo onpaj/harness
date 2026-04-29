@@ -125,6 +125,7 @@ def _make_run_task_fixtures(storage_backend: str = "azure"):
 
     mock_agent_def = MagicMock()
     mock_agent_def.allowed_tools = []
+    mock_agent_def.output_file_glob = None
     mock_agent_def.system_prompt = "You are a developer agent."
     mock_agent_def.context_files = []
 
@@ -331,13 +332,13 @@ class TestRunTaskGetWorkDir:
     """Verify run_task handles both None and Path from get_work_dir correctly."""
 
     async def test_get_work_dir_none_skips_commit(self):
-        """When get_work_dir returns None, commit_workdir_changes is not called."""
+        """When get_work_dir returns None and neither allowed_tools nor output_file_glob is set, commit is not called."""
         task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result = (
             _make_run_task_fixtures("azure")
         )
         mock_store.get_work_dir = MagicMock(return_value=None)
-        # allowed_tools is empty — commit should never be called regardless
         mock_agent_def.allowed_tools = []
+        mock_agent_def.output_file_glob = None
 
         with (
             patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
@@ -373,6 +374,32 @@ class TestRunTaskGetWorkDir:
 
         mock_store.commit_workdir_changes.assert_awaited_once()
 
+    async def test_output_file_glob_triggers_commit(self, tmp_path: Path):
+        """When output_file_glob is set (no allowed_tools), commit_workdir_changes is still called."""
+        task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result = (
+            _make_run_task_fixtures("github")
+        )
+        spec_file = tmp_path / "spec.md"
+        spec_file.write_text("# Spec content")
+        mock_store.get_work_dir = MagicMock(return_value=tmp_path)
+        mock_store.commit_workdir_changes = AsyncMock(return_value=True)
+        mock_agent_def.allowed_tools = []
+        mock_agent_def.output_file_glob = "spec.md"
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
+            patch("agentharness.run_task.create_task_queue"),
+            patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
+            patch("agentharness.run_task.run_agent", return_value=mock_run_result),
+            patch("agentharness.run_task.dispatch_after_completion", return_value=None),
+        ):
+            await run_task("analyst-queue", task_json, config)
+
+        mock_store.commit_workdir_changes.assert_awaited_once()
+        content = mock_store.upload.call_args[0][1]
+        assert content == "# Spec content"
+
     async def test_get_work_dir_none_with_allowed_tools_still_calls_commit(self):
         """get_work_dir returning None doesn't prevent commit — commit is always called when allowed_tools is set."""
         task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result = (
@@ -394,3 +421,29 @@ class TestRunTaskGetWorkDir:
             await run_task("dev-queue", task_json, config)
 
         mock_store.commit_workdir_changes.assert_awaited_once()
+
+    async def test_output_file_glob_triggers_commit(self, tmp_path: Path):
+        """When output_file_glob is set (no allowed_tools), commit_workdir_changes is still called."""
+        task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result = (
+            _make_run_task_fixtures("github")
+        )
+        spec_file = tmp_path / "spec.md"
+        spec_file.write_text("# Spec content")
+        mock_store.get_work_dir = MagicMock(return_value=tmp_path)
+        mock_store.commit_workdir_changes = AsyncMock(return_value=True)
+        mock_agent_def.allowed_tools = []
+        mock_agent_def.output_file_glob = "spec.md"
+
+        with (
+            patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
+            patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
+            patch("agentharness.run_task.create_task_queue"),
+            patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
+            patch("agentharness.run_task.run_agent", return_value=mock_run_result),
+            patch("agentharness.run_task.dispatch_after_completion", return_value=None),
+        ):
+            await run_task("analyst-queue", task_json, config)
+
+        mock_store.commit_workdir_changes.assert_awaited_once()
+        content = mock_store.upload.call_args[0][1]
+        assert content == "# Spec content"

@@ -58,7 +58,6 @@ class StateChangeModal(ModalScreen["StateChangeResult | None"]):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "dismiss(None)", "Cancel"),
-        Binding("enter", "confirm", "Confirm"),
     ]
 
     def __init__(self, feature_state: FeatureState) -> None:
@@ -79,9 +78,8 @@ class StateChangeModal(ModalScreen["StateChangeResult | None"]):
             )
             yield Label("↑/↓ navigate   Enter confirm   Esc cancel", id="footer")
 
-    def action_confirm(self) -> None:
-        list_view = self.query_one("#options", ListView)
-        idx = list_view.index
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        idx = self.query_one("#options", ListView).index
         if idx is None or idx < 0 or idx >= len(self._options):
             return
         target_status, mode, _ = self._options[idx]
