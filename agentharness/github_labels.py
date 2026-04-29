@@ -13,6 +13,7 @@ from agentharness.models import FeatureStatus
 FEAT_BRAINSTORMING = "feat:brainstorming"
 FEAT_BRAINSTORMED = "feat:brainstormed"
 FEAT_ANALYZING = "feat:analyzing"
+FEAT_QUESTIONING = "feat:questioning"
 FEAT_ARCHITECTING = "feat:architecting"
 FEAT_DESIGNING = "feat:designing"
 FEAT_PLANNING = "feat:planning"
@@ -26,6 +27,7 @@ FEAT_STATUS_LABELS: frozenset[str] = frozenset({
     FEAT_BRAINSTORMING,
     FEAT_BRAINSTORMED,
     FEAT_ANALYZING,
+    FEAT_QUESTIONING,
     FEAT_ARCHITECTING,
     FEAT_DESIGNING,
     FEAT_PLANNING,
@@ -66,6 +68,7 @@ QUEUE_DESIGNER = "queue:designer"
 QUEUE_PLANNER = "queue:planner"
 QUEUE_DEVELOPER = "queue:developer"
 QUEUE_REVIEWER = "queue:reviewer"
+QUEUE_PRODUCT = "queue:product"
 
 QUEUE_NAME_TO_LABEL: dict[str, str] = {
     "analyst-queue": QUEUE_ANALYST,
@@ -74,6 +77,7 @@ QUEUE_NAME_TO_LABEL: dict[str, str] = {
     "planner-queue": QUEUE_PLANNER,
     "developer-queue": QUEUE_DEVELOPER,
     "review-queue": QUEUE_REVIEWER,
+    "product-queue": QUEUE_PRODUCT,
 }
 
 LABEL_TO_QUEUE_NAME: dict[str, str] = {v: k for k, v in QUEUE_NAME_TO_LABEL.items()}
@@ -105,6 +109,7 @@ FEATURE_STATUS_TO_LABEL: dict[FeatureStatus, str] = {
     FeatureStatus.brainstorming: FEAT_BRAINSTORMING,
     FeatureStatus.brainstormed: FEAT_BRAINSTORMED,
     FeatureStatus.analyzing: FEAT_ANALYZING,
+    FeatureStatus.questioning: FEAT_QUESTIONING,
     FeatureStatus.architecting: FEAT_ARCHITECTING,
     FeatureStatus.designing: FEAT_DESIGNING,
     FeatureStatus.planning: FEAT_PLANNING,

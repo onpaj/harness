@@ -288,3 +288,36 @@ class TestStorageFactoriesThreadFeatureMarker:
 
         assert queue._feature_marker == "wired-through"
         assert state._feature_marker == "wired-through"
+
+
+class TestMaxAnalystIterationsConfig:
+    def test_default_value_is_two(self):
+        from agentharness.config import Config
+        cfg = Config()
+        assert cfg.max_analyst_iterations == 2
+
+    def test_load_config_uses_default_when_absent(self, tmp_path):
+        cfg_path = write_config(tmp_path, {
+            "storage_backend": "azure",
+            "queues": {},
+        })
+        cfg = load_config(cfg_path)
+        assert cfg.max_analyst_iterations == 2
+
+    def test_load_config_reads_explicit_value(self, tmp_path):
+        cfg_path = write_config(tmp_path, {
+            "storage_backend": "azure",
+            "queues": {},
+            "max_analyst_iterations": 5,
+        })
+        cfg = load_config(cfg_path)
+        assert cfg.max_analyst_iterations == 5
+
+    def test_load_config_zero_disables_loop(self, tmp_path):
+        cfg_path = write_config(tmp_path, {
+            "storage_backend": "azure",
+            "queues": {},
+            "max_analyst_iterations": 0,
+        })
+        cfg = load_config(cfg_path)
+        assert cfg.max_analyst_iterations == 0

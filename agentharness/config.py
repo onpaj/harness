@@ -111,6 +111,7 @@ class Config(BaseModel):
     use_worktrees: bool = False
     worktree_base_dir: str = ".worktrees"
     worktree_base_branch: str | None = None
+    max_analyst_iterations: int = 2
 
     def queue_names(self) -> list[str]:
         return list(self.queues.keys())
