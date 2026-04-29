@@ -45,6 +45,9 @@ def _make_state_mgr(feature_id: str = _FEATURE_ID) -> MagicMock:
     from agentharness.models import FeatureState, FeatureStatus
     mgr = MagicMock()
     mgr.create = AsyncMock()
+    mgr.get = AsyncMock(
+        return_value=FeatureState(feature_id=feature_id, status=FeatureStatus.brainstormed)
+    )
     mgr.update = AsyncMock(
         return_value=FeatureState(feature_id=feature_id, status=FeatureStatus.analyzing)
     )
@@ -373,3 +376,123 @@ class TestConvertRawIssue:
         gh_client.close.assert_awaited_once()
         store.close.assert_awaited_once()
         state_mgr.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# enqueue_planner — GitHub raw-issue pre-flight
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueuePlannerPreflight:
+    @pytest.mark.asyncio
+    async def test_github_raw_feature_triggers_conversion_then_enqueues(self):
+        """When state_mgr.get raises KeyError on GitHub, _convert_raw_issue runs first."""
+        import tempfile
+
+        config = _make_config(storage_backend="github")
+        config.github.feature_marker = "agent"
+
+        queue = _make_queue()
+        state_mgr = _make_state_mgr()
+        # Pre-flight .get() raises KeyError — raw feature
+        state_mgr.get = AsyncMock(side_effect=KeyError("not found"))
+
+        convert = AsyncMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _make_store(work_dir=tmp)
+            with (
+                patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+                patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+                patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+                patch(
+                    "agentharness.brainstorm._fetch_brief_for_feature",
+                    new=AsyncMock(return_value=_BRIEF_CONTENT),
+                ),
+                patch("agentharness.brainstorm._convert_raw_issue", new=convert),
+            ):
+                await enqueue_planner(_FEATURE_ID, config)
+
+        # Pre-flight ran exactly once, with the right args
+        convert.assert_awaited_once_with(_FEATURE_ID, config)
+        # Existing enqueue path still ran (analyst task sent)
+        queue.send_task.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_github_initialized_feature_skips_conversion(self):
+        """When state_mgr.get succeeds, _convert_raw_issue is NOT called."""
+        import tempfile
+
+        config = _make_config(storage_backend="github")
+        config.github.feature_marker = "agent"
+
+        queue = _make_queue()
+        state_mgr = _make_state_mgr()
+        # Pre-flight .get() succeeds — feature already initialized
+        from agentharness.models import FeatureState, FeatureStatus
+        state_mgr.get = AsyncMock(
+            return_value=FeatureState(feature_id=_FEATURE_ID, status=FeatureStatus.brainstormed)
+        )
+
+        convert = AsyncMock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _make_store(work_dir=tmp)
+            with (
+                patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+                patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+                patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+                patch(
+                    "agentharness.brainstorm._fetch_brief_for_feature",
+                    new=AsyncMock(return_value=_BRIEF_CONTENT),
+                ),
+                patch("agentharness.brainstorm._convert_raw_issue", new=convert),
+            ):
+                await enqueue_planner(_FEATURE_ID, config)
+
+        convert.assert_not_awaited()
+        queue.send_task.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_azure_backend_does_not_run_preflight(self):
+        """Azure path must not invoke _convert_raw_issue or call state_mgr.get."""
+        config = _make_config(storage_backend="azure")
+        queue = _make_queue()
+        state_mgr = _make_state_mgr()
+        state_mgr.get = AsyncMock()  # should not be called
+
+        convert = AsyncMock()
+
+        with (
+            patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.brainstorm._convert_raw_issue", new=convert),
+        ):
+            await enqueue_planner(_FEATURE_ID, config)
+
+        convert.assert_not_awaited()
+        state_mgr.get.assert_not_awaited()
+        queue.send_task.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_value_error_from_convert_propagates_to_caller(self):
+        """ValueError ('no raw issue found') must propagate (TUI surfaces it)."""
+        config = _make_config(storage_backend="github")
+        config.github.feature_marker = "agent"
+
+        queue = _make_queue()
+        state_mgr = _make_state_mgr()
+        state_mgr.get = AsyncMock(side_effect=KeyError("not found"))
+
+        convert = AsyncMock(side_effect=ValueError("no raw issue found for 'feat-x'"))
+
+        with (
+            patch("agentharness.brainstorm.create_task_queue", return_value=queue),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.brainstorm._convert_raw_issue", new=convert),
+        ):
+            with pytest.raises(ValueError, match="no raw issue found"):
+                await enqueue_planner(_FEATURE_ID, config)
+
+        convert.assert_awaited_once()
+        queue.send_task.assert_not_awaited()

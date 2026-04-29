@@ -180,6 +180,13 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
     from datetime import UTC, datetime
 
     state_mgr = create_state_manager(config)
+
+    if config.storage_backend == "github":
+        try:
+            await state_mgr.get(feature_id)
+        except KeyError:
+            await _convert_raw_issue(feature_id, config)
+
     state = await state_mgr.update(
         feature_id,
         lambda s: s.with_status(FeatureStatus.analyzing).with_event("pipeline_started"),
