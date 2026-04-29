@@ -186,39 +186,75 @@ def _build_command(agent_def: AgentDefinition, prompt: str) -> list[str]:
 
 
 def _parse_json_output(raw: str, agent_id: str) -> tuple[str, TokenUsage | None]:
-    """Parse claude --output-format json stdout. Returns (text_content, token_usage)."""
-    text = raw.strip()
-    if not text:
+    """Parse claude --output-format stream-json stdout.
+
+    Walks every NDJSON line, summing `assistant.message.usage` across parent and
+    sidechain (Task subagent) turns. Final text is taken from the `result` event;
+    on truncation, falls back to the last `assistant` event's text content.
+
+    Returns:
+        (text, usage):
+            text  — final result text, or best-effort assistant content if truncated.
+            usage — aggregated TokenUsage across parent + all sidechain assistant
+                    events, or None if no parseable JSON lines or zero total.
+    """
+    if not raw.strip():
         return "", None
 
-    data: dict | None = None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        for line in reversed(text.splitlines()):
-            line = line.strip()
-            if line:
-                try:
-                    data = json.loads(line)
-                    break
-                except json.JSONDecodeError:
-                    pass
+    tokens = TokenUsage()
+    result_text: str | None = None
+    last_assistant_text = ""
+    any_json = False
+    assistant_turns = 0
 
-    if data is None:
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            log.debug("Agent %r: skipping malformed stream line", agent_id)
+            continue
+        any_json = True
+
+        event_type = event.get("type")
+        if event_type == "assistant":
+            assistant_turns += 1
+            message = event.get("message") or {}
+            usage = message.get("usage") or {}
+            tokens = tokens + TokenUsage(
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
+                cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            )
+            content = message.get("content") or []
+            texts = [
+                b.get("text", "")
+                for b in content
+                if b.get("type") == "text" and b.get("text")
+            ]
+            if texts:
+                last_assistant_text = texts[-1]
+
+        elif event_type == "result":
+            result_text = str(event.get("result", ""))
+
+    if not any_json:
         log.warning("Agent %r: output is not JSON, treating as plain text", agent_id)
         return raw, None
 
-    result_text = data.get("result", raw)
-
-    usage = data.get("usage") or {}
-    tokens = TokenUsage(
-        input_tokens=data.get("total_input_tokens", usage.get("input_tokens", 0)),
-        output_tokens=data.get("total_output_tokens", usage.get("output_tokens", 0)),
-        cache_creation_tokens=data.get("total_cache_creation_input_tokens", usage.get("cache_creation_input_tokens", 0)),
-        cache_read_tokens=data.get("total_cache_read_input_tokens", usage.get("cache_read_input_tokens", 0)),
+    text = result_text if result_text is not None else last_assistant_text
+    log.debug(
+        "Agent %r: parsed %d assistant turns, tokens=in=%d out=%d cache_c=%d cache_r=%d",
+        agent_id,
+        assistant_turns,
+        tokens.input_tokens,
+        tokens.output_tokens,
+        tokens.cache_creation_tokens,
+        tokens.cache_read_tokens,
     )
 
     if tokens.total == 0:
-        return result_text, None
-
-    return result_text, tokens
+        return text, None
+    return text, tokens
