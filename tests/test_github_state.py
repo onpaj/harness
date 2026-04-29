@@ -578,3 +578,85 @@ class TestSlugTitle:
     def test_strips_unicode_to_dashes(self):
         from agentharness.github_state import slug_title
         assert slug_title("café résumé") == "caf-r-sum"
+
+
+# ---------------------------------------------------------------------------
+# _synthesize_raw_state
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizeRawState:
+    def _raw_issue(
+        self,
+        *,
+        number: int = 7,
+        title: str = "Add User Export Endpoint",
+        body: str = "Original description",
+        created_at: str = "2026-04-25T10:00:00Z",
+        updated_at: str = "2026-04-26T11:00:00Z",
+    ) -> dict:
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "labels": [{"name": TEST_FEATURE_MARKER}],
+        }
+
+    def test_feature_id_uses_slug_title_with_feat_prefix(self):
+        from agentharness.github_state import _synthesize_raw_state, slug_title
+        state = _synthesize_raw_state(self._raw_issue(title="Add User Export Endpoint"))
+        assert state.feature_id == f"feat-{slug_title('Add User Export Endpoint')}"
+        assert state.feature_id == "feat-add-user-export-endpoint"
+
+    def test_status_is_brainstormed(self):
+        from agentharness.github_state import _synthesize_raw_state
+        from agentharness.models import FeatureStatus
+        state = _synthesize_raw_state(self._raw_issue())
+        assert state.status == FeatureStatus.brainstormed
+
+    def test_state_issue_number_set(self):
+        from agentharness.github_state import _synthesize_raw_state
+        state = _synthesize_raw_state(self._raw_issue(number=42))
+        assert state.state_issue_number == 42
+
+    def test_branch_name_equals_feature_id(self):
+        from agentharness.github_state import _synthesize_raw_state
+        state = _synthesize_raw_state(self._raw_issue(title="Cool Thing"))
+        assert state.branch_name == state.feature_id == "feat-cool-thing"
+
+    def test_history_phases_tasks_are_empty(self):
+        from agentharness.github_state import _synthesize_raw_state
+        state = _synthesize_raw_state(self._raw_issue())
+        assert state.history == []
+        assert state.phases == {}
+        assert state.tasks == []
+
+    def test_is_raw_property_true_for_synthesized(self):
+        from agentharness.github_state import _synthesize_raw_state
+        state = _synthesize_raw_state(self._raw_issue())
+        assert state.is_raw is True
+
+    def test_timestamps_taken_from_issue(self):
+        from datetime import datetime, timezone
+        from agentharness.github_state import _synthesize_raw_state
+        state = _synthesize_raw_state(
+            self._raw_issue(
+                created_at="2026-04-25T10:00:00Z",
+                updated_at="2026-04-26T11:00:00Z",
+            )
+        )
+        assert state.created_at == datetime(2026, 4, 25, 10, 0, 0, tzinfo=timezone.utc)
+        assert state.updated_at == datetime(2026, 4, 26, 11, 0, 0, tzinfo=timezone.utc)
+
+    def test_handles_missing_timestamps_gracefully(self):
+        """Issue dicts truncated by list_issues may lack created_at/updated_at."""
+        from agentharness.github_state import _synthesize_raw_state
+        issue = self._raw_issue()
+        issue.pop("created_at")
+        issue.pop("updated_at")
+        # Should not raise; falls back to model defaults
+        state = _synthesize_raw_state(issue)
+        assert state.created_at is not None
+        assert state.updated_at is not None

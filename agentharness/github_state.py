@@ -130,6 +130,46 @@ def _feature_id_from_issue(issue: dict) -> str | None:
     return state.feature_id if state else None
 
 
+def _parse_iso_timestamp(value: str | None) -> "datetime | None":
+    """Parse a GitHub ISO-8601 timestamp into a UTC datetime, or None."""
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    cleaned = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(cleaned)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _synthesize_raw_state(issue: dict) -> FeatureState:
+    """Build a synthetic FeatureState for a labelled issue without a state block.
+
+    Used by ``GitHubStateManager.list_features`` to surface raw issues in the TUI.
+    The resulting state has ``is_raw is True`` (empty history) — that flag is the
+    canonical signal that the issue still needs ``_convert_raw_issue`` before it
+    can transition out of ``brainstormed``.
+    """
+    title = issue.get("title") or ""
+    feature_id = f"feat-{slug_title(title)}"
+
+    fields: dict = {
+        "feature_id": feature_id,
+        "status": FeatureStatus.brainstormed,
+        "state_issue_number": int(issue["number"]),
+        "branch_name": feature_id,
+    }
+    created_at = _parse_iso_timestamp(issue.get("created_at"))
+    if created_at is not None:
+        fields["created_at"] = created_at
+    updated_at = _parse_iso_timestamp(issue.get("updated_at"))
+    if updated_at is not None:
+        fields["updated_at"] = updated_at
+
+    return FeatureState(**fields)
+
+
 # ---------------------------------------------------------------------------
 # GitHubStateManager
 # ---------------------------------------------------------------------------
