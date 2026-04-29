@@ -473,7 +473,9 @@ async def test_list_features_synthesizes_raw_issue_without_state_block():
 async def test_list_features_returns_both_raw_and_initialized_features():
     """Both raw and initialized features appear in list_features results."""
     # Arrange
+    # Create initialized state with history to distinguish it from raw
     initialized_state = _make_state("feat-initialized")
+    initialized_state = initialized_state.with_event("brief_uploaded")
     initialized = _make_issue(initialized_state, number=20)
     raw = _make_raw_issue(number=21, title="Raw Thing")
     client = _mock_client()
@@ -515,6 +517,7 @@ async def test_list_features_dedup_raw_vs_initialized_keeps_newest():
     """Raw and initialized issues with the same slug → newest wins per existing rule."""
     # Arrange
     initialized_state = _make_state("feat-shared-slug")
+    initialized_state = initialized_state.with_event("brief_uploaded")
     initialized = _make_issue(initialized_state, number=2)
     raw = _make_raw_issue(number=8, title="Shared Slug")  # slugs to feat-shared-slug
     client = _mock_client()
