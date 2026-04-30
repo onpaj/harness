@@ -73,6 +73,7 @@ async def _implement_with_epic_check(feature_id: str, config) -> None:
 
     finally:
         await gh_client.close()
+        await state_mgr.close()
 
 
 @click.group()

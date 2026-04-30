@@ -723,8 +723,10 @@ class TestConvertRawIssueEpic:
             # Must not raise
             await _convert_raw_issue("feat-task-two", config)
 
-        # Branch creation skipped for child 2
+        # Branch creation skipped for child 2, so get_default_branch and get_ref not called
         gh_client.create_ref.assert_not_awaited()
+        gh_client.get_default_branch.assert_not_awaited()
+        gh_client.get_ref.assert_not_awaited()
 
         # State has correct epic fields, branch_name is epic_branch
         patched_state = state_mgr.patch_existing_issue.call_args.args[1]
@@ -764,6 +766,8 @@ class TestConvertRawIssueEpic:
             with pytest.raises(ValueError, match="not done"):
                 await _convert_raw_issue("feat-task-two", config)
 
-        # Branch creation skipped, and patch_existing_issue never called
+        # Branch creation skipped, so get_default_branch and get_ref not called
         gh_client.create_ref.assert_not_awaited()
+        gh_client.get_default_branch.assert_not_awaited()
+        gh_client.get_ref.assert_not_awaited()
         state_mgr.patch_existing_issue.assert_not_awaited()

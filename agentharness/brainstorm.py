@@ -325,12 +325,11 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         store = create_artifact_store(config, feature_id=branch_name)
 
         # 4. Create branch (or verify previous sibling done)
-        default_branch = await gh_client.get_default_branch()
-        ref = await gh_client.get_ref(f"heads/{default_branch}")
-        sha = ref["object"]["sha"]
-
         if epic_position is None or epic_position == 1:
             # Non-epic or first epic child: create the branch
+            default_branch = await gh_client.get_default_branch()
+            ref = await gh_client.get_ref(f"heads/{default_branch}")
+            sha = ref["object"]["sha"]
             try:
                 await gh_client.create_ref(f"refs/heads/{branch_name}", sha)
                 log.info("Created branch %s", branch_name)

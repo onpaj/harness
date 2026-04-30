@@ -36,6 +36,7 @@ async def test_implement_no_existing_state_proceeds() -> None:
     # Mock state manager that raises KeyError
     mock_state_mgr = MagicMock()
     mock_state_mgr.get = AsyncMock(side_effect=KeyError("not found"))
+    mock_state_mgr.close = AsyncMock()
 
     # Mock GitHub client
     mock_gh_client = MagicMock()
@@ -54,6 +55,7 @@ async def test_implement_no_existing_state_proceeds() -> None:
     mock_state_mgr.get.assert_called_once_with("feat-test-123")
     mock_enqueue_planner.assert_called_once_with("feat-test-123", config)
     mock_gh_client.close.assert_called_once()
+    mock_state_mgr.close.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -68,6 +70,7 @@ async def test_implement_non_epic_feature_proceeds() -> None:
 
     mock_state_mgr = MagicMock()
     mock_state_mgr.get = AsyncMock(return_value=mock_state)
+    mock_state_mgr.close = AsyncMock()
 
     mock_gh_client = MagicMock()
     mock_gh_client.close = AsyncMock()
@@ -87,6 +90,7 @@ async def test_implement_non_epic_feature_proceeds() -> None:
     mock_gh_client.get_issue.assert_not_called()
     mock_enqueue_planner.assert_called_once_with("feat-test-123", config)
     mock_gh_client.close.assert_called_once()
+    mock_state_mgr.close.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -101,6 +105,7 @@ async def test_implement_epic_paused_exits() -> None:
 
     mock_state_mgr = MagicMock()
     mock_state_mgr.get = AsyncMock(return_value=mock_state)
+    mock_state_mgr.close = AsyncMock()
 
     # Mock parent issue with epic:paused label
     parent_issue = {
@@ -135,8 +140,9 @@ async def test_implement_epic_paused_exits() -> None:
     # Should NOT have called enqueue_planner
     mock_enqueue_planner.assert_not_called()
 
-    # Should have closed client
+    # Should have closed both client and state_mgr
     mock_gh_client.close.assert_called_once()
+    mock_state_mgr.close.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -151,6 +157,7 @@ async def test_implement_epic_not_paused_proceeds() -> None:
 
     mock_state_mgr = MagicMock()
     mock_state_mgr.get = AsyncMock(return_value=mock_state)
+    mock_state_mgr.close = AsyncMock()
 
     # Mock parent issue WITHOUT epic:paused label
     parent_issue = {
@@ -177,6 +184,7 @@ async def test_implement_epic_not_paused_proceeds() -> None:
     mock_gh_client.get_issue.assert_called_once_with(5)
     mock_enqueue_planner.assert_called_once_with("feat-test-123", config)
     mock_gh_client.close.assert_called_once()
+    mock_state_mgr.close.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -191,6 +199,7 @@ async def test_implement_epic_parent_api_error_proceeds() -> None:
 
     mock_state_mgr = MagicMock()
     mock_state_mgr.get = AsyncMock(return_value=mock_state)
+    mock_state_mgr.close = AsyncMock()
 
     # Mock GitHub client that raises GitHubApiError on get_issue
     api_error = GitHubApiError(404, "Issue not found")
@@ -217,5 +226,6 @@ async def test_implement_epic_parent_api_error_proceeds() -> None:
     # Should STILL call enqueue_planner (doesn't block)
     mock_enqueue_planner.assert_called_once_with("feat-test-123", config)
 
-    # Should have closed client
+    # Should have closed both client and state_mgr
     mock_gh_client.close.assert_called_once()
+    mock_state_mgr.close.assert_called_once()
