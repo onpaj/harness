@@ -13,8 +13,67 @@ from rich import box
 
 from agentharness.config import load_config
 from agentharness.storage import create_state_manager
+from agentharness.github_labels import EPIC_PAUSED
+from agentharness.github_client import GitHubClient, GitHubApiError
+from agentharness.brainstorm import enqueue_planner
 
 console = Console()
+
+
+def _print_started(feature_id: str) -> None:
+    """Print pipeline start confirmation."""
+    console.print(f"[green]Pipeline started:[/green] {feature_id}")
+    console.print(f"Monitor: [bold]agentharness watch[/bold]")
+
+
+async def _implement_with_epic_check(feature_id: str, config) -> None:
+    """Check if feature is an epic child with paused parent before enqueuing."""
+    # GitHub backend only
+    if config.storage_backend != "github":
+        await enqueue_planner(feature_id, config)
+        _print_started(feature_id)
+        return
+
+    state_mgr = create_state_manager(config)
+    gh_client = GitHubClient.from_config(config)
+
+    try:
+        # Try to load existing state
+        try:
+            state = await state_mgr.get(feature_id)
+        except KeyError:
+            # Raw issue with no state yet — enqueue_planner handles preconditions
+            await enqueue_planner(feature_id, config)
+            _print_started(feature_id)
+            return
+
+        # Check if this is an epic child
+        if state.epic_parent is not None:
+            try:
+                parent_issue = await gh_client.get_issue(state.epic_parent)
+            except GitHubApiError as exc:
+                console.print(f"[yellow]Warning:[/yellow] Could not check parent epic #{state.epic_parent}: {exc.message}")
+                console.print("Proceeding anyway — run agentharness status to check epic state.")
+                # Don't block — proceed to enqueue_planner
+            else:
+                parent_labels = [label["name"] for label in parent_issue.get("labels", [])]
+
+                if EPIC_PAUSED in parent_labels:
+                    console.print("[red]Epic is paused[/red] — a child feature has failed.")
+                    console.print(f"Parent epic: #{state.epic_parent}")
+                    console.print(
+                        "To retry: fix the failing child's brief, remove the epic:paused label from "
+                        f"#{state.epic_parent}, then re-run this command."
+                    )
+                    raise SystemExit(1)
+
+        # Non-epic or parent is not paused — proceed
+        await enqueue_planner(feature_id, config)
+        _print_started(feature_id)
+
+    finally:
+        await gh_client.close()
+        await state_mgr.close()
 
 
 @click.group()
@@ -58,10 +117,7 @@ def submit(ctx: click.Context, brief_file: str) -> None:
 def implement(ctx: click.Context, feature_id: str) -> None:
     """Start the pipeline for an uploaded feature brief."""
     config = load_config(ctx.obj.get("config_path"))
-    from agentharness.brainstorm import enqueue_planner
-    asyncio.run(enqueue_planner(feature_id, config))
-    console.print(f"[green]Pipeline started:[/green] {feature_id}")
-    console.print(f"Monitor: [bold]agentharness watch[/bold]")
+    asyncio.run(_implement_with_epic_check(feature_id, config))
 
 
 @main.command("observe")

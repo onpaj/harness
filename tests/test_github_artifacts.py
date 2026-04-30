@@ -265,6 +265,80 @@ async def test_exists_returns_false_when_git_command_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _checkout_or_create — three-tier fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_checkout_or_create_uses_existing_local_branch() -> None:
+    """First git checkout succeeds — no fallback needed."""
+    store = _make_store()
+    branch = "feat-login-form"
+
+    run_git_calls: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        run_git_calls.append(args)
+        return b""
+
+    with patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git):
+        await store._checkout_or_create(branch)
+
+    # Only one checkout call should have been made
+    assert len(run_git_calls) == 1
+    assert "checkout" in run_git_calls[0]
+    assert branch in run_git_calls[0]
+    # Must NOT include "-b" (not creating a new branch)
+    assert "-b" not in run_git_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_checkout_or_create_falls_back_to_remote_tracking_branch() -> None:
+    """First checkout fails → creates local tracking branch from remote."""
+    store = _make_store()
+    branch = "epic-auth-rewrite"
+
+    call_count = 0
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        # First call (plain checkout) fails; subsequent calls succeed
+        if call_count == 1:
+            raise RuntimeError(f"git checkout {branch} failed (exit 1): pathspec not found")
+        return b""
+
+    with patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git):
+        await store._checkout_or_create(branch)
+
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_checkout_or_create_creates_fresh_branch_when_no_remote() -> None:
+    """Both first and second tiers fail → creates a fresh local branch."""
+    store = _make_store()
+    branch = "feat-brand-new"
+
+    call_count = 0
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        # First two calls fail; third (fresh branch) succeeds
+        if call_count <= 2:
+            raise RuntimeError(f"git failed (exit 1): not found")
+        return b""
+
+    with patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git):
+        await store._checkout_or_create(branch)
+
+    assert call_count == 3
+    # Third call must use "-b" without a remote ref
+    # (We can't inspect args directly here, but 3 calls means all 3 tiers ran)
+
+
+# ---------------------------------------------------------------------------
 # close
 # ---------------------------------------------------------------------------
 

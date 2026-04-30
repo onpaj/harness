@@ -115,6 +115,10 @@ class FeatureState(BaseModel):
     state_issue_number: int | None = None
     pr_number: int | None = None
     pr_url: str | None = None
+    epic_parent: int | None = None
+    epic_position: int | None = None
+    epic_branch: str | None = None
+    epic_total: int | None = None
 
     def with_event(self, event: str, **kwargs: Any) -> FeatureState:
         """Return new state with appended history event (immutable update)."""

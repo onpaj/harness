@@ -280,8 +280,8 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
     expected_slug = feature_id.removeprefix("feat-")
 
     gh_client = GitHubClient.from_config(config)
-    store = create_artifact_store(config, feature_id=feature_id)
     state_mgr = create_state_manager(config)
+    store = None
     try:
         # 1. Find the matching issue
         issues = await gh_client.list_issues(labels=[config.github.feature_marker])
@@ -300,28 +300,79 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         issue_number = int(match["number"])
         brief_content = match.get("body") or ""
 
-        # 2. Create branch (tolerate 'already exists')
-        default_branch = await gh_client.get_default_branch()
-        ref = await gh_client.get_ref(f"heads/{default_branch}")
-        sha = ref["object"]["sha"]
-        try:
-            await gh_client.create_ref(f"refs/heads/{feature_id}", sha)
-            log.info("Created feature branch %s", feature_id)
-        except GitHubApiError as exc:
-            if exc.status_code == 422:
-                log.info("Feature branch %s already exists — skipping creation", feature_id)
-            else:
-                raise
+        # 2. Detect epic parent (sub-issue relationship)
+        parent_issue = await gh_client.get_parent_issue(issue_number)
+        epic_parent: int | None = None
+        epic_position: int | None = None
+        epic_branch: str | None = None
+        branch_name = feature_id  # default for non-epic features
+        sub_issues: list[dict] = []
 
-        # 3. Upload brief
+        if parent_issue is not None:
+            parent_number = int(parent_issue["number"])
+            epic_branch = "epic-" + slug_title(parent_issue.get("title") or "")
+            branch_name = epic_branch
+            epic_parent = parent_number
+
+            sub_issues = await gh_client.list_sub_issues(parent_number)
+            sub_numbers = [int(s["number"]) for s in sub_issues]
+            try:
+                epic_position = sub_numbers.index(issue_number) + 1
+            except ValueError:
+                epic_position = len(sub_numbers) + 1  # fallback: treat as last
+
+        # 3. Create store with correct branch (branch_name now known)
+        store = create_artifact_store(config, feature_id=branch_name)
+
+        # 4. Create branch (or verify previous sibling done)
+        if epic_position is None or epic_position == 1:
+            # Non-epic or first epic child: create the branch
+            default_branch = await gh_client.get_default_branch()
+            ref = await gh_client.get_ref(f"heads/{default_branch}")
+            sha = ref["object"]["sha"]
+            try:
+                await gh_client.create_ref(f"refs/heads/{branch_name}", sha)
+                log.info("Created branch %s", branch_name)
+            except GitHubApiError as exc:
+                if exc.status_code == 422:
+                    log.info("Branch %s already exists — skipping creation", branch_name)
+                else:
+                    raise
+        else:
+            # Epic child N>1: verify previous sibling is done (reuse sub_issues from above)
+            prev_sibling = sub_issues[epic_position - 2]  # 0-indexed, previous sibling
+            prev_title = prev_sibling.get("title") or ""
+            prev_feature_id = f"feat-{slug_title(prev_title)}"
+            try:
+                prev_state = await state_mgr.get(prev_feature_id)
+                is_done = prev_state.status == FeatureStatus.done
+            except KeyError:
+                is_done = False
+
+            if not is_done:
+                raise ValueError(
+                    f"Epic child #{issue_number} (position {epic_position}) cannot start: "
+                    f"previous sibling {prev_feature_id!r} is not done"
+                )
+            log.info(
+                "Epic child #%d (position %d): previous sibling %s is done — skipping branch creation",
+                issue_number, epic_position, prev_feature_id,
+            )
+
+        # 5. Upload brief
         await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
 
-        # 4. Build state and patch the issue
+        # 6. Build state and patch the issue
+        epic_total: int | None = len(sub_issues) if sub_issues else None
         state = FeatureState(
             feature_id=feature_id,
             status=FeatureStatus.brainstormed,
             state_issue_number=issue_number,
-            branch_name=feature_id,
+            branch_name=branch_name,
+            epic_parent=epic_parent,
+            epic_position=epic_position,
+            epic_branch=epic_branch,
+            epic_total=epic_total,
             config=PipelineConfig(
                 max_revisions=config.defaults.max_revisions,
                 max_analyst_iterations=config.max_analyst_iterations,
@@ -331,7 +382,8 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         log.info("Auto-converted raw issue #%d → feature %s", issue_number, feature_id)
     finally:
         await gh_client.close()
-        await store.close()
+        if store is not None:
+            await store.close()
         await state_mgr.close()
 
 

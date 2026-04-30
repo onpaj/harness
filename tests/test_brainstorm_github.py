@@ -305,6 +305,7 @@ class TestConvertRawIssue:
         gh_client.list_issues.return_value = [
             TestConvertRawIssue._raw_issue(number=7, title="Add Export Endpoint")
         ]
+        gh_client.get_parent_issue.return_value = None
         gh_client.get_default_branch.return_value = "main"
         gh_client.get_ref.return_value = {"object": {"sha": "abc123"}}
         gh_client.create_ref = AsyncMock(return_value={"ref": "refs/heads/feat-add-export-endpoint"})
@@ -358,6 +359,7 @@ class TestConvertRawIssue:
         gh_client.list_issues.return_value = [
             TestConvertRawIssue._raw_issue(number=7, title="Already Exists")
         ]
+        gh_client.get_parent_issue.return_value = None
         gh_client.get_default_branch.return_value = "main"
         gh_client.get_ref.return_value = {"object": {"sha": "abc123"}}
         gh_client.create_ref.side_effect = GitHubApiError(422, "Reference already exists")
@@ -409,6 +411,7 @@ class TestConvertRawIssue:
         gh_client.list_issues.return_value = [
             TestConvertRawIssue._raw_issue(number=7, title="Boom Title")
         ]
+        gh_client.get_parent_issue.return_value = None
         gh_client.get_default_branch.return_value = "main"
         gh_client.get_ref.return_value = {"object": {"sha": "abc123"}}
         gh_client.create_ref = AsyncMock(return_value={})
@@ -550,3 +553,221 @@ class TestEnqueuePlannerPreflight:
 
         convert.assert_awaited_once()
         queue.send_task.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _convert_raw_issue — epic branch parameterisation
+# ---------------------------------------------------------------------------
+
+
+class TestConvertRawIssueEpic:
+    """Tests for epic-child branch logic in _convert_raw_issue."""
+
+    @staticmethod
+    def _raw_issue(*, number: int, title: str, body: str = "Issue body.") -> dict:
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "created_at": "2026-04-30T10:00:00Z",
+            "updated_at": "2026-04-30T10:00:00Z",
+            "labels": [{"name": "agent"}],
+        }
+
+    @staticmethod
+    def _make_gh_client(
+        *,
+        issue_number: int = 10,
+        issue_title: str = "My Feature",
+        parent_issue: dict | None = None,
+        sub_issues: list[dict] | None = None,
+    ) -> AsyncMock:
+        gh_client = AsyncMock()
+        gh_client.list_issues.return_value = [
+            TestConvertRawIssueEpic._raw_issue(number=issue_number, title=issue_title)
+        ]
+        gh_client.get_parent_issue.return_value = parent_issue
+        gh_client.list_sub_issues.return_value = sub_issues or []
+        gh_client.get_default_branch.return_value = "main"
+        gh_client.get_ref.return_value = {"object": {"sha": "deadbeef"}}
+        gh_client.create_ref = AsyncMock(return_value={})
+        gh_client.close = AsyncMock()
+        return gh_client
+
+    @staticmethod
+    def _make_state_mgr_for_epic(*, prev_status: str | None = None) -> MagicMock:
+        from agentharness.models import FeatureState, FeatureStatus
+
+        state_mgr = MagicMock()
+        state_mgr.patch_existing_issue = AsyncMock()
+        state_mgr.close = AsyncMock()
+        if prev_status is not None:
+            prev_state = FeatureState(
+                feature_id="feat-task-one",
+                status=FeatureStatus(prev_status),
+            )
+            state_mgr.get = AsyncMock(return_value=prev_state)
+        else:
+            state_mgr.get = AsyncMock(side_effect=KeyError("not found"))
+        return state_mgr
+
+    @pytest.mark.asyncio
+    async def test_convert_raw_issue_non_epic(self):
+        """Non-epic issue: branch is feature_id, no epic fields on state."""
+        from agentharness.brainstorm import _convert_raw_issue
+        from agentharness.models import FeatureStatus
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        gh_client = self._make_gh_client(
+            issue_number=10,
+            issue_title="My Feature",
+            parent_issue=None,  # no parent — standalone issue
+        )
+        store = _make_store()
+        state_mgr = self._make_state_mgr_for_epic()
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            await _convert_raw_issue("feat-my-feature", config)
+
+        # Branch created as feature_id, not an epic branch
+        gh_client.create_ref.assert_awaited_once()
+        ref_arg = gh_client.create_ref.call_args.args[0]
+        assert ref_arg == "refs/heads/feat-my-feature"
+
+        # State has no epic fields
+        patched_state = state_mgr.patch_existing_issue.call_args.args[1]
+        assert patched_state.branch_name == "feat-my-feature"
+        assert patched_state.epic_parent is None
+        assert patched_state.epic_position is None
+        assert patched_state.epic_branch is None
+        assert patched_state.status == FeatureStatus.brainstormed
+
+    @pytest.mark.asyncio
+    async def test_convert_raw_issue_epic_child_1(self):
+        """First epic child: branch created as epic_branch, state has epic fields."""
+        from agentharness.brainstorm import _convert_raw_issue
+        from agentharness.models import FeatureStatus
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        parent = {"number": 1, "title": "My Epic", "body": "Epic body."}
+        # Two sub-issues; this feature is the first
+        sub_issues = [
+            {"number": 10, "title": "Task One"},
+            {"number": 11, "title": "Task Two"},
+        ]
+        gh_client = self._make_gh_client(
+            issue_number=10,
+            issue_title="Task One",
+            parent_issue=parent,
+            sub_issues=sub_issues,
+        )
+        store = _make_store()
+        state_mgr = self._make_state_mgr_for_epic()
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            await _convert_raw_issue("feat-task-one", config)
+
+        # Branch created as epic_branch
+        gh_client.create_ref.assert_awaited_once()
+        ref_arg = gh_client.create_ref.call_args.args[0]
+        assert ref_arg == "refs/heads/epic-my-epic"
+
+        # State has correct epic fields
+        patched_state = state_mgr.patch_existing_issue.call_args.args[1]
+        assert patched_state.branch_name == "epic-my-epic"
+        assert patched_state.epic_parent == 1
+        assert patched_state.epic_position == 1
+        assert patched_state.epic_branch == "epic-my-epic"
+        assert patched_state.status == FeatureStatus.brainstormed
+
+    @pytest.mark.asyncio
+    async def test_convert_raw_issue_epic_child_2_prev_done(self):
+        """Second epic child when previous sibling is done: skips branch creation, proceeds."""
+        from agentharness.brainstorm import _convert_raw_issue
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        parent = {"number": 1, "title": "My Epic", "body": "Epic body."}
+        sub_issues = [
+            {"number": 10, "title": "Task One"},
+            {"number": 11, "title": "Task Two"},
+        ]
+        gh_client = self._make_gh_client(
+            issue_number=11,
+            issue_title="Task Two",
+            parent_issue=parent,
+            sub_issues=sub_issues,
+        )
+        store = _make_store()
+        # Previous sibling (feat-task-one) is done
+        state_mgr = self._make_state_mgr_for_epic(prev_status="done")
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            # Must not raise
+            await _convert_raw_issue("feat-task-two", config)
+
+        # Branch creation skipped for child 2, so get_default_branch and get_ref not called
+        gh_client.create_ref.assert_not_awaited()
+        gh_client.get_default_branch.assert_not_awaited()
+        gh_client.get_ref.assert_not_awaited()
+
+        # State has correct epic fields, branch_name is epic_branch
+        patched_state = state_mgr.patch_existing_issue.call_args.args[1]
+        assert patched_state.branch_name == "epic-my-epic"
+        assert patched_state.epic_parent == 1
+        assert patched_state.epic_position == 2
+        assert patched_state.epic_branch == "epic-my-epic"
+
+    @pytest.mark.asyncio
+    async def test_convert_raw_issue_epic_child_2_prev_not_done(self):
+        """Second epic child when previous sibling is not done: raises ValueError."""
+        from agentharness.brainstorm import _convert_raw_issue
+
+        config = _make_config()
+        config.github.feature_marker = "agent"
+
+        parent = {"number": 1, "title": "My Epic", "body": "Epic body."}
+        sub_issues = [
+            {"number": 10, "title": "Task One"},
+            {"number": 11, "title": "Task Two"},
+        ]
+        gh_client = self._make_gh_client(
+            issue_number=11,
+            issue_title="Task Two",
+            parent_issue=parent,
+            sub_issues=sub_issues,
+        )
+        store = _make_store()
+        # Previous sibling (feat-task-one) is still developing — not done
+        state_mgr = self._make_state_mgr_for_epic(prev_status="developing")
+
+        with (
+            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
+            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
+            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+        ):
+            with pytest.raises(ValueError, match="not done"):
+                await _convert_raw_issue("feat-task-two", config)
+
+        # Branch creation skipped, so get_default_branch and get_ref not called
+        gh_client.create_ref.assert_not_awaited()
+        gh_client.get_default_branch.assert_not_awaited()
+        gh_client.get_ref.assert_not_awaited()
+        state_mgr.patch_existing_issue.assert_not_awaited()

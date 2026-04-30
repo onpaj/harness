@@ -90,6 +90,12 @@ IMPLEMENT_LABEL = "implement"
 
 CLAIMED_BY_PREFIX = "claimed-by:"
 
+# ---------------------------------------------------------------------------
+# Epic labels
+# ---------------------------------------------------------------------------
+
+EPIC_PAUSED = "epic:paused"
+
 
 def claimed_by_label(worker_id: str) -> str:
     """Return the claim label for a given worker ID."""

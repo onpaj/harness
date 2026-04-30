@@ -17,6 +17,7 @@ import re
 from typing import TYPE_CHECKING, Callable
 
 from agentharness.github_labels import (
+    EPIC_PAUSED,
     FEATURE_STATUS_TO_LABEL,
     FEAT_STATUS_LABELS,
     LABEL_TO_FEATURE_STATUS,
@@ -174,6 +175,11 @@ def _synthesize_raw_state(issue: dict) -> FeatureState:
 # ---------------------------------------------------------------------------
 # GitHubStateManager
 # ---------------------------------------------------------------------------
+
+
+def _tick_epic_pr_checkbox(body: str, issue_number: int) -> str:
+    """Replace '- [ ] #N ...' with '- [x] #N ...' for the given issue number."""
+    return re.sub(rf"- \[ \] #{issue_number}\b", f"- [x] #{issue_number}", body)
 
 
 class GitHubStateManager:
@@ -446,6 +452,88 @@ class GitHubStateManager:
                 )
                 states.append(_synthesize_raw_state(issue))
         return states
+
+    async def handle_epic_child_done(self, state: FeatureState) -> None:
+        """Open/update/mark-ready the shared epic PR when an epic child completes."""
+        if state.epic_parent is None or state.epic_branch is None:
+            return
+
+        # Find existing epic PR by branch
+        prs = await self._client.list_pull_requests(head=state.epic_branch)
+        open_pr = next((pr for pr in prs if pr.get("state") == "open"), None)
+
+        if open_pr is None:
+            # First child: open draft PR
+            parent = await self._client.get_issue(state.epic_parent)
+            sub_issues = await self._client.list_sub_issues(state.epic_parent)
+
+            # Build PR title from parent epic title
+            pr_title = parent.get("title") or state.epic_branch or state.feature_id
+
+            # Build body: checklist of all child issues
+            checklist_items = "\n".join(
+                f"- [ ] #{si['number']} {si.get('title', '')}" for si in sub_issues
+            )
+            pr_body = f"## Epic\n\nPart of #{state.epic_parent}\n\n### Tasks\n\n{checklist_items}"
+
+            default_branch = await self._client.get_default_branch()
+            pr = await self._client.create_pull_request(
+                title=pr_title,
+                body=pr_body,
+                head=state.epic_branch,
+                base=default_branch,
+                draft=True,
+            )
+            log.info("Opened draft epic PR #%s for %s", pr.get("number"), state.feature_id)
+            open_pr = pr
+            # Tick the first child's own checkbox
+            if state.state_issue_number is not None:
+                updated_body = _tick_epic_pr_checkbox(open_pr.get("body") or "", state.state_issue_number)
+                if updated_body != (open_pr.get("body") or ""):
+                    await self._client.update_pull_request(open_pr["number"], body=updated_body)
+        else:
+            # Subsequent children: tick the checkbox for this child's issue number
+            child_issue_number = state.state_issue_number
+            if child_issue_number is not None:
+                current_body = open_pr.get("body") or ""
+                updated_body = _tick_epic_pr_checkbox(current_body, child_issue_number)
+                if updated_body != current_body:
+                    await self._client.update_pull_request(open_pr["number"], body=updated_body)
+
+        # If this is the last child, mark the PR ready for review
+        if (
+            state.epic_total is not None
+            and state.epic_position is not None
+            and state.epic_position >= state.epic_total
+        ):
+            await self._client.mark_pr_ready(open_pr["number"])
+            log.info("Marked epic PR #%s ready", open_pr["number"])
+
+    async def handle_epic_child_failed(
+        self, state: FeatureState, reason: str = "unknown"
+    ) -> None:
+        """Apply EPIC_PAUSED label to parent epic + post comment on failing child."""
+        if state.epic_parent is None:
+            return
+
+        try:
+            await self._client.add_labels(state.epic_parent, [EPIC_PAUSED])
+            log.info("Applied %s to epic issue #%s", EPIC_PAUSED, state.epic_parent)
+        except Exception as exc:
+            log.error("Failed to apply %s to epic #%s: %s", EPIC_PAUSED, state.epic_parent, exc)
+
+        if state.state_issue_number is not None:
+            comment = (
+                f"⚠️ **Epic paused**: this feature failed.\n\n"
+                f"**Reason**: {reason}\n\n"
+                f"To retry: edit this issue's brief to clarify, then remove the "
+                f"`epic:paused` label from the parent epic issue #{state.epic_parent}, "
+                f"and re-run:\n```\nagentharness implement {state.feature_id}\n```"
+            )
+            try:
+                await self._client.create_comment(state.state_issue_number, comment)
+            except Exception as exc:
+                log.error("Failed to post failure comment on #%s: %s", state.state_issue_number, exc)
 
     async def close(self) -> None:
         """Close the underlying HTTP connection pool."""

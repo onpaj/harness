@@ -164,11 +164,26 @@ class GitHubArtifactStore:
     # ------------------------------------------------------------------
 
     async def _checkout_or_create(self, branch_name: str) -> None:
-        """Checkout *branch_name* if it exists locally/remotely, else create it."""
+        """Checkout *branch_name* if it exists locally/remotely, else create it.
+
+        Three-tier fallback:
+        1. Checkout existing local branch (fast path).
+        2. Create local tracking branch from remote (epic children 2..N where the
+           branch already exists on remote but not locally).
+        3. Create fresh local branch (brand-new branch, no remote copy yet).
+        """
         try:
             await _run_git("-C", str(self._clone_root), "checkout", branch_name)
         except RuntimeError:
-            await _run_git("-C", str(self._clone_root), "checkout", "-b", branch_name)
+            try:
+                # Branch exists on remote but not locally — create local tracking branch
+                await _run_git(
+                    "-C", str(self._clone_root),
+                    "checkout", "-b", branch_name, f"origin/{branch_name}",
+                )
+            except RuntimeError:
+                # Branch doesn't exist anywhere — create fresh local branch
+                await _run_git("-C", str(self._clone_root), "checkout", "-b", branch_name)
 
     async def upload(self, path: str, content: str | bytes) -> None:
         """Write *content* to *path* on the feature branch and push."""
