@@ -37,15 +37,24 @@ def _assistant_event(
     }
 
 
-def _result_event(text: str = "## Status: DONE") -> dict:
-    return {"type": "result", "result": text}
+def _result_event(
+    text: str = "## Status: DONE",
+    total_input_tokens: int | None = None,
+    total_output_tokens: int | None = None,
+) -> dict:
+    event: dict = {"type": "result", "result": text}
+    if total_input_tokens is not None:
+        event["total_input_tokens"] = total_input_tokens
+    if total_output_tokens is not None:
+        event["total_output_tokens"] = total_output_tokens
+    return event
 
 
 def test_single_parent_assistant_and_result():
-    """Single parent assistant event + result → tokens equal that one usage block, text from result."""
+    """result event totals take precedence over per-turn assistant usage."""
     raw = _ndjson(
         _assistant_event(input_tokens=100, output_tokens=50, cache_read=10, text="hi"),
-        _result_event("done"),
+        _result_event("done", total_input_tokens=100, total_output_tokens=50),
     )
 
     text, tokens = _parse_json_output(raw, "developer")
@@ -59,16 +68,32 @@ def test_single_parent_assistant_and_result():
     )
 
 
-def test_parent_plus_one_sidechain():
-    """Parent assistant + one sidechain assistant + result → tokens are summed.
+def test_result_totals_override_assistant_sum():
+    """result.total_input/output_tokens override the summed assistant-turn values.
 
-    Regression test for the bug where only the parent (final result.usage) was counted.
-    The sidechain assistant turn appears mid-stream, before the result event.
+    The result event is the authoritative source for input/output counts;
+    cache tokens still come from summing individual assistant events.
     """
+    raw = _ndjson(
+        _assistant_event(input_tokens=1, output_tokens=500, cache_read=30_000),
+        _result_event("done", total_input_tokens=30_001, total_output_tokens=500),
+    )
+
+    text, tokens = _parse_json_output(raw, "architect")
+
+    assert tokens == TokenUsage(
+        input_tokens=30_001,
+        output_tokens=500,
+        cache_read_tokens=30_000,
+    )
+
+
+def test_parent_plus_one_sidechain():
+    """Parent assistant + one sidechain assistant + result → result totals used, cache summed from turns."""
     raw = _ndjson(
         _assistant_event(input_tokens=12_000, output_tokens=800, cache_read=4096),  # sidechain
         _assistant_event(input_tokens=1, output_tokens=16_000),                     # parent
-        _result_event("## Status: DONE"),
+        _result_event("## Status: DONE", total_input_tokens=12_001, total_output_tokens=16_800),
     )
 
     text, tokens = _parse_json_output(raw, "developer")

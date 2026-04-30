@@ -78,6 +78,12 @@ def _is_github_call_line(line: str) -> bool:
     return any(p in line for p in _GITHUB_CALL_PATTERNS)
 
 
+def _strip_logger_name(line: str) -> str:
+    """Remove the logger name (e.g. 'agentharness.agent_runner') from a log line."""
+    import re
+    return re.sub(r"\bagentharness\.\w+\s*", "", line)
+
+
 def _observer_pid() -> int | None:
     if not _OBSERVER_PID_FILE.exists():
         return None
@@ -349,7 +355,7 @@ class TaskLogPanel(RichLog):
                     for line in raw_lines:
                         if _is_github_call_line(line):
                             continue
-                        self.write(Text.from_markup(f"[dim green]{log_path.stem}[/dim green]  {line}"))
+                        self.write(Text.from_markup(_strip_logger_name(line)))
                     self.scroll_end(animate=False)
                 except OSError:
                     self.write(Text.from_markup(f"[dim red]Cannot read: {task_entry.log_file}[/dim red]"))
@@ -384,7 +390,7 @@ class TaskLogPanel(RichLog):
             return
         lines.sort(key=lambda t: t[0])
         for _, label, line in lines[-_LOG_TAIL_LINES:]:
-            self.write(Text.from_markup(f"[dim green]{label}[/dim green]  {line}"))
+            self.write(Text.from_markup(_strip_logger_name(line)))
         self.scroll_end(animate=False)
 
 
@@ -423,7 +429,7 @@ class WorkerLogPanel(RichLog):
 
         self.clear()
         for _, label, line in lines[-_LOG_TAIL_LINES:]:
-            self.write(Text.from_markup(f"[dim cyan]{label}[/dim cyan]  {line}"))
+            self.write(Text.from_markup(f"[dim cyan]{label}[/dim cyan]  {_strip_logger_name(line)}"))
         self.scroll_end(animate=False)
 
 

@@ -201,8 +201,10 @@ def _parse_json_output(raw: str, agent_id: str) -> tuple[str, TokenUsage | None]
     if not raw.strip():
         return "", None
 
-    tokens = TokenUsage()
+    assistant_tokens = TokenUsage()
     result_text: str | None = None
+    result_total_input: int | None = None
+    result_total_output: int | None = None
     last_assistant_text = ""
     any_json = False
     assistant_turns = 0
@@ -222,7 +224,7 @@ def _parse_json_output(raw: str, agent_id: str) -> tuple[str, TokenUsage | None]
             assistant_turns += 1
             message = event.get("message") or {}
             usage = message.get("usage") or {}
-            tokens = tokens + TokenUsage(
+            assistant_tokens = assistant_tokens + TokenUsage(
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
                 cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
@@ -239,10 +241,23 @@ def _parse_json_output(raw: str, agent_id: str) -> tuple[str, TokenUsage | None]
 
         elif event_type == "result":
             result_text = str(event.get("result", ""))
+            total_in = event.get("total_input_tokens")
+            total_out = event.get("total_output_tokens")
+            if total_in is not None:
+                result_total_input = int(total_in)
+            if total_out is not None:
+                result_total_output = int(total_out)
 
     if not any_json:
         log.warning("Agent %r: output is not JSON, treating as plain text", agent_id)
         return raw, None
+
+    tokens = TokenUsage(
+        input_tokens=result_total_input if result_total_input is not None else assistant_tokens.input_tokens,
+        output_tokens=result_total_output if result_total_output is not None else assistant_tokens.output_tokens,
+        cache_creation_tokens=assistant_tokens.cache_creation_tokens,
+        cache_read_tokens=assistant_tokens.cache_read_tokens,
+    )
 
     text = result_text if result_text is not None else last_assistant_text
     log.debug(
