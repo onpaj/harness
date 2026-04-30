@@ -6,7 +6,7 @@ phase: architecting
 max_turns: 10
 allowed_tools: [bash, read]
 output_format: markdown
-visibility_timeout: 600
+visibility_timeout: 1800
 retry_limit: 3
 output_parsing: none
 ---

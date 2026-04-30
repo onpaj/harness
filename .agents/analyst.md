@@ -6,7 +6,7 @@ phase: analyzing
 max_turns: 1
 allowed_tools: []
 output_format: markdown
-visibility_timeout: 300
+visibility_timeout: 600
 retry_limit: 3
 output_parsing: none
 output_file_glob: spec.md

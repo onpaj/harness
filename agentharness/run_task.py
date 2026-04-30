@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -91,6 +92,8 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         work_dir = store.get_work_dir()
         if work_dir is None and task.work_dir:
             work_dir = Path(task.work_dir)
+        if work_dir is None and agent_def.output_file_glob:
+            work_dir = Path(tempfile.mkdtemp(prefix=f"agent-{agent_def.id}-"))
         if work_dir is not None:
             work_dir.mkdir(parents=True, exist_ok=True)
 

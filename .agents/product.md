@@ -6,7 +6,7 @@ phase: questioning
 max_turns: 10
 allowed_tools: [bash, read]
 output_format: markdown
-visibility_timeout: 300
+visibility_timeout: 600
 retry_limit: 3
 output_parsing: none
 output_file_glob: answers.md
