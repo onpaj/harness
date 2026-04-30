@@ -330,6 +330,18 @@ class GitHubClient:
     # Pull requests
     # ------------------------------------------------------------------
 
+    async def list_pull_requests(
+        self, *, head: str | None = None, state: str = "open"
+    ) -> list[dict]:
+        """List PRs, optionally filtering by head branch."""
+        params: dict = {"state": state, "per_page": 100}
+        if head is not None:
+            params["head"] = f"{self.owner}:{head}"
+        result: list[dict] = await self._request(  # type: ignore[assignment]
+            "GET", self._repo_url("/pulls"), params=params
+        )
+        return result
+
     async def create_pull_request(
         self,
         title: str,

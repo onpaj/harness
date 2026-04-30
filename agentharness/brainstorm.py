@@ -364,6 +364,7 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
 
         # 6. Build state and patch the issue
+        epic_total: int | None = len(sub_issues) if sub_issues else None
         state = FeatureState(
             feature_id=feature_id,
             status=FeatureStatus.brainstormed,
@@ -372,6 +373,7 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
             epic_parent=epic_parent,
             epic_position=epic_position,
             epic_branch=epic_branch,
+            epic_total=epic_total,
             config=PipelineConfig(
                 max_revisions=config.defaults.max_revisions,
                 max_analyst_iterations=config.max_analyst_iterations,
