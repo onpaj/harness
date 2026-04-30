@@ -48,7 +48,7 @@ class TestOpenFeaturePr:
 
         await _open_feature_pr(state, state_mgr)
 
-        state_mgr.open_review.assert_awaited_once_with("feat-pr-test")
+        state_mgr.open_review.assert_awaited_once_with("feat-pr-test", pr_title=None, pr_summary=None)
 
     async def test_no_op_when_state_mgr_is_none(self):
         state = _make_done_state("feat-no-mgr")
@@ -61,7 +61,7 @@ class TestOpenFeaturePr:
 
         await _open_feature_pr(state, state_mgr)
 
-        state_mgr.open_review.assert_awaited_once_with("feat-delegate")
+        state_mgr.open_review.assert_awaited_once_with("feat-delegate", pr_title=None, pr_summary=None)
 
     async def test_open_review_error_propagates(self):
         state = _make_done_state("feat-error")

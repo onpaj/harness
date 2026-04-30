@@ -108,6 +108,8 @@ async def dispatch_after_completion(
     config: Config,
     queues: dict[str, TaskQueue],
     state_mgr: StateBackend | None = None,
+    *,
+    store: ArtifactStorage | None = None,
 ) -> FeatureState | None:
     """Determine and execute the next pipeline step.
 
@@ -141,10 +143,10 @@ async def dispatch_after_completion(
         return await _dispatch_fan_out(state, agent_output, config, queues)
 
     if status in (FeatureStatus.developing, FeatureStatus.dev_revision):
-        return await _dispatch_serial_next(state, completed_task, agent_output, config, queues, state_mgr)
+        return await _dispatch_serial_next(state, completed_task, agent_output, config, queues, state_mgr, store=store)
 
     if status == FeatureStatus.reviewing:
-        return await _dispatch_review_result(state, completed_task, agent_output, config, queues, state_mgr)
+        return await _dispatch_review_result(state, completed_task, agent_output, config, queues, state_mgr, store=store)
 
     log.warning("No dispatch logic for status %r", status)
     return None
@@ -349,6 +351,8 @@ async def _dispatch_serial_next(
     config: Config,
     queues: dict[str, TaskQueue],
     state_mgr: StateBackend | None = None,
+    *,
+    store: ArtifactStorage | None = None,
 ) -> FeatureState:
     dev_status = _parse_developer_status(agent_output)
     if dev_status in ("BLOCKED", "NEEDS_CONTEXT"):
@@ -366,7 +370,7 @@ async def _dispatch_serial_next(
         dev_status,
     )
     done_state = state.with_status(FeatureStatus.done).with_event("feature_completed")
-    await _open_feature_pr(done_state, state_mgr)
+    await _open_feature_pr(done_state, state_mgr, store)
     return done_state
 
 
@@ -416,6 +420,8 @@ async def _dispatch_review_result(
     config: Config,
     queues: dict[str, TaskQueue],
     state_mgr: StateBackend | None = None,
+    *,
+    store: ArtifactStorage | None = None,
 ) -> FeatureState:
     task_name = completed_task.context or _task_name_from_id(completed_task.task_id, state.feature_id)
     failed_tasks = _parse_review_result(review_output)
@@ -425,7 +431,7 @@ async def _dispatch_review_result(
         if next_task_entry is None:
             log.info("All tasks reviewed and passed for %s — done", state.feature_id)
             done_state = state.with_status(FeatureStatus.done).with_event("feature_completed")
-            await _open_feature_pr(done_state, state_mgr)
+            await _open_feature_pr(done_state, state_mgr, store)
             return done_state
 
         dev_queue = queues.get("developer-queue")
@@ -883,8 +889,17 @@ async def _build_pr_content(
         return None, None
 
 
-async def _open_feature_pr(state: FeatureState, state_mgr) -> None:
+async def _open_feature_pr(
+    state: FeatureState,
+    state_mgr: StateBackend | None,
+    store: ArtifactStorage | None = None,
+) -> None:
     """Open a GitHub PR for the completed feature via the state backend abstraction."""
     if state_mgr is None:
         return
-    await state_mgr.open_review(state.feature_id)
+    pr_title, pr_summary = await _build_pr_content(state, store)
+    await state_mgr.open_review(
+        state.feature_id,
+        pr_title=pr_title,
+        pr_summary=pr_summary,
+    )

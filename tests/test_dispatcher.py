@@ -453,7 +453,7 @@ class TestDispatchReviewResult:
 
         assert result.status == FeatureStatus.done
         queues["developer-queue"].send_task.assert_not_awaited()
-        state_mgr.open_review.assert_awaited_once_with("feat-3")
+        state_mgr.open_review.assert_awaited_once_with("feat-3", pr_title=None, pr_summary=None)
 
     async def test_revision_needed_enqueues_revision_task(self):
         state = _make_state_with_pending_tasks("feat-4", ["auth"])
@@ -501,7 +501,7 @@ class TestDispatchReviewResult:
         result = await _dispatch_review_result(state, review_task, review_output, cfg, queues, state_mgr)
 
         assert result.status == FeatureStatus.done
-        state_mgr.open_review.assert_awaited_once_with("feat-3")
+        state_mgr.open_review.assert_awaited_once_with("feat-3", pr_title=None, pr_summary=None)
 
     async def test_revision_exceeding_max_marks_failed(self):
         from agentharness.models import PipelineConfig
@@ -931,7 +931,7 @@ class TestOpenFeaturePr:
         state = self._done_state()
         state_mgr = AsyncMock()
         await _open_feature_pr(state, state_mgr)
-        state_mgr.open_review.assert_awaited_once_with("feat-auth")
+        state_mgr.open_review.assert_awaited_once_with("feat-auth", pr_title=None, pr_summary=None)
 
     async def test_done_via_serial_next_marks_done(self):
         """_dispatch_serial_next transitions state to done and calls open_review."""
@@ -945,7 +945,77 @@ class TestOpenFeaturePr:
         result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", cfg, queues, state_mgr)
 
         assert result.status == FeatureStatus.done
-        state_mgr.open_review.assert_awaited_once_with("feat-gh")
+        state_mgr.open_review.assert_awaited_once_with("feat-gh", pr_title=None, pr_summary=None)
+
+
+@pytest.mark.asyncio
+class TestOpenFeaturePrWithStore:
+    @pytest.mark.asyncio
+    async def test_open_feature_pr_passes_title_and_summary_when_store_present(self):
+        from agentharness.dispatcher import _open_feature_pr
+        state = FeatureState(
+            feature_id="feat-x",
+            status=FeatureStatus.done,
+            tasks=[
+                TaskEntry(
+                    task_id="t1",
+                    phase="developing",
+                    status=TaskStatus.completed,
+                    output_artifact="artifacts/feat-x/impl/main.r1.md",
+                ),
+            ],
+        )
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value="https://pr/123")
+
+        class _FakeStoreWithSummary:
+            async def download(self, path: str) -> str:
+                if "brief" in path:
+                    return "# Add PR Summary Design\n"
+                return "## PR Summary\nDeveloper-authored body.\n## Status\nDONE\n"
+            async def upload(self, path, content): pass
+            async def exists(self, path): return True
+            async def close(self): pass
+            def get_work_dir(self): return None
+            async def commit_workdir_changes(self, message): return False
+
+        await _open_feature_pr(state, state_mgr, _FakeStoreWithSummary())
+
+        state_mgr.open_review.assert_awaited_once_with(
+            "feat-x",
+            pr_title="Add PR Summary Design",
+            pr_summary="Developer-authored body.",
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_feature_pr_passes_none_when_store_none(self):
+        from agentharness.dispatcher import _open_feature_pr
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.done, tasks=[])
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value=None)
+
+        await _open_feature_pr(state, state_mgr, None)
+
+        state_mgr.open_review.assert_awaited_once_with(
+            "feat-x",
+            pr_title=None,
+            pr_summary=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_feature_pr_default_store_is_none(self):
+        from agentharness.dispatcher import _open_feature_pr
+        state = FeatureState(feature_id="feat-y", status=FeatureStatus.done, tasks=[])
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value=None)
+
+        await _open_feature_pr(state, state_mgr)  # store omitted
+
+        state_mgr.open_review.assert_awaited_once_with(
+            "feat-y",
+            pr_title=None,
+            pr_summary=None,
+        )
 
 
 class TestExtractBriefTitle:
