@@ -793,6 +793,24 @@ def _extract_pr_summary(impl_content: str) -> str | None:
     return body
 
 
+def _last_developer_artifact(state: FeatureState) -> str | None:
+    """Return the output_artifact of the last completed developer task.
+
+    Walks state.tasks in insertion order; returns the path of the last entry
+    whose phase == 'developing', status == completed, and output_artifact is set.
+    Returns None when no such entry exists.
+    """
+    last: str | None = None
+    for entry in state.tasks:
+        if (
+            entry.phase == "developing"
+            and entry.status == TaskStatus.completed
+            and entry.output_artifact is not None
+        ):
+            last = entry.output_artifact
+    return last
+
+
 async def _open_feature_pr(state: FeatureState, state_mgr) -> None:
     """Open a GitHub PR for the completed feature via the state backend abstraction."""
     if state_mgr is None:

@@ -1078,3 +1078,107 @@ class TestExtractPrSummary:
     def test_returns_none_for_empty_input(self):
         from agentharness.dispatcher import _extract_pr_summary
         assert _extract_pr_summary("") is None
+
+
+class TestLastDeveloperArtifact:
+    def _state(self, tasks: list) -> FeatureState:
+        return FeatureState(
+            feature_id="feat-x",
+            status=FeatureStatus.developing,
+            tasks=tasks,
+        )
+
+    def test_returns_none_when_no_tasks(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        assert _last_developer_artifact(self._state([])) is None
+
+    def test_returns_none_when_no_completed_developer_task(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.in_progress,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) is None
+
+    def test_returns_none_when_completed_task_has_no_artifact(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact=None,
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) is None
+
+    def test_returns_artifact_for_single_completed_developer_task(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r1.md"
+
+    def test_returns_artifact_of_last_matching_task(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/a.r1.md",
+            ),
+            TaskEntry(
+                task_id="t2",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/b.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/b.r1.md"
+
+    def test_skips_non_developer_phases(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="d1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+            TaskEntry(
+                task_id="r1",
+                phase="reviewing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/review/main.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r1.md"
+
+    def test_returns_revision_artifact_when_multiple_revisions(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="d1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+            TaskEntry(
+                task_id="d1-rev",
+                phase="developing",
+                status=TaskStatus.completed,
+                revision=2,
+                output_artifact="artifacts/x/impl/main.r2.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r2.md"
