@@ -280,8 +280,8 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
     expected_slug = feature_id.removeprefix("feat-")
 
     gh_client = GitHubClient.from_config(config)
-    store = create_artifact_store(config, feature_id=feature_id)
     state_mgr = create_state_manager(config)
+    store = None
     try:
         # 1. Find the matching issue
         issues = await gh_client.list_issues(labels=[config.github.feature_marker])
@@ -306,6 +306,7 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         epic_position: int | None = None
         epic_branch: str | None = None
         branch_name = feature_id  # default for non-epic features
+        sub_issues: list[dict] = []
 
         if parent_issue is not None:
             parent_number = int(parent_issue["number"])
@@ -320,7 +321,10 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
             except ValueError:
                 epic_position = len(sub_numbers) + 1  # fallback: treat as last
 
-        # 3. Create branch (or verify previous sibling done)
+        # 3. Create store with correct branch (branch_name now known)
+        store = create_artifact_store(config, feature_id=branch_name)
+
+        # 4. Create branch (or verify previous sibling done)
         default_branch = await gh_client.get_default_branch()
         ref = await gh_client.get_ref(f"heads/{default_branch}")
         sha = ref["object"]["sha"]
@@ -336,8 +340,7 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
                 else:
                     raise
         else:
-            # Epic child N>1: verify previous sibling is done
-            sub_issues = await gh_client.list_sub_issues(epic_parent)  # type: ignore[arg-type]
+            # Epic child N>1: verify previous sibling is done (reuse sub_issues from above)
             prev_sibling = sub_issues[epic_position - 2]  # 0-indexed, previous sibling
             prev_title = prev_sibling.get("title") or ""
             prev_feature_id = f"feat-{slug_title(prev_title)}"
@@ -357,10 +360,10 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
                 issue_number, epic_position, prev_feature_id,
             )
 
-        # 4. Upload brief
+        # 5. Upload brief
         await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
 
-        # 5. Build state and patch the issue
+        # 6. Build state and patch the issue
         state = FeatureState(
             feature_id=feature_id,
             status=FeatureStatus.brainstormed,
@@ -378,7 +381,8 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         log.info("Auto-converted raw issue #%d → feature %s", issue_number, feature_id)
     finally:
         await gh_client.close()
-        await store.close()
+        if store is not None:
+            await store.close()
         await state_mgr.close()
 
 
