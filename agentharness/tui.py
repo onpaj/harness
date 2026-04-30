@@ -362,10 +362,11 @@ class TaskLogPanel(RichLog):
             self.write(Text.from_markup("[dim]No logs directory[/dim]"))
             return
         lines: list[tuple[str, str, str]] = []
+        feature_id = state.feature_id if state else ""
         queue_dir = _LOG_DIR / _PHASE_TO_QUEUE.get(task_id, "")
         for lf in _LOG_DIR.rglob("*.log"):
-            # Phase rows: match by queue directory; task rows: match by stem
-            in_queue_dir = queue_dir.name and lf.parent == queue_dir
+            # Phase rows: match by queue directory AND feature; task rows: match by stem
+            in_queue_dir = queue_dir.name and lf.parent == queue_dir and (not feature_id or feature_id in lf.stem)
             if not in_queue_dir and task_id not in lf.stem:
                 continue
             label = lf.stem
