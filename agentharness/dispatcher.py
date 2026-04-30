@@ -730,6 +730,29 @@ def build_phase_task(
     )
 
 
+def _extract_brief_title(content: str) -> str:
+    """Return a human-readable title from a brief.
+
+    Priority:
+      1. First line starting with '#' — return text with leading '#' chars
+         and surrounding whitespace stripped.
+      2. First non-empty stripped line.
+      3. Empty string when input has no usable content.
+
+    Pure: no I/O, O(n) on input length.
+    """
+    first_non_empty: str | None = None
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            return line.lstrip("#").strip()
+        if first_non_empty is None:
+            first_non_empty = line
+    return first_non_empty or ""
+
+
 async def _open_feature_pr(state: FeatureState, state_mgr) -> None:
     """Open a GitHub PR for the completed feature via the state backend abstraction."""
     if state_mgr is None:

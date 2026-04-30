@@ -946,3 +946,35 @@ class TestOpenFeaturePr:
 
         assert result.status == FeatureStatus.done
         state_mgr.open_review.assert_awaited_once_with("feat-gh")
+
+
+class TestExtractBriefTitle:
+    def test_returns_h1_heading_text(self):
+        from agentharness.dispatcher import _extract_brief_title
+        content = "# Add PR Summary Design\n\nSome body text."
+        assert _extract_brief_title(content) == "Add PR Summary Design"
+
+    def test_strips_multiple_leading_hashes(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("### Deep Heading\nbody") == "Deep Heading"
+
+    def test_strips_surrounding_whitespace(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("#   Padded Title   \nbody") == "Padded Title"
+
+    def test_first_heading_wins_when_multiple_present(self):
+        from agentharness.dispatcher import _extract_brief_title
+        content = "intro line\n\n# First Heading\n\n# Second Heading"
+        assert _extract_brief_title(content) == "First Heading"
+
+    def test_falls_back_to_first_non_empty_line_when_no_heading(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("\n\n  first real line  \nsecond") == "first real line"
+
+    def test_returns_empty_string_for_empty_input(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("") == ""
+
+    def test_returns_empty_string_for_whitespace_only(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("   \n\n  \t\n") == ""
