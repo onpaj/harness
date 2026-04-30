@@ -202,12 +202,17 @@ class GitHubClient:
 
         Uses the GitHub sub-issues beta API.  Returns an empty list when the
         parent has no sub-issues or the endpoint returns an empty array.
+
+        Note: fetches up to 100 sub-issues per request (no pagination).
+        Epics with more than 100 sub-issues are not realistically expected,
+        so a single page is sufficient.
         """
         result: list[dict] = await self._request(  # type: ignore[assignment]
             "GET",
             self._repo_url(f"/issues/{parent_number}/sub_issues"),
+            params={"per_page": 100},
         )
-        return result if result else []
+        return result or []
 
     async def get_parent_issue(self, child_number: int) -> dict | None:
         """Return the parent issue dict if *child_number* is a sub-issue.
@@ -378,6 +383,8 @@ class GitHubClient:
             payload["body"] = body
         if draft is not None:
             payload["draft"] = draft
+        if not payload:
+            raise ValueError("update_pull_request requires at least one field: body or draft")
         return await self._request(
             "PATCH",
             self._repo_url(f"/pulls/{number}"),

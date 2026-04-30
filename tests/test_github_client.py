@@ -669,6 +669,15 @@ async def test_update_pull_request_with_only_body() -> None:
     await client.close()
 
 
+@pytest.mark.asyncio
+async def test_update_pull_request_requires_at_least_one_field() -> None:
+    """Calling update_pull_request with no fields should raise ValueError."""
+    client = _make_client()
+    with pytest.raises(ValueError, match="requires at least one field"):
+        await client.update_pull_request(42)
+    await client.close()
+
+
 # ---------------------------------------------------------------------------
 # mark_pr_ready
 # ---------------------------------------------------------------------------
