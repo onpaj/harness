@@ -753,6 +753,46 @@ def _extract_brief_title(content: str) -> str:
     return first_non_empty or ""
 
 
+_PR_SUMMARY_HEADER = "## PR Summary"
+
+
+def _extract_pr_summary(impl_content: str) -> str | None:
+    """Return the body of the '## PR Summary' section, or None if absent/empty.
+
+    Scanner:
+      BEFORE_SECTION → stripped line == _PR_SUMMARY_HEADER → IN_SECTION
+      IN_SECTION → line starts with '## ' → DONE (stop collecting)
+      IN_SECTION → else → append line to buffer
+
+    Returns None when:
+      - Section is absent
+      - Body is empty or whitespace-only after rstrip
+      - Body contains only an empty '### Changes' heading with no list items
+    Subheadings like '### Changes' (3 hashes) are preserved verbatim.
+    """
+    in_section = False
+    buffer: list[str] = []
+    for line in impl_content.splitlines():
+        stripped = line.strip()
+        if not in_section:
+            if stripped == _PR_SUMMARY_HEADER:
+                in_section = True
+            continue
+        if line.startswith("## "):
+            break
+        buffer.append(line)
+
+    body = "\n".join(buffer).rstrip()
+    if not body.strip():
+        return None
+
+    non_empty_lines = [ln for ln in body.splitlines() if ln.strip()]
+    if non_empty_lines == ["### Changes"]:
+        return None
+
+    return body
+
+
 async def _open_feature_pr(state: FeatureState, state_mgr) -> None:
     """Open a GitHub PR for the completed feature via the state backend abstraction."""
     if state_mgr is None:

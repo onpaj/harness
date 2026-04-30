@@ -978,3 +978,103 @@ class TestExtractBriefTitle:
     def test_returns_empty_string_for_whitespace_only(self):
         from agentharness.dispatcher import _extract_brief_title
         assert _extract_brief_title("   \n\n  \t\n") == ""
+
+
+class TestExtractPrSummary:
+    def test_returns_section_body_until_next_h2(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "# Implementation: foo\n"
+            "## Notes\n"
+            "n/a\n"
+            "## PR Summary\n"
+            "Implemented X to do Y.\n"
+            "\n"
+            "### Changes\n"
+            "- `file.py` — added foo\n"
+            "## Status\n"
+            "DONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert result.startswith("Implemented X to do Y.")
+        assert "### Changes" in result
+        assert "- `file.py` — added foo" in result
+        assert "## Status" not in result
+        assert "DONE" not in result
+
+    def test_returns_section_body_until_eof_when_no_following_h2(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\nA standalone summary at end of file.\n"
+        assert _extract_pr_summary(impl) == "A standalone summary at end of file."
+
+    def test_returns_none_when_section_absent(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## Notes\nn/a\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) is None
+
+    def test_returns_none_when_body_is_whitespace_only(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\n   \n\n\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) is None
+
+    def test_returns_none_when_body_is_only_empty_changes_heading(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\n### Changes\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) is None
+
+    def test_returns_summary_when_changes_has_at_least_one_item(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "## PR Summary\n"
+            "### Changes\n"
+            "- `file.py` — explanation\n"
+            "## Status\nDONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert "### Changes" in result
+
+    def test_preserves_internal_blank_lines(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "## PR Summary\n"
+            "Paragraph one.\n"
+            "\n"
+            "Paragraph two.\n"
+            "## Status\nDONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert "Paragraph one." in result
+        assert "Paragraph two." in result
+
+    def test_section_at_top_of_file(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\nFirst-thing summary.\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) == "First-thing summary."
+
+    def test_h3_heading_inside_body_does_not_terminate(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "## PR Summary\n"
+            "Intro.\n"
+            "### Changes\n"
+            "- `a.py` — note\n"
+            "## Status\nDONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert "### Changes" in result
+        assert "- `a.py` — note" in result
+
+    def test_rstrips_trailing_whitespace(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\nSummary text.\n\n\n   \n## Status\nDONE\n"
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert result == "Summary text."
+
+    def test_returns_none_for_empty_input(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        assert _extract_pr_summary("") is None
