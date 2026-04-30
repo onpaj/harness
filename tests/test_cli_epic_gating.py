@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agentharness.cli import _implement_with_epic_check
+from agentharness.github_client import GitHubApiError
 
 
 @pytest.mark.asyncio
@@ -175,4 +176,46 @@ async def test_implement_epic_not_paused_proceeds() -> None:
     # Should proceed normally
     mock_gh_client.get_issue.assert_called_once_with(5)
     mock_enqueue_planner.assert_called_once_with("feat-test-123", config)
+    mock_gh_client.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_implement_epic_parent_api_error_proceeds() -> None:
+    """get_issue() raises GitHubApiError: warning printed, enqueue_planner IS called (proceeds despite error)."""
+    config = MagicMock()
+    config.storage_backend = "github"
+
+    # Create mock state with epic parent
+    mock_state = MagicMock()
+    mock_state.epic_parent = 5
+
+    mock_state_mgr = MagicMock()
+    mock_state_mgr.get = AsyncMock(return_value=mock_state)
+
+    # Mock GitHub client that raises GitHubApiError on get_issue
+    api_error = GitHubApiError(404, "Issue not found")
+    mock_gh_client = MagicMock()
+    mock_gh_client.get_issue = AsyncMock(side_effect=api_error)
+    mock_gh_client.close = AsyncMock()
+
+    mock_enqueue_planner = AsyncMock()
+    mock_console_print = MagicMock()
+
+    with patch("agentharness.cli.create_state_manager", return_value=mock_state_mgr):
+        with patch("agentharness.cli.GitHubClient.from_config", return_value=mock_gh_client):
+            with patch("agentharness.cli.enqueue_planner", mock_enqueue_planner):
+                with patch("agentharness.cli.console.print", mock_console_print):
+                    await _implement_with_epic_check("feat-test-123", config)
+
+    # Should print warning
+    calls = [str(call) for call in mock_console_print.call_args_list]
+    output = " ".join(calls)
+    assert "Warning" in output
+    assert "Could not check parent epic" in output
+    assert "Proceeding anyway" in output
+
+    # Should STILL call enqueue_planner (doesn't block)
+    mock_enqueue_planner.assert_called_once_with("feat-test-123", config)
+
+    # Should have closed client
     mock_gh_client.close.assert_called_once()
