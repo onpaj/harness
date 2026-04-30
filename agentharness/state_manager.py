@@ -131,7 +131,13 @@ class AzureStateManager:
                 log.error("Unexpected error reading state blob %s: %s", blob.name, exc)
         return states
 
-    async def open_review(self, feature_id: str) -> str | None:
+    async def open_review(
+        self,
+        feature_id: str,
+        *,
+        pr_title: str | None = None,
+        pr_summary: str | None = None,
+    ) -> str | None:
         """Azure has no PR concept; always returns None."""
         log.debug("open_review called for %s — no-op on Azure backend", feature_id)
         return None
