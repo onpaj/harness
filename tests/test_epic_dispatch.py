@@ -155,7 +155,12 @@ class TestHandleEpicChildDone:
             {"number": 43, "title": "Sub-task 2"},
         ])
         mgr._client.get_default_branch = AsyncMock(return_value="main")
-        mgr._client.create_pull_request = AsyncMock(return_value={"number": 99, "state": "open"})
+        mgr._client.create_pull_request = AsyncMock(return_value={
+            "number": 99,
+            "state": "open",
+            "body": "## Epic\n\nPart of #10\n\n### Tasks\n\n- [ ] #42 Sub-task 1\n- [ ] #43 Sub-task 2",
+        })
+        mgr._client.update_pull_request = AsyncMock(return_value={})
         mgr._client.mark_pr_ready = AsyncMock()
 
         await mgr.handle_epic_child_done(state)
@@ -166,6 +171,11 @@ class TestHandleEpicChildDone:
         body = call_kwargs.kwargs.get("body", "")
         assert "- [ ] #42" in body
         assert "- [ ] #43" in body
+        # First child's checkbox should be ticked via update_pull_request
+        mgr._client.update_pull_request.assert_called_once()
+        updated_body = mgr._client.update_pull_request.call_args.kwargs.get("body", "")
+        assert "- [x] #42" in updated_body
+        assert "- [ ] #43" in updated_body
         # Not last child: should NOT mark ready
         mgr._client.mark_pr_ready.assert_not_called()
 

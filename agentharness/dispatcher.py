@@ -88,7 +88,12 @@ async def run_terminal_cleanup(state: FeatureState, state_manager) -> None:
             if isinstance(state_manager, GitHubStateManager):
                 await state_manager.handle_epic_child_failed(
                     state,
-                    reason=f"Feature {state.feature_id} reached failed status"
+                    reason=f"Feature {state.feature_id} reached failed status",
+                )
+            else:
+                log.warning(
+                    "Epic pause label only supported on GitHub backend; skipping for %s",
+                    state.feature_id,
                 )
 
 
@@ -898,6 +903,11 @@ async def _open_feature_pr(
         from agentharness.github_state import GitHubStateManager
         if isinstance(state_mgr, GitHubStateManager):
             await state_mgr.handle_epic_child_done(state)
+        else:
+            log.warning(
+                "Epic PR lifecycle only supported on GitHub backend; skipping for %s",
+                state.feature_id,
+            )
         return
 
     # Non-epic: existing behavior

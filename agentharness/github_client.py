@@ -331,16 +331,28 @@ class GitHubClient:
     # ------------------------------------------------------------------
 
     async def list_pull_requests(
-        self, *, head: str | None = None, state: str = "open"
+        self,
+        *,
+        head: str | None = None,
+        state: str = "open",
+        per_page: int = 100,
     ) -> list[dict]:
         """List PRs, optionally filtering by head branch."""
-        params: dict = {"state": state, "per_page": 100}
+        params: dict = {"state": state, "per_page": per_page}
         if head is not None:
             params["head"] = f"{self.owner}:{head}"
-        result: list[dict] = await self._request(  # type: ignore[assignment]
-            "GET", self._repo_url("/pulls"), params=params
-        )
-        return result
+        all_results: list[dict] = []
+        page = 1
+        while True:
+            params["page"] = page
+            page_results: list[dict] = await self._request(  # type: ignore[assignment]
+                "GET", self._repo_url("/pulls"), params=params
+            )
+            all_results.extend(page_results)
+            if len(page_results) < per_page:
+                break
+            page += 1
+        return all_results
 
     async def create_pull_request(
         self,

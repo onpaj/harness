@@ -17,6 +17,7 @@ import re
 from typing import TYPE_CHECKING, Callable
 
 from agentharness.github_labels import (
+    EPIC_PAUSED,
     FEATURE_STATUS_TO_LABEL,
     FEAT_STATUS_LABELS,
     LABEL_TO_FEATURE_STATUS,
@@ -467,7 +468,7 @@ class GitHubStateManager:
             sub_issues = await self._client.list_sub_issues(state.epic_parent)
 
             # Build PR title from parent epic title
-            pr_title = f"{parent.get('title', state.epic_branch)}"
+            pr_title = parent.get("title") or state.epic_branch or state.feature_id
 
             # Build body: checklist of all child issues
             checklist_items = "\n".join(
@@ -485,6 +486,11 @@ class GitHubStateManager:
             )
             log.info("Opened draft epic PR #%s for %s", pr.get("number"), state.feature_id)
             open_pr = pr
+            # Tick the first child's own checkbox
+            if state.state_issue_number is not None:
+                updated_body = _tick_epic_pr_checkbox(open_pr.get("body") or "", state.state_issue_number)
+                if updated_body != (open_pr.get("body") or ""):
+                    await self._client.update_pull_request(open_pr["number"], body=updated_body)
         else:
             # Subsequent children: tick the checkbox for this child's issue number
             child_issue_number = state.state_issue_number
@@ -509,7 +515,6 @@ class GitHubStateManager:
         """Apply EPIC_PAUSED label to parent epic + post comment on failing child."""
         if state.epic_parent is None:
             return
-        from agentharness.github_labels import EPIC_PAUSED
 
         try:
             await self._client.add_labels(state.epic_parent, [EPIC_PAUSED])
