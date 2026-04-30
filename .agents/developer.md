@@ -64,14 +64,20 @@ After the task is complete, write your output summary:
 {Any deviations, assumptions, concerns}
 
 ## PR Summary
-Write a clear, human-readable summary of the changes for the GitHub PR. Include 1-2 short paragraphs describing what was built and why it matters, followed by a concise bulleted list of file changes.
+
+**Important:** Do not use `## ` headings inside the PR Summary — the parser stops at any line starting with `## `. Write `### Changes` (3 hashes) for the file list subsection.
+
+### Example:
+
+## PR Summary
+Added a free-form summary section to the developer agent output so reviewers see what changed at a glance instead of a phase log. The dispatcher reads this section from the last completed impl artifact and forwards it as the PR body when opening the feature PR.
+
+The implementation required threading the artifact store through the dispatch chain and adding three line-walk parsing helpers to extract the title and summary.
 
 ### Changes
-- `src/core/processor.py` — Added async processing pipeline with validation and error handling
-- `tests/test_processor.py` — Added integration tests covering happy path and edge cases
-- `docs/ARCHITECTURE.md` — Updated to document the new async processing flow
-
-**Important:** Do not use `## ` heading markers inside the PR Summary fenced code blocks — the parser stops at the first `## ` line, even within code blocks.
+- `agentharness/dispatcher.py` — added `_extract_pr_summary`, `_build_pr_content`, and `_last_developer_artifact` helpers
+- `agentharness/github_state.py` — updated `open_review` to accept and use `pr_title` and `pr_summary` kwargs
+- `.agents/developer.md` — required output now includes a `## PR Summary` section
 
 ## Status
 DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
