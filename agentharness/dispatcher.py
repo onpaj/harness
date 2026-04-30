@@ -24,7 +24,7 @@ from agentharness.storage import (
     task_context_artifact_path,
     task_review_artifact_path,
 )
-from agentharness.storage_protocol import StateBackend, TaskQueue
+from agentharness.storage_protocol import ArtifactStorage, StateBackend, TaskQueue
 
 log = logging.getLogger(__name__)
 
@@ -809,6 +809,78 @@ def _last_developer_artifact(state: FeatureState) -> str | None:
         ):
             last = entry.output_artifact
     return last
+
+
+_BRIEF_PATH_TEMPLATE = "artifacts/{feature_id}/brief.md"
+
+
+async def _build_pr_content(
+    state: FeatureState,
+    store: ArtifactStorage | None,
+) -> tuple[str | None, str | None]:
+    """Assemble (pr_title, pr_summary) for the GitHub PR; never raises.
+
+    Returns (None, None) when *store* is None — the caller falls back to
+    log-style PR content. Otherwise downloads brief.md and the last completed
+    developer impl artifact, extracts title + summary, and logs INFO on each
+    fallback path. Unexpected exceptions are caught with log.exception.
+    """
+    if store is None:
+        return None, None
+
+    feature_id = state.feature_id
+    pr_title: str | None = None
+    pr_summary: str | None = None
+
+    try:
+        brief_path = _BRIEF_PATH_TEMPLATE.format(feature_id=feature_id)
+        try:
+            brief_content = await store.download(brief_path)
+        except Exception as exc:
+            log.info(
+                "[%s] PR title fallback: brief.md not available (%s)",
+                feature_id, exc,
+            )
+        else:
+            extracted = _extract_brief_title(brief_content)
+            if extracted:
+                pr_title = extracted
+            else:
+                log.info(
+                    "[%s] PR title fallback: brief.md has no heading or content",
+                    feature_id,
+                )
+
+        impl_path = _last_developer_artifact(state)
+        if impl_path is None:
+            log.info(
+                "[%s] PR summary fallback: no completed developer task in state",
+                feature_id,
+            )
+        else:
+            try:
+                impl_content = await store.download(impl_path)
+            except Exception as exc:
+                log.info(
+                    "[%s] PR summary fallback: impl artifact not available (%s)",
+                    feature_id, exc,
+                )
+            else:
+                pr_summary = _extract_pr_summary(impl_content)
+                if pr_summary is None:
+                    log.info(
+                        "[%s] PR summary fallback: no ## PR Summary section in impl artifact",
+                        feature_id,
+                    )
+
+        return pr_title, pr_summary
+
+    except Exception:
+        log.exception(
+            "[%s] Unexpected error building PR content; falling back to defaults",
+            feature_id,
+        )
+        return None, None
 
 
 async def _open_feature_pr(state: FeatureState, state_mgr) -> None:
