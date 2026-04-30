@@ -197,6 +197,34 @@ class GitHubClient:
             json={"sub_issue_id": child_number},
         )
 
+    async def list_sub_issues(self, parent_number: int) -> list[dict]:
+        """Return the list of sub-issues for *parent_number*.
+
+        Uses the GitHub sub-issues beta API.  Returns an empty list when the
+        parent has no sub-issues or the endpoint returns an empty array.
+        """
+        result: list[dict] = await self._request(  # type: ignore[assignment]
+            "GET",
+            self._repo_url(f"/issues/{parent_number}/sub_issues"),
+        )
+        return result if result else []
+
+    async def get_parent_issue(self, child_number: int) -> dict | None:
+        """Return the parent issue dict if *child_number* is a sub-issue.
+
+        GitHub's REST API (as of the sub-issues beta) exposes the parent
+        relationship via a ``parent_issue`` field on the issue response when
+        the issue was created as a sub-issue.  If the field is absent or
+        ``None`` the issue is a standalone issue and ``None`` is returned.
+
+        Note: ``parent_issue`` is part of the GitHub sub-issues *beta* and
+        may not be present for all issues or all API versions.  This is a
+        best-effort implementation; callers should handle ``None`` gracefully.
+        """
+        issue = await self._request("GET", self._repo_url(f"/issues/{child_number}"))
+        parent: dict | None = issue.get("parent_issue")
+        return parent if parent else None
+
     # ------------------------------------------------------------------
     # Refs / branches
     # ------------------------------------------------------------------
@@ -304,11 +332,15 @@ class GitHubClient:
         head: str,
         base: str,
         labels: list[str] | None = None,
+        draft: bool = False,
     ) -> dict:
+        payload: dict = {"title": title, "body": body, "head": head, "base": base}
+        if draft:
+            payload["draft"] = True
         pr = await self._request(
             "POST",
             self._repo_url("/pulls"),
-            json={"title": title, "body": body, "head": head, "base": base},
+            json=payload,
         )
         if labels:
             number = pr["number"]
@@ -328,3 +360,30 @@ class GitHubClient:
                 )
                 raise
         return pr
+
+    async def update_pull_request(
+        self,
+        number: int,
+        *,
+        body: str | None = None,
+        draft: bool | None = None,
+    ) -> dict:
+        """PATCH /repos/{owner}/{repo}/pulls/{number}.
+
+        Only fields that are not ``None`` are included in the request payload.
+        Returns the updated PR dict.
+        """
+        payload: dict = {}
+        if body is not None:
+            payload["body"] = body
+        if draft is not None:
+            payload["draft"] = draft
+        return await self._request(
+            "PATCH",
+            self._repo_url(f"/pulls/{number}"),
+            json=payload,
+        )
+
+    async def mark_pr_ready(self, number: int) -> dict:
+        """Convert a draft PR to ready-for-review."""
+        return await self.update_pull_request(number, draft=False)

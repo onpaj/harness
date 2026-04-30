@@ -498,3 +498,192 @@ async def test_create_pull_request_reraises_when_label_apply_fails() -> None:
                 title="t", body="b", head="feat", base="main", labels=["agent"]
             )
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# list_sub_issues
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_sub_issues_returns_list_of_dicts() -> None:
+    """GET /issues/{n}/sub_issues returns a list of issue dicts."""
+    client = _make_client()
+    sub_issues = [{"number": 2, "title": "child A"}, {"number": 3, "title": "child B"}]
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value=sub_issues)
+    ) as mock_request:
+        result = await client.list_sub_issues(1)
+
+    assert result == sub_issues
+    method, url = mock_request.call_args.args[:2]
+    assert method == "GET"
+    assert url.endswith("/issues/1/sub_issues")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_list_sub_issues_returns_empty_list_when_none() -> None:
+    """When the API returns an empty array, list_sub_issues returns []."""
+    client = _make_client()
+    with patch.object(client, "_request", new=AsyncMock(return_value=[])):
+        result = await client.list_sub_issues(99)
+
+    assert result == []
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# get_parent_issue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_parent_issue_returns_parent_when_field_present() -> None:
+    """When the issue response includes parent_issue, return it."""
+    client = _make_client()
+    parent_data = {"number": 10, "title": "Epic issue"}
+    issue_response = {"number": 42, "title": "child", "parent_issue": parent_data}
+    with patch.object(client, "_request", new=AsyncMock(return_value=issue_response)):
+        result = await client.get_parent_issue(42)
+
+    assert result == parent_data
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_parent_issue_returns_none_when_field_absent() -> None:
+    """When parent_issue is not in the response, return None."""
+    client = _make_client()
+    issue_response = {"number": 5, "title": "standalone issue"}
+    with patch.object(client, "_request", new=AsyncMock(return_value=issue_response)):
+        result = await client.get_parent_issue(5)
+
+    assert result is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_parent_issue_returns_none_when_field_is_null() -> None:
+    """When parent_issue is explicitly null/None, return None."""
+    client = _make_client()
+    issue_response = {"number": 7, "title": "no parent", "parent_issue": None}
+    with patch.object(client, "_request", new=AsyncMock(return_value=issue_response)):
+        result = await client.get_parent_issue(7)
+
+    assert result is None
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# create_pull_request with draft=True
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_with_draft_true_includes_draft_in_payload() -> None:
+    """draft=True should add 'draft': true to the POST /pulls payload."""
+    client = _make_client()
+    pr_data = {"number": 55, "html_url": "https://github.com/pr/55", "draft": True}
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value=pr_data)
+    ) as mock_request:
+        result = await client.create_pull_request(
+            title="Draft PR", body="WIP", head="feat-x", base="main", draft=True
+        )
+
+    assert result == pr_data
+    payload = mock_request.call_args.kwargs["json"]
+    assert payload["draft"] is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_default_draft_false_omits_draft_field() -> None:
+    """When draft is not passed (default False), 'draft' should NOT appear in payload."""
+    client = _make_client()
+    pr_data = {"number": 56, "html_url": "https://github.com/pr/56"}
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value=pr_data)
+    ) as mock_request:
+        await client.create_pull_request(
+            title="Normal PR", body="desc", head="feat-y", base="main"
+        )
+
+    payload = mock_request.call_args.kwargs["json"]
+    assert "draft" not in payload
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# update_pull_request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_with_body_and_draft() -> None:
+    """PATCH /pulls/{n} should include only provided fields."""
+    client = _make_client()
+    updated_pr = {"number": 10, "body": "new body", "draft": False}
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value=updated_pr)
+    ) as mock_request:
+        result = await client.update_pull_request(10, body="new body", draft=False)
+
+    assert result == updated_pr
+    method, url = mock_request.call_args.args[:2]
+    assert method == "PATCH"
+    assert url.endswith("/pulls/10")
+    payload = mock_request.call_args.kwargs["json"]
+    assert payload == {"body": "new body", "draft": False}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_with_only_draft() -> None:
+    """When only draft is supplied, payload contains only 'draft'."""
+    client = _make_client()
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value={"number": 11})
+    ) as mock_request:
+        await client.update_pull_request(11, draft=True)
+
+    payload = mock_request.call_args.kwargs["json"]
+    assert payload == {"draft": True}
+    assert "body" not in payload
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_with_only_body() -> None:
+    """When only body is supplied, payload contains only 'body'."""
+    client = _make_client()
+    with patch.object(
+        client, "_request", new=AsyncMock(return_value={"number": 12})
+    ) as mock_request:
+        await client.update_pull_request(12, body="updated description")
+
+    payload = mock_request.call_args.kwargs["json"]
+    assert payload == {"body": "updated description"}
+    assert "draft" not in payload
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# mark_pr_ready
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_pr_ready_calls_update_pull_request_with_draft_false() -> None:
+    """mark_pr_ready should delegate to update_pull_request(number, draft=False)."""
+    client = _make_client()
+    ready_pr = {"number": 20, "draft": False}
+    with patch.object(
+        client, "update_pull_request", new=AsyncMock(return_value=ready_pr)
+    ) as mock_update:
+        result = await client.mark_pr_ready(20)
+
+    assert result == ready_pr
+    mock_update.assert_awaited_once_with(20, draft=False)
+    await client.close()
