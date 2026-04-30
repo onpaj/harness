@@ -125,7 +125,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         updated_state = await state_mgr.update(task.feature_id, lambda s: _mark_completed(s, task, result.tokens))
 
-        next_state = await dispatch_after_completion(updated_state, task, result.output, config, all_queues, state_mgr)
+        next_state = await dispatch_after_completion(updated_state, task, result.output, config, all_queues, state_mgr, store=store)
         if next_state is not None:
             persisted = await state_mgr.update(task.feature_id, lambda _: next_state)
             await run_terminal_cleanup(persisted, state_mgr)
