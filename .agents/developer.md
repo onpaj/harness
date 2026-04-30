@@ -48,9 +48,6 @@ After the task is complete, write your output summary:
 ```markdown
 # Implementation: {task name}
 
-## Status
-DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-
 ## What was implemented
 {Brief description}
 
@@ -65,6 +62,25 @@ DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Notes
 {Any deviations, assumptions, concerns}
+
+## PR Summary
+
+**Important:** Do not use `## ` headings inside the PR Summary — the parser stops at any line starting with `## `. Write `### Changes` (3 hashes) for the file list subsection.
+
+### Example:
+
+## PR Summary
+Added a free-form summary section to the developer agent output so reviewers see what changed at a glance instead of a phase log. The dispatcher reads this section from the last completed impl artifact and forwards it as the PR body when opening the feature PR.
+
+The implementation required threading the artifact store through the dispatch chain and adding three line-walk parsing helpers to extract the title and summary.
+
+### Changes
+- `agentharness/dispatcher.py` — added `_extract_pr_summary`, `_build_pr_content`, and `_last_developer_artifact` helpers
+- `agentharness/github_state.py` — updated `open_review` to accept and use `pr_title` and `pr_summary` kwargs
+- `.agents/developer.md` — required output now includes a `## PR Summary` section
+
+## Status
+DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
 Use `DONE_WITH_CONCERNS` if any subagent raised unresolved concerns.

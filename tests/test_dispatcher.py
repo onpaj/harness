@@ -453,7 +453,7 @@ class TestDispatchReviewResult:
 
         assert result.status == FeatureStatus.done
         queues["developer-queue"].send_task.assert_not_awaited()
-        state_mgr.open_review.assert_awaited_once_with("feat-3")
+        state_mgr.open_review.assert_awaited_once_with("feat-3", pr_title=None, pr_summary=None)
 
     async def test_revision_needed_enqueues_revision_task(self):
         state = _make_state_with_pending_tasks("feat-4", ["auth"])
@@ -501,7 +501,7 @@ class TestDispatchReviewResult:
         result = await _dispatch_review_result(state, review_task, review_output, cfg, queues, state_mgr)
 
         assert result.status == FeatureStatus.done
-        state_mgr.open_review.assert_awaited_once_with("feat-3")
+        state_mgr.open_review.assert_awaited_once_with("feat-3", pr_title=None, pr_summary=None)
 
     async def test_revision_exceeding_max_marks_failed(self):
         from agentharness.models import PipelineConfig
@@ -931,7 +931,7 @@ class TestOpenFeaturePr:
         state = self._done_state()
         state_mgr = AsyncMock()
         await _open_feature_pr(state, state_mgr)
-        state_mgr.open_review.assert_awaited_once_with("feat-auth")
+        state_mgr.open_review.assert_awaited_once_with("feat-auth", pr_title=None, pr_summary=None)
 
     async def test_done_via_serial_next_marks_done(self):
         """_dispatch_serial_next transitions state to done and calls open_review."""
@@ -945,4 +945,479 @@ class TestOpenFeaturePr:
         result = await _dispatch_serial_next(state, dev_task, "## Status\nDONE\n", cfg, queues, state_mgr)
 
         assert result.status == FeatureStatus.done
-        state_mgr.open_review.assert_awaited_once_with("feat-gh")
+        state_mgr.open_review.assert_awaited_once_with("feat-gh", pr_title=None, pr_summary=None)
+
+
+@pytest.mark.asyncio
+class TestOpenFeaturePrWithStore:
+    @pytest.mark.asyncio
+    async def test_open_feature_pr_passes_title_and_summary_when_store_present(self):
+        from agentharness.dispatcher import _open_feature_pr
+        state = FeatureState(
+            feature_id="feat-x",
+            status=FeatureStatus.done,
+            tasks=[
+                TaskEntry(
+                    task_id="t1",
+                    phase="developing",
+                    status=TaskStatus.completed,
+                    output_artifact="artifacts/feat-x/impl/main.r1.md",
+                ),
+            ],
+        )
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value="https://pr/123")
+
+        class _FakeStoreWithSummary:
+            async def download(self, path: str) -> str:
+                if "brief" in path:
+                    return "# Add PR Summary Design\n"
+                return "## PR Summary\nDeveloper-authored body.\n## Status\nDONE\n"
+            async def upload(self, path, content): pass
+            async def exists(self, path): return True
+            async def close(self): pass
+            def get_work_dir(self): return None
+            async def commit_workdir_changes(self, message): return False
+
+        await _open_feature_pr(state, state_mgr, _FakeStoreWithSummary())
+
+        state_mgr.open_review.assert_awaited_once_with(
+            "feat-x",
+            pr_title="Add PR Summary Design",
+            pr_summary="Developer-authored body.",
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_feature_pr_passes_none_when_store_none(self):
+        from agentharness.dispatcher import _open_feature_pr
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.done, tasks=[])
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value=None)
+
+        await _open_feature_pr(state, state_mgr, None)
+
+        state_mgr.open_review.assert_awaited_once_with(
+            "feat-x",
+            pr_title=None,
+            pr_summary=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_feature_pr_default_store_is_none(self):
+        from agentharness.dispatcher import _open_feature_pr
+        state = FeatureState(feature_id="feat-y", status=FeatureStatus.done, tasks=[])
+        state_mgr = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value=None)
+
+        await _open_feature_pr(state, state_mgr)  # store omitted
+
+        state_mgr.open_review.assert_awaited_once_with(
+            "feat-y",
+            pr_title=None,
+            pr_summary=None,
+        )
+
+
+class TestExtractBriefTitle:
+    def test_returns_h1_heading_text(self):
+        from agentharness.dispatcher import _extract_brief_title
+        content = "# Add PR Summary Design\n\nSome body text."
+        assert _extract_brief_title(content) == "Add PR Summary Design"
+
+    def test_strips_multiple_leading_hashes(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("### Deep Heading\nbody") == "Deep Heading"
+
+    def test_strips_surrounding_whitespace(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("#   Padded Title   \nbody") == "Padded Title"
+
+    def test_first_heading_wins_when_multiple_present(self):
+        from agentharness.dispatcher import _extract_brief_title
+        content = "intro line\n\n# First Heading\n\n# Second Heading"
+        assert _extract_brief_title(content) == "First Heading"
+
+    def test_falls_back_to_first_non_empty_line_when_no_heading(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("\n\n  first real line  \nsecond") == "first real line"
+
+    def test_returns_empty_string_for_empty_input(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("") == ""
+
+    def test_returns_empty_string_for_whitespace_only(self):
+        from agentharness.dispatcher import _extract_brief_title
+        assert _extract_brief_title("   \n\n  \t\n") == ""
+
+
+class TestExtractPrSummary:
+    def test_returns_section_body_until_next_h2(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "# Implementation: foo\n"
+            "## Notes\n"
+            "n/a\n"
+            "## PR Summary\n"
+            "Implemented X to do Y.\n"
+            "\n"
+            "### Changes\n"
+            "- `file.py` — added foo\n"
+            "## Status\n"
+            "DONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert result.startswith("Implemented X to do Y.")
+        assert "### Changes" in result
+        assert "- `file.py` — added foo" in result
+        assert "## Status" not in result
+        assert "DONE" not in result
+
+    def test_returns_section_body_until_eof_when_no_following_h2(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\nA standalone summary at end of file.\n"
+        assert _extract_pr_summary(impl) == "A standalone summary at end of file."
+
+    def test_returns_none_when_section_absent(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## Notes\nn/a\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) is None
+
+    def test_returns_none_when_body_is_whitespace_only(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\n   \n\n\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) is None
+
+    def test_returns_none_when_body_is_only_empty_changes_heading(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\n### Changes\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) is None
+
+    def test_returns_summary_when_changes_has_at_least_one_item(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "## PR Summary\n"
+            "### Changes\n"
+            "- `file.py` — explanation\n"
+            "## Status\nDONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert "### Changes" in result
+
+    def test_preserves_internal_blank_lines(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "## PR Summary\n"
+            "Paragraph one.\n"
+            "\n"
+            "Paragraph two.\n"
+            "## Status\nDONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert "Paragraph one." in result
+        assert "Paragraph two." in result
+
+    def test_section_at_top_of_file(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\nFirst-thing summary.\n## Status\nDONE\n"
+        assert _extract_pr_summary(impl) == "First-thing summary."
+
+    def test_h3_heading_inside_body_does_not_terminate(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = (
+            "## PR Summary\n"
+            "Intro.\n"
+            "### Changes\n"
+            "- `a.py` — note\n"
+            "## Status\nDONE\n"
+        )
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert "### Changes" in result
+        assert "- `a.py` — note" in result
+
+    def test_rstrips_trailing_whitespace(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        impl = "## PR Summary\nSummary text.\n\n\n   \n## Status\nDONE\n"
+        result = _extract_pr_summary(impl)
+        assert result is not None
+        assert result == "Summary text."
+
+    def test_returns_none_for_empty_input(self):
+        from agentharness.dispatcher import _extract_pr_summary
+        assert _extract_pr_summary("") is None
+
+
+class TestLastDeveloperArtifact:
+    def _state(self, tasks: list) -> FeatureState:
+        return FeatureState(
+            feature_id="feat-x",
+            status=FeatureStatus.developing,
+            tasks=tasks,
+        )
+
+    def test_returns_none_when_no_tasks(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        assert _last_developer_artifact(self._state([])) is None
+
+    def test_returns_none_when_no_completed_developer_task(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.in_progress,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) is None
+
+    def test_returns_none_when_completed_task_has_no_artifact(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact=None,
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) is None
+
+    def test_returns_artifact_for_single_completed_developer_task(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r1.md"
+
+    def test_returns_artifact_of_last_matching_task(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="t1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/a.r1.md",
+            ),
+            TaskEntry(
+                task_id="t2",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/b.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/b.r1.md"
+
+    def test_skips_non_developer_phases(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="d1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+            TaskEntry(
+                task_id="r1",
+                phase="reviewing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/review/main.r1.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r1.md"
+
+    def test_returns_revision_artifact_when_multiple_revisions(self):
+        from agentharness.dispatcher import _last_developer_artifact
+        tasks = [
+            TaskEntry(
+                task_id="d1",
+                phase="developing",
+                status=TaskStatus.completed,
+                output_artifact="artifacts/x/impl/main.r1.md",
+            ),
+            TaskEntry(
+                task_id="d1-rev",
+                phase="developing",
+                status=TaskStatus.completed,
+                revision=2,
+                output_artifact="artifacts/x/impl/main.r2.md",
+            ),
+        ]
+        assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r2.md"
+
+
+class _FakeStore:
+    """Minimal in-memory ArtifactStorage for unit tests."""
+
+    def __init__(self, files: dict | None = None, fail_paths: set | None = None):
+        self._files = files or {}
+        self._fail = fail_paths or set()
+
+    async def download(self, path: str) -> str:
+        if path in self._fail:
+            raise RuntimeError(f"simulated download failure for {path}")
+        try:
+            return self._files[path]
+        except KeyError as exc:
+            raise FileNotFoundError(path) from exc
+
+    async def upload(self, path: str, content): pass
+    async def exists(self, path: str) -> bool: return path in self._files
+    async def close(self) -> None: pass
+    def get_work_dir(self): return None
+    async def commit_workdir_changes(self, message: str) -> bool: return False
+
+
+class TestBuildPrContent:
+    def _state_with_dev_task(
+        self,
+        feature_id: str = "feat-x",
+        impl_path: str = "artifacts/feat-x/impl/main.r1.md",
+    ) -> FeatureState:
+        return FeatureState(
+            feature_id=feature_id,
+            status=FeatureStatus.done,
+            tasks=[
+                TaskEntry(
+                    task_id="t1",
+                    phase="developing",
+                    status=TaskStatus.completed,
+                    output_artifact=impl_path,
+                ),
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_none_none_when_store_is_none(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        assert await _build_pr_content(state, None) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_returns_title_and_summary_when_both_artifacts_present(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "# Add PR Summary Design\n\nbody.",
+            "artifacts/feat-x/impl/main.r1.md": (
+                "## Notes\nn/a\n"
+                "## PR Summary\nImplemented PR summary support.\n\n"
+                "### Changes\n- `dispatcher.py` — added helpers\n"
+                "## Status\nDONE\n"
+            ),
+        })
+        title, summary = await _build_pr_content(state, store)
+        assert title == "Add PR Summary Design"
+        assert summary is not None
+        assert "Implemented PR summary support." in summary
+        assert "### Changes" in summary
+        assert "## Status" not in summary
+
+    @pytest.mark.asyncio
+    async def test_brief_missing_returns_none_title_summary_present(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/impl/main.r1.md": "## PR Summary\nA summary.\n## Status\nDONE\n",
+        })
+        title, summary = await _build_pr_content(state, store)
+        assert title is None
+        assert summary == "A summary."
+
+    @pytest.mark.asyncio
+    async def test_brief_empty_returns_none_title(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "   \n\n",
+            "artifacts/feat-x/impl/main.r1.md": "## PR Summary\nx.\n## Status\nDONE\n",
+        })
+        title, _ = await _build_pr_content(state, store)
+        assert title is None
+
+    @pytest.mark.asyncio
+    async def test_impl_missing_returns_none_summary_title_present(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "# Title\n",
+        })
+        title, summary = await _build_pr_content(state, store)
+        assert title == "Title"
+        assert summary is None
+
+    @pytest.mark.asyncio
+    async def test_no_completed_developer_task_returns_none_summary(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = FeatureState(feature_id="feat-x", status=FeatureStatus.done, tasks=[])
+        store = _FakeStore({"artifacts/feat-x/brief.md": "# Title\n"})
+        title, summary = await _build_pr_content(state, store)
+        assert title == "Title"
+        assert summary is None
+
+    @pytest.mark.asyncio
+    async def test_pr_summary_section_absent_returns_none_summary(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "# Title\n",
+            "artifacts/feat-x/impl/main.r1.md": "## Notes\nn/a\n## Status\nDONE\n",
+        })
+        _, summary = await _build_pr_content(state, store)
+        assert summary is None
+
+    @pytest.mark.asyncio
+    async def test_brief_download_exception_falls_back(self, caplog):
+        import logging
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore(
+            files={"artifacts/feat-x/impl/main.r1.md": "## PR Summary\nbody.\n"},
+            fail_paths={"artifacts/feat-x/brief.md"},
+        )
+        with caplog.at_level(logging.INFO, logger="agentharness.dispatcher"):
+            title, summary = await _build_pr_content(state, store)
+        assert title is None
+        assert summary == "body."
+        assert any("PR title fallback" in rec.message for rec in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_impl_download_exception_falls_back(self, caplog):
+        import logging
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore(
+            files={"artifacts/feat-x/brief.md": "# Title\n"},
+            fail_paths={"artifacts/feat-x/impl/main.r1.md"},
+        )
+        with caplog.at_level(logging.INFO, logger="agentharness.dispatcher"):
+            title, summary = await _build_pr_content(state, store)
+        assert title == "Title"
+        assert summary is None
+        assert any("PR summary fallback" in rec.message for rec in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_never_raises_on_unexpected_exception(self):
+        from agentharness.dispatcher import _build_pr_content
+
+        class BoomStore:
+            async def download(self, path: str):
+                raise ValueError("boom")
+            async def upload(self, path, content): pass
+            async def exists(self, path): return False
+            async def close(self): pass
+            def get_work_dir(self): return None
+            async def commit_workdir_changes(self, message): return False
+
+        state = self._state_with_dev_task()
+        title, summary = await _build_pr_content(state, BoomStore())
+        assert title is None
+        assert summary is None
