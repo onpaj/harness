@@ -654,6 +654,120 @@ async def test_open_review_pr_body_closes_issue():
 
 
 # ---------------------------------------------------------------------------
+# open_review body branching (Task 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_review_uses_pr_title_when_provided():
+    state = _make_state(status=FeatureStatus.done)
+    state_with_issue = state.model_copy(update={"state_issue_number": 7})
+    client = _mock_client()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.create_pull_request = AsyncMock(return_value={"number": 99, "html_url": "https://x"})
+    mgr = GitHubStateManager(client=client, feature_marker=TEST_FEATURE_MARKER)
+    mgr.get = AsyncMock(return_value=state_with_issue)
+
+    await mgr.open_review(state.feature_id, pr_title="Add PR Summary Design", pr_summary=None)
+
+    _, kwargs = client.create_pull_request.call_args
+    assert kwargs["title"] == "Add PR Summary Design"
+
+
+@pytest.mark.asyncio
+async def test_open_review_uses_default_title_when_pr_title_none():
+    state = _make_state(status=FeatureStatus.done)
+    state_with_issue = state.model_copy(update={"state_issue_number": 7})
+    client = _mock_client()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.create_pull_request = AsyncMock(return_value={"number": 99, "html_url": "https://x"})
+    mgr = GitHubStateManager(client=client, feature_marker=TEST_FEATURE_MARKER)
+    mgr.get = AsyncMock(return_value=state_with_issue)
+
+    await mgr.open_review(state.feature_id, pr_title=None, pr_summary=None)
+
+    _, kwargs = client.create_pull_request.call_args
+    assert kwargs["title"] == f"{state.feature_id}: implementation complete"
+
+
+@pytest.mark.asyncio
+async def test_open_review_uses_pr_summary_body_when_provided():
+    state = _make_state(status=FeatureStatus.done)
+    state_with_issue = state.model_copy(update={"state_issue_number": 12})
+    client = _mock_client()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.create_pull_request = AsyncMock(return_value={"number": 99, "html_url": "https://x"})
+    mgr = GitHubStateManager(client=client, feature_marker=TEST_FEATURE_MARKER)
+    mgr.get = AsyncMock(return_value=state_with_issue)
+
+    summary = "Implemented X.\n\n### Changes\n- `file.py` — note"
+    await mgr.open_review(state.feature_id, pr_title=None, pr_summary=summary)
+
+    _, kwargs = client.create_pull_request.call_args
+    body = kwargs["body"]
+    assert body.startswith("Implemented X.")
+    assert "### Changes" in body
+    assert "\n\n---\n\n" in body
+    assert "Closes #12" in body
+    assert "### Tokens used" in body
+    assert "## Feature:" not in body
+    assert "### Phases" not in body
+
+
+@pytest.mark.asyncio
+async def test_open_review_uses_log_body_when_pr_summary_none():
+    state = _make_state(status=FeatureStatus.done)
+    state_with_issue = state.model_copy(update={"state_issue_number": 12})
+    client = _mock_client()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.create_pull_request = AsyncMock(return_value={"number": 99, "html_url": "https://x"})
+    mgr = GitHubStateManager(client=client, feature_marker=TEST_FEATURE_MARKER)
+    mgr.get = AsyncMock(return_value=state_with_issue)
+
+    await mgr.open_review(state.feature_id, pr_title=None, pr_summary=None)
+
+    _, kwargs = client.create_pull_request.call_args
+    body = kwargs["body"]
+    assert "## Feature:" in body
+    assert "### Phases" in body
+    assert "### Tasks" in body
+    assert "### Tokens used" in body
+    assert "Closes #12" in body
+
+
+@pytest.mark.asyncio
+async def test_open_review_omits_closes_line_when_no_issue_number():
+    state = _make_state(status=FeatureStatus.done)
+    client = _mock_client()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.create_pull_request = AsyncMock(return_value={"number": 99, "html_url": "https://x"})
+    mgr = GitHubStateManager(client=client, feature_marker=TEST_FEATURE_MARKER)
+    mgr.get = AsyncMock(return_value=state)
+
+    await mgr.open_review(state.feature_id, pr_title=None, pr_summary="Body.")
+
+    _, kwargs = client.create_pull_request.call_args
+    assert "Closes #" not in kwargs["body"]
+
+
+@pytest.mark.asyncio
+async def test_open_review_back_compat_no_kwargs():
+    state = _make_state(status=FeatureStatus.done)
+    state_with_issue = state.model_copy(update={"state_issue_number": 1})
+    client = _mock_client()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.create_pull_request = AsyncMock(return_value={"number": 99, "html_url": "https://x"})
+    mgr = GitHubStateManager(client=client, feature_marker=TEST_FEATURE_MARKER)
+    mgr.get = AsyncMock(return_value=state_with_issue)
+
+    pr_url = await mgr.open_review(state.feature_id)
+    assert pr_url == "https://x"
+    _, kwargs = client.create_pull_request.call_args
+    assert kwargs["title"] == f"{state.feature_id}: implementation complete"
+    assert "## Feature:" in kwargs["body"]
+
+
+# ---------------------------------------------------------------------------
 # patch_existing_issue
 # ---------------------------------------------------------------------------
 
