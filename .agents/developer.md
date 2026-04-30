@@ -48,9 +48,6 @@ After the task is complete, write your output summary:
 ```markdown
 # Implementation: {task name}
 
-## Status
-DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-
 ## What was implemented
 {Brief description}
 
@@ -65,6 +62,19 @@ DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 
 ## Notes
 {Any deviations, assumptions, concerns}
+
+## PR Summary
+Write a clear, human-readable summary of the changes for the GitHub PR. Include 1-2 short paragraphs describing what was built and why it matters, followed by a concise bulleted list of file changes.
+
+### Changes
+- `src/core/processor.py` — Added async processing pipeline with validation and error handling
+- `tests/test_processor.py` — Added integration tests covering happy path and edge cases
+- `docs/ARCHITECTURE.md` — Updated to document the new async processing flow
+
+**Important:** Do not use `## ` heading markers inside the PR Summary fenced code blocks — the parser stops at the first `## ` line, even within code blocks.
+
+## Status
+DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 ```
 
 Use `DONE_WITH_CONCERNS` if any subagent raised unresolved concerns.
