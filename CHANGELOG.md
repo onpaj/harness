@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.3.1 (2026-05-05)
+
+### Bug Fixes
+
+- Use auto-detected env values silently, only prompt for missing ones
+  ([`e83d692`](https://github.com/onpaj/harness/commit/e83d6920d5a879535ac7700ab6bdc8d8c9b50343))
+
+
 ## v0.3.0 (2026-05-05)
 
 ### Features
