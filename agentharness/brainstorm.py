@@ -133,7 +133,8 @@ def start_brainstorm(config: Config | None = None) -> None:
     print(brief_content)
     print("="*60)
 
-    answer = input("\nUpload brief to Azure? [y/N] ").strip().lower()
+    backend = config.storage_backend if config is not None else "storage"
+    answer = input(f"\nUpload brief to {backend}? [y/N] ").strip().lower()
     if answer != "y":
         print(f"Not uploaded. Brief saved locally at: {brief_path}")
         return
