@@ -201,6 +201,16 @@ class GitHubArtifactStore:
 
         await self._checkout_or_create(self._feature_id)
 
+        # Fast-forward local branch to match remote (another agent may have pushed
+        # since this clone was initialised; tolerate missing remote branch).
+        try:
+            await _run_git(
+                "-C", str(self._clone_root),
+                "merge", "--ff-only", f"origin/{self._feature_id}",
+            )
+        except RuntimeError:
+            pass
+
         # Write the file into the working tree.
         dest = self._clone_root / path
         dest.parent.mkdir(parents=True, exist_ok=True)
