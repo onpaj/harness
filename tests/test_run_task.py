@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agentharness.run_task import _parse_task_sections, _upload_task_contexts, run_task, _recover_task
+from agentharness.run_task import _parse_task_sections, _upload_task_contexts, run_task, _recover_task, _count_recent_requeue_attempts
 
 
 class TestParseTaskSections:
@@ -225,6 +225,31 @@ class TestRecoverTask:
 
         # With 5 prior events, attempts=6 >= 3, so it should mark failed not requeue
         mock_queue.send_task.assert_not_awaited()
+
+    async def test_phase_resumed_resets_retry_counter(self):
+        """After phase_resumed, prior requeues are not counted — task gets fresh retries."""
+        from agentharness.models import FeatureState, HistoryEvent
+        task = self._make_task("feat-x-analyzing-1")
+        # 2 requeues from before the resume — would exhaust limit without fix
+        state = FeatureState(feature_id="feat-x")
+        history = [
+            HistoryEvent(event="task_requeued", task_id=task.task_id),
+            HistoryEvent(event="task_requeued", task_id=task.task_id),
+            HistoryEvent(event="phase_resumed"),
+        ]
+        state = state.model_copy(update={"history": history})
+
+        state_mgr = AsyncMock()
+        state_mgr.get = AsyncMock(return_value=state)
+        state_mgr.update = AsyncMock(return_value=state)
+
+        mock_queue = AsyncMock()
+        all_queues = {"analyst-queue": mock_queue}
+
+        await _recover_task(state_mgr, task, "analyst-queue", MagicMock(), all_queues, retry_limit=3)
+
+        # 0 requeues since the resume → attempts=1 < 3 → should requeue, not fail
+        mock_queue.send_task.assert_awaited_once_with(task)
 
 
 @pytest.mark.asyncio
@@ -643,3 +668,69 @@ class TestRunTaskGetWorkDir:
             await run_task("dev-queue", task_json, config)
 
         mock_store.commit_workdir_changes.assert_awaited_once()
+
+
+class TestCountRecentRequeueAttempts:
+    def _event(self, name, task_id=None):
+        from agentharness.models import HistoryEvent
+        return HistoryEvent(event=name, task_id=task_id)
+
+    def test_counts_all_requeues_when_no_reset_event(self):
+        history = [
+            self._event("task_requeued", "feat-task-1"),
+            self._event("task_requeued", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 2
+
+    def test_resets_count_after_phase_resumed(self):
+        history = [
+            self._event("task_requeued", "feat-task-1"),
+            self._event("task_requeued", "feat-task-1"),
+            self._event("phase_resumed"),
+            self._event("task_requeued", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 1
+
+    def test_resets_count_after_pipeline_started(self):
+        history = [
+            self._event("task_requeued", "feat-task-1"),
+            self._event("pipeline_started"),
+            self._event("task_requeued", "feat-task-1"),
+            self._event("task_requeued", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 2
+
+    def test_ignores_other_task_requeues(self):
+        history = [
+            self._event("task_requeued", "feat-task-2"),
+            self._event("task_requeued", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 1
+
+    def test_empty_history_returns_zero(self):
+        assert _count_recent_requeue_attempts([], "feat-task-1") == 0
+
+    def test_no_requeues_for_task_returns_zero(self):
+        history = [
+            self._event("task_started", "feat-task-1"),
+            self._event("task_completed", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 0
+
+    def test_multiple_phase_resumed_only_counts_since_last(self):
+        history = [
+            self._event("task_requeued", "feat-task-1"),
+            self._event("phase_resumed"),
+            self._event("task_requeued", "feat-task-1"),
+            self._event("phase_resumed"),
+            self._event("task_requeued", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 1
+
+    def test_reset_event_is_oldest_event(self):
+        history = [
+            self._event("pipeline_started"),
+            self._event("task_requeued", "feat-task-1"),
+            self._event("task_requeued", "feat-task-1"),
+        ]
+        assert _count_recent_requeue_attempts(history, "feat-task-1") == 2

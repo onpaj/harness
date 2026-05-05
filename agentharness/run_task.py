@@ -146,6 +146,23 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
             await store.close()
 
 
+def _count_recent_requeue_attempts(history: list, task_id: str) -> int:
+    """Count task_requeued events since the last phase_resumed or pipeline_started.
+
+    Resets the counter on manual resume so users can retry without immediately
+    exhausting the retry limit from a previous failed run.
+
+    history is chronological (append-only); we scan from newest to oldest.
+    """
+    count = 0
+    for event in reversed(history):
+        if event.event in ("phase_resumed", "pipeline_started"):
+            break
+        if event.event == "task_requeued" and event.task_id == task_id:
+            count += 1
+    return count
+
+
 async def _recover_task(
     state_mgr,
     task: TaskMessage,
@@ -157,10 +174,7 @@ async def _recover_task(
     """Mark a failed task for retry or permanent failure and update state."""
     try:
         current = await state_mgr.get(task.feature_id)
-        attempts = sum(
-            1 for e in current.history
-            if e.event == "task_requeued" and e.task_id == task.task_id
-        ) + 1
+        attempts = _count_recent_requeue_attempts(current.history, task.task_id) + 1
 
         if attempts < retry_limit:
             log.info("[%s] Requeueing task %s (attempt %d/%d)", WORKER_ID, task.task_id, attempts, retry_limit)
