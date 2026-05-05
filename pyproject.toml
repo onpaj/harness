@@ -55,7 +55,3 @@ testpaths = ["tests"]
 [tool.hatch.build.targets.wheel]
 packages = ["agentharness"]
 
-[tool.hatch.build.targets.wheel.force-include]
-".agents" = "agentharness/data/agents"
-".pipeline" = "agentharness/data/pipeline"
-".claude/skills" = "agentharness/data/skills"
