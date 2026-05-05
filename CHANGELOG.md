@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-05-05)
+
+### Features
+
+- Auto-run gh auth login in agentharness init when not authenticated
+  ([`17a1bfb`](https://github.com/onpaj/harness/commit/17a1bfb6dc1525c1c4d8356ee1dac93942abf8bc))
+
+
 ## v0.2.0 (2026-05-05)
 
 ### Features
