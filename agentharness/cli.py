@@ -30,9 +30,27 @@ def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str | None:
         return None
 
 
+def _gh_login_if_needed() -> str | None:
+    """Return a GitHub token, offering to run gh auth login if not yet authenticated."""
+    token = _run_cmd(["gh", "auth", "token"])
+    if token:
+        return token
+
+    gh_available = _run_cmd(["gh", "--version"]) is not None
+    if not gh_available:
+        return None
+
+    console.print("[yellow]gh CLI is installed but not authenticated.[/yellow]")
+    if click.confirm("Run gh auth login now?", default=True):
+        subprocess.run(["gh", "auth", "login"], check=False)
+        return _run_cmd(["gh", "auth", "token"])
+
+    return None
+
+
 def _detect_github_env(target: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    token = _run_cmd(["gh", "auth", "token"])
+    token = _gh_login_if_needed()
     if token:
         values["GITHUB_TOKEN"] = token
     remote_url = _run_cmd(["git", "remote", "get-url", "origin"], cwd=target)
