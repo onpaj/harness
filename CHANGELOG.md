@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v0.3.2 (2026-05-05)
+
+### Bug Fixes
+
+- Load .env from project root, not package install path
+  ([`601a4e4`](https://github.com/onpaj/harness/commit/601a4e487a7b4e0a39fe80f886c9cec3c9e287d5))
+
+load_dotenv() at module level resolves relative to the installed package path, never finding the
+  user's project .env. Load it explicitly from the project root (parent of .pipeline/) inside
+  load_config() instead.
+
+- Place harness comment directly before its variables in .env
+  ([`e38390d`](https://github.com/onpaj/harness/commit/e38390de037586f0fc591ccc16b47efaf45ebb88))
+
+
 ## v0.3.1 (2026-05-05)
 
 ### Bug Fixes
