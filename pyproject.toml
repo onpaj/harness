@@ -55,3 +55,14 @@ testpaths = ["tests"]
 [tool.hatch.build.targets.wheel]
 packages = ["agentharness"]
 
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "master"
+tag_format = "v{version}"
+commit_message = "chore: release {version} [skip ci]"
+build_command = "pip install hatch && hatch build"
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "refactor"]
+
