@@ -10,9 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-
-load_dotenv()
-
 from pydantic import BaseModel
 
 
@@ -129,6 +126,8 @@ _DEFAULT_CONFIG_PATH = Path(".pipeline/config.json")
 
 def load_config(path: Path | None = None) -> Config:
     config_path = path or _DEFAULT_CONFIG_PATH
+    # .env lives in the project root (one level above .pipeline/)
+    load_dotenv(config_path.resolve().parent.parent / ".env")
     if not config_path.exists():
         raise FileNotFoundError(
             f"Pipeline config not found at {config_path}. "
