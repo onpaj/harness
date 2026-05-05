@@ -1,7 +1,15 @@
 # CHANGELOG
 
 
+## v0.3.5 (2026-05-05)
+
+
 ## v0.3.4 (2026-05-05)
+
+### Bug Fixes
+
+- Max turns
+  ([`99feef4`](https://github.com/onpaj/harness/commit/99feef4589b4eb0e9f36a0f5c1146a0470fd020a))
 
 
 ## v0.3.3 (2026-05-05)
