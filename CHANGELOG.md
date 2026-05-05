@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.3.3 (2026-05-05)
+
+### Bug Fixes
+
+- Fast-forward in commit_workdir_changes to prevent non-fast-forward push
+  ([`e1c9a1c`](https://github.com/onpaj/harness/commit/e1c9a1c0660cfec8a3c36809b9e3fb3b5ef00dd0))
+
+- Fast-forward local branch before artifact upload to avoid non-fast-forward push rejection
+  ([`c609b1c`](https://github.com/onpaj/harness/commit/c609b1c444c4124e902b81c097e631cb94b38e32))
+
+When sequential agents (e.g. analyst then architect) each upload artifacts to the same feature
+  branch, the second agent's local clone is behind the remote after the first agent's push. The
+  plain push then fails with non-fast-forward rejection. Merging --ff-only after checkout brings the
+  local branch up to date before committing the new artifact.
+
+
 ## v0.3.2 (2026-05-05)
 
 ### Bug Fixes
