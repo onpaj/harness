@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentharness"
-version = "0.3.3"
+version = "0.3.4"
 description = "Distributed agentic development pipeline powered by Claude Code"
 readme = "README.md"
 license = { text = "MIT" }
