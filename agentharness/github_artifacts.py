@@ -282,6 +282,15 @@ class GitHubArtifactStore:
             pass
 
         await _run_git("-C", str(self._clone_root), "checkout", self._feature_id)
+
+        try:
+            await _run_git(
+                "-C", str(self._clone_root),
+                "merge", "--ff-only", f"origin/{self._feature_id}",
+            )
+        except RuntimeError:
+            pass
+
         await _run_git("-C", str(self._clone_root), "add", "-A")
 
         await _unstage_oversized_files(self._clone_root)
