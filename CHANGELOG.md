@@ -1,6 +1,9 @@
 # CHANGELOG
 
 
+## v0.3.4 (2026-05-05)
+
+
 ## v0.3.3 (2026-05-05)
 
 ### Bug Fixes
@@ -15,6 +18,19 @@ When sequential agents (e.g. analyst then architect) each upload artifacts to th
   branch, the second agent's local clone is behind the remote after the first agent's push. The
   plain push then fails with non-fast-forward rejection. Merging --ff-only after checkout brings the
   local branch up to date before committing the new artifact.
+
+- Reset retry counter after phase_resumed; raise architect max_turns to 50
+  ([`ea691e3`](https://github.com/onpaj/harness/commit/ea691e37746ef54a067b85d9493d53897978bf99))
+
+Two bugs caused the architect phase to repeatedly fail after a manual resume:
+
+1. _recover_task counted all historical task_requeued events across runs, so phase_resumed never
+  reset the counter — any exception after a manual resume immediately exhausted retries and killed
+  the feature. Fixed by counting only requeues since the most recent phase_resumed or
+  pipeline_started event.
+
+2. architect max_turns was 10, but complex codebases (C#+React monorepo) require ~47 tool calls for
+  thorough codebase exploration. The agent hit error_max_turns on every attempt. Raised to 50.
 
 
 ## v0.3.2 (2026-05-05)
