@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.3.6 (2026-05-06)
+
+### Bug Fixes
+
+- Handle "no changes added to commit" in artifact upload
+  ([`6bda14e`](https://github.com/onpaj/harness/commit/6bda14e71312e3c3702357a0eff3d50aa904e2bd))
+
+git emits this message instead of "nothing to commit" when working-tree files are modified but
+  nothing is staged — which occurs on idempotent re-uploads where the artifact is already on the
+  branch.
+
+
 ## v0.3.5 (2026-05-05)
 
 
