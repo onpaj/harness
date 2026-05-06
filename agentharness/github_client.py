@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -13,6 +14,11 @@ if TYPE_CHECKING:
 
 _BASE_URL = "https://api.github.com"
 _ACCEPT_HEADER = "application/vnd.github+json"
+
+_RETRYABLE_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+_RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 502, 503, 504})
+_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.5)
+_MAX_RETRY_AFTER: float = 5.0
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +45,7 @@ class GitHubClient:
                 "Accept": _ACCEPT_HEADER,
                 "X-GitHub-Api-Version": "2022-11-28",
             },
+            timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0),
         )
 
     @classmethod
@@ -63,20 +70,46 @@ class GitHubClient:
         return f"/repos/{self.owner}/{self.repo}{path}"
 
     async def _request(self, method: str, url: str, **kwargs: object) -> dict:
-        response = await self._client.request(method, url, **kwargs)
-        if response.status_code >= 400:
+        is_retryable = method.upper() in _RETRYABLE_METHODS
+        attempt = 0
+        while True:
             try:
-                body = response.json()
-                detail = body.get("message", response.text)
-                if "errors" in body:
-                    detail = f"{detail}: {body['errors']}"
+                response = await self._client.request(method, url, **kwargs)
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                if not is_retryable or attempt >= len(_RETRY_DELAYS):
+                    raise
+                delay = _RETRY_DELAYS[attempt]
+                attempt += 1
+                log.warning("GitHub %s %s failed (%s), retrying in %.1fs", method, url, type(exc).__name__, delay)
+                await asyncio.sleep(delay)
+                continue
 
-            except Exception:
-                detail = response.text
-            raise GitHubApiError(response.status_code, detail)
-        if response.status_code == 204:
-            return {}
-        return response.json()
+            if is_retryable and response.status_code in _RETRYABLE_STATUSES and attempt < len(_RETRY_DELAYS):
+                retry_after_raw = response.headers.get("Retry-After")
+                if retry_after_raw:
+                    try:
+                        delay = min(float(retry_after_raw), _MAX_RETRY_AFTER)
+                    except ValueError:
+                        delay = _RETRY_DELAYS[attempt]
+                else:
+                    delay = _RETRY_DELAYS[attempt]
+                attempt += 1
+                log.warning("GitHub %s %s returned %s, retrying in %.1fs", method, url, response.status_code, delay)
+                await asyncio.sleep(delay)
+                continue
+
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                    detail = body.get("message", response.text) if isinstance(body, dict) else response.text
+                    if isinstance(body, dict) and "errors" in body:
+                        detail = f"{detail}: {body['errors']}"
+                except Exception:
+                    detail = response.text
+                raise GitHubApiError(response.status_code, detail)
+            if response.status_code == 204:
+                return {}
+            return response.json()
 
     # ------------------------------------------------------------------
     # Issues
@@ -134,16 +167,11 @@ class GitHubClient:
         )
 
     async def list_comments(self, number: int) -> list[dict]:
-        response = await self._client.get(
+        result: list[dict] = await self._request(  # type: ignore[assignment]
+            "GET",
             self._repo_url(f"/issues/{number}/comments"),
         )
-        if response.status_code >= 400:
-            try:
-                detail = response.json().get("message", response.text)
-            except Exception:
-                detail = response.text
-            raise GitHubApiError(response.status_code, detail)
-        return response.json()
+        return result
 
     async def update_comment(self, comment_id: int, body: str) -> None:
         await self._request(

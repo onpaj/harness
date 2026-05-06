@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -72,6 +73,15 @@ _PHASE_TO_QUEUE = {
 _OBSERVER_PID_FILE = Path("logs/observer.pid")
 
 _GITHUB_CALL_PATTERNS = ("api.github.com", "mcp__github__", "X-GitHub-Api-Version")
+
+log = logging.getLogger(__name__)
+
+
+def _format_error(exc: Exception) -> str:
+    from agentharness.github_client import GitHubApiError
+    if isinstance(exc, GitHubApiError):
+        return f"GitHub {exc.status_code}"
+    return type(exc).__name__
 
 
 def _is_github_call_line(line: str) -> bool:
@@ -476,8 +486,11 @@ class ConfirmScreen(ModalScreen[bool]):
 class StatusBar(Static):
     """Bottom status line with last-refresh time and queue depths."""
 
-    def update_time(self, queue_depths: dict[str, int] | None = None, refresh_seconds: float = _REFRESH_SECONDS) -> None:
+    def update_time(self, queue_depths: dict[str, int] | None = None, refresh_seconds: float = _REFRESH_SECONDS, *, error: str | None = None) -> None:
         now = datetime.now(UTC).strftime("%H:%M:%S UTC")
+        if error:
+            self.update(f"[red]⚠ refresh failed: {error}[/red]  |  [dim]Last attempt: {now}[/dim]")
+            return
         if queue_depths:
             active = {q: n for q, n in queue_depths.items() if n > 0}
             queue_str = "  ".join(f"[yellow]{q.replace('-queue','')}:{n}[/yellow]" for q, n in active.items())
@@ -569,10 +582,15 @@ class PipelineMonitor(App):
         self.call_after_refresh(self._refresh_data)
 
     async def _refresh_data(self) -> None:
-        states, queue_depths = await asyncio.gather(
-            _load_all_states(self._config),
-            _load_queue_depths(self._config),
-        )
+        try:
+            states, queue_depths = await asyncio.gather(
+                _load_all_states(self._config),
+                _load_queue_depths(self._config),
+            )
+        except Exception as exc:
+            log.warning("TUI refresh failed: %s", exc)
+            self.query_one(StatusBar).update_time(error=_format_error(exc))
+            return
         self._states = states
         feature_list = self.query_one(FeatureList)
         await feature_list.update_features(states)
@@ -742,14 +760,16 @@ class PipelineMonitor(App):
     async def _do_resume_task(self, feature_id: str, task_id: str) -> None:
         from agentharness.models import FeatureStatus, PhaseInfo, PhaseStatus, TaskMessage, TaskStatus
         from agentharness.storage import phase_artifact_path, review_artifact_path
+        try:
+            state_mgr = create_state_manager(self._config)
+            state = await state_mgr.get(feature_id)
 
-        state_mgr = create_state_manager(self._config)
-        state = await state_mgr.get(feature_id)
-
-        if task_id in _PHASE_ORDER:
-            await self._resume_phase(state_mgr, state, feature_id, task_id, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
-        else:
-            await self._resume_dev_task(state_mgr, state, feature_id, task_id, TaskMessage, TaskStatus)
+            if task_id in _PHASE_ORDER:
+                await self._resume_phase(state_mgr, state, feature_id, task_id, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path)
+            else:
+                await self._resume_dev_task(state_mgr, state, feature_id, task_id, TaskMessage, TaskStatus)
+        except Exception as exc:
+            self.notify(f"Resume failed: {exc}", severity="error")
 
     async def _resume_phase(self, state_mgr, state, feature_id, phase, TaskMessage, FeatureStatus, PhaseInfo, PhaseStatus, phase_artifact_path, review_artifact_path) -> None:
         queue_name = _PHASE_TO_QUEUE.get(phase)
@@ -867,7 +887,11 @@ class PipelineMonitor(App):
 
     async def _do_implement(self, feature_id: str) -> None:
         from agentharness.brainstorm import enqueue_planner
-        await enqueue_planner(feature_id, self._config)
+        try:
+            await enqueue_planner(feature_id, self._config)
+        except Exception as exc:
+            self.notify(f"Implement failed: {exc}", severity="error")
+            return
         self.notify(f"Analyzing: {feature_id}", severity="information")
 
     def action_purge_queues(self) -> None:
@@ -877,12 +901,16 @@ class PipelineMonitor(App):
         self.push_screen(ConfirmScreen("Purge ALL queues? This cannot be undone."), on_confirm)
 
     async def _do_purge_queues(self) -> None:
-        for queue_name in self._config.queue_names():
-            queue = create_task_queue(self._config, queue_name)
-            try:
-                await queue.purge()
-            finally:
-                await queue.close()
+        try:
+            for queue_name in self._config.queue_names():
+                queue = create_task_queue(self._config, queue_name)
+                try:
+                    await queue.purge()
+                finally:
+                    await queue.close()
+        except Exception as exc:
+            self.notify(f"Purge failed: {exc}", severity="error")
+            return
         self.notify("All queues purged.", severity="warning")
 
     async def action_open_log(self) -> None:
