@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v0.3.7 (2026-05-06)
+
+### Bug Fixes
+
+- Make TUI resilient to transient GitHub API failures
+  ([`6d0662d`](https://github.com/onpaj/harness/commit/6d0662d4d6ec8c4bf0da80147a79db1a3e68a0d4))
+
+Adds retry logic to GitHubClient for idempotent requests (GET/HEAD) on 5xx/429 and httpx network
+  exceptions, with 0.5s/1.5s backoff and a Retry-After cap of 5s. Explicit httpx.Timeout(connect=5,
+  read=15) replaces the implicit 5s default that caused crashes when GitHub was slow.
+
+Guards the 2s refresh tick (_refresh_data) so a failed poll shows '⚠ refresh failed: GitHub 503' in
+  the StatusBar instead of crashing the TUI. Previous state is preserved across failures and the
+  indicator clears on recovery. Action workers (_do_implement, _do_purge_queues, _do_resume_task)
+  now surface errors via notify() instead of printing tracebacks on shutdown.
+
+
 ## v0.3.6 (2026-05-06)
 
 ### Bug Fixes
