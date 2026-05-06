@@ -228,7 +228,8 @@ class GitHubArtifactStore:
                 "commit", "-m", f"agent: upload {path}",
             )
         except RuntimeError as exc:
-            if "nothing to commit" not in str(exc).lower():
+            msg = str(exc).lower()
+            if "nothing to commit" not in msg and "no changes added to commit" not in msg:
                 raise
 
         await _run_git(
