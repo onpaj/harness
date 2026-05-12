@@ -99,8 +99,16 @@ async def observe(config: Config) -> None:
 
 
 async def _auto_mode_loop(config: Config) -> None:
-    """When the auto-mode toggle is on, start the oldest brainstormed feature
-    if nothing else is currently active. Toggle is checked every cycle."""
+    """When the auto-mode toggle is on, start the oldest eligible issue.
+
+    Eligible issues are:
+    - FeatureState features in *brainstormed* status.
+    - For GitHub backend: open issues carrying the feature-marker label that
+      have no pipeline state yet (no feat:/state:/queue: labels).
+
+    Only one feature is started per cycle. The loop waits until nothing is
+    actively running before picking the next candidate.
+    """
     from agentharness import auto_mode
     from agentharness.brainstorm import enqueue_planner
     from agentharness.storage import create_state_manager
@@ -108,6 +116,13 @@ async def _auto_mode_loop(config: Config) -> None:
     interval = config.auto_mode_poll_seconds
     log.info("Auto-mode loop started (interval=%.1fs)", interval)
     state_mgr = create_state_manager(config)
+
+    is_github = config.storage_backend == "github"
+    client = None
+    if is_github:
+        from agentharness.github_client import GitHubClient
+        client = GitHubClient.from_config(config)
+
     try:
         while True:
             if not auto_mode.is_enabled():
@@ -125,27 +140,50 @@ async def _auto_mode_loop(config: Config) -> None:
                 await asyncio.sleep(interval)
                 continue
 
-            candidates = sorted(
-                (f for f in features if f.status == FeatureStatus.brainstormed),
-                key=lambda f: f.created_at,
-            )
+            # Build candidate list: (created_at, feature_id_or_None, raw_issue_or_None)
+            candidates: list[tuple[datetime, str | None, dict | None]] = [
+                (f.created_at, f.feature_id, None)
+                for f in features
+                if f.status == FeatureStatus.brainstormed
+            ]
+
+            if client is not None:
+                tracked = {f.state_issue_number for f in features if f.state_issue_number is not None}
+                raw_issues = await _collect_raw_candidates(client, tracked, config)
+                for raw in raw_issues:
+                    try:
+                        created_at = datetime.fromisoformat(
+                            raw["created_at"].replace("Z", "+00:00")
+                        )
+                    except (KeyError, ValueError):
+                        created_at = datetime.now(UTC)
+                    candidates.append((created_at, None, raw))
+
             if not candidates:
                 await asyncio.sleep(interval)
                 continue
 
-            target = candidates[0]
-            log.info(
-                "Auto-mode starting %s (created_at=%s)",
-                target.feature_id,
-                target.created_at.isoformat(),
-            )
+            candidates.sort(key=lambda t: t[0] if t[0].tzinfo is not None else t[0].replace(tzinfo=UTC))
+            created_at, feature_id, raw_issue = candidates[0]
+
             try:
-                await enqueue_planner(target.feature_id, config)
+                if feature_id is not None:
+                    log.info("Auto-mode starting %s (created_at=%s)", feature_id, created_at.isoformat())
+                    await enqueue_planner(feature_id, config)
+                else:
+                    number = raw_issue["number"]  # type: ignore[index]
+                    log.info("Auto-mode bootstrapping issue #%d", number)
+                    feature_id = await _bootstrap_github_issue(client, raw_issue, config)
+                    await enqueue_planner(feature_id, config)
+                    await client.create_comment(number, f"Feature `{feature_id}` auto-started by observer.")
+                    await client.update_issue(number, state="closed")
             except Exception as exc:
-                log.error("Auto-mode enqueue_planner(%s) failed: %s", target.feature_id, exc)
+                log.error("Auto-mode failed to start candidate: %s", exc)
 
             await asyncio.sleep(interval)
     finally:
+        if client is not None:
+            await client.close()
         await state_mgr.close()
 
 
@@ -294,6 +332,63 @@ async def _unified_github_poll(
         await client.close()
 
 
+async def _bootstrap_github_issue(
+    client: "GitHubClient",
+    issue: dict,
+    config: Config,
+) -> str:
+    """Create branch + brief.md + FeatureState(brainstormed) for a raw GitHub issue.
+
+    Returns the computed feature_id. Raises on any error. Does NOT enqueue or
+    close/comment on the original issue — callers do that based on their context.
+    """
+    import base64
+    import re
+
+    from agentharness.github_state import GitHubStateManager
+    from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
+
+    title: str = issue.get("title") or "untitled"
+    body: str = issue.get("body") or ""
+    number: int = issue["number"]
+
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
+    feature_id = f"feat-{slug}"
+    branch_name = f"{feature_id}-{number}"
+    log.info("Bootstrapping feature %s from issue #%d (branch: %s)", feature_id, number, branch_name)
+
+    default_branch = await client.get_default_branch()
+    main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
+    try:
+        await client.create_ref(f"refs/heads/{branch_name}", main_sha)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to create branch {branch_name!r}: {exc}") from exc
+
+    brief_blob_path = f"artifacts/{feature_id}/brief.md"
+    await client.put_content(
+        path=brief_blob_path,
+        message=f"feat: add brief for {feature_id}",
+        content=base64.b64encode(body.encode()).decode(),
+        sha=None,
+        branch=branch_name,
+    )
+
+    now = datetime.now(UTC)
+    state = FeatureState(
+        feature_id=feature_id,
+        status=FeatureStatus.brainstormed,
+        created_at=now,
+        updated_at=now,
+        config=PipelineConfig(
+            max_revisions=config.defaults.max_revisions,
+            max_analyst_iterations=config.max_analyst_iterations,
+        ),
+        branch_name=branch_name,
+    )
+    await GitHubStateManager(client, feature_marker=config.github.feature_marker).create(state, body)
+    return feature_id
+
+
 async def _handle_implement_issue(
     client: "GitHubClient",
     issue: dict,
@@ -302,21 +397,13 @@ async def _handle_implement_issue(
 ) -> None:
     """Bootstrap the pipeline from a GitHub issue labeled 'implement'.
 
-    Saves the issue body as brief.md, creates the feature state, and enqueues
-    the analyst task. The original issue is closed with a reference comment.
+    Saves the issue body as brief.md, creates the feature state in brainstormed
+    status, and leaves it for the user (or auto-mode) to start the pipeline.
+    The original issue is closed with a reference comment.
     """
-    import base64
-    import re
-    from datetime import UTC, datetime
-
     from agentharness.github_labels import IMPLEMENT_LABEL
-    from agentharness.github_state import GitHubStateManager
-    from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
 
     number: int = issue["number"]
-    title: str = issue.get("title") or "untitled"
-    body: str = issue.get("body") or ""
-
     try:
         # Remove 'implement' label first to prevent double-processing
         try:
@@ -325,44 +412,7 @@ async def _handle_implement_issue(
             log.debug("Issue #%d implement label already removed or missing: %s", number, exc)
             return
 
-        slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
-        feature_id = f"feat-{slug}"
-        branch_name = f"{feature_id}-{number}"
-        log.info("Bootstrapping feature %s from issue #%d (branch: %s)", feature_id, number, branch_name)
-
-        # Create feature branch (branch_name includes issue number so it's always unique)
-        default_branch = await client.get_default_branch()
-        main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
-        try:
-            await client.create_ref(f"refs/heads/{branch_name}", main_sha)
-        except Exception as exc:
-            raise RuntimeError(f"Failed to create branch {branch_name!r}: {exc}") from exc
-
-        # Commit issue body as brief.md
-        brief_blob_path = f"artifacts/{feature_id}/brief.md"
-        await client.put_content(
-            path=brief_blob_path,
-            message=f"feat: add brief for {feature_id}",
-            content=base64.b64encode(body.encode()).decode(),
-            sha=None,
-            branch=branch_name,
-        )
-
-        # Create initial feature state — pipeline starts on user's explicit "implement" action
-        now = datetime.now(UTC)
-        state = FeatureState(
-            feature_id=feature_id,
-            status=FeatureStatus.brainstormed,
-            created_at=now,
-            updated_at=now,
-            config=PipelineConfig(
-                max_revisions=config.defaults.max_revisions,
-                max_analyst_iterations=config.max_analyst_iterations,
-            ),
-            branch_name=branch_name,
-        )
-        await GitHubStateManager(client, feature_marker=config.github.feature_marker).create(state, body)
-
+        feature_id = await _bootstrap_github_issue(client, issue, config)
         await client.create_comment(
             number,
             f"Feature `{feature_id}` created — press **i** in the TUI (or run `agentharness implement {feature_id}`) to start the pipeline.",
@@ -378,6 +428,37 @@ async def _handle_implement_issue(
             pass
     finally:
         bootstrapping.discard(number)
+
+
+async def _collect_raw_candidates(
+    client: "GitHubClient",
+    tracked_issue_numbers: set[int],
+    config: Config,
+) -> list[dict]:
+    """Return open agent-labeled issues that have no pipeline state yet.
+
+    Excludes any issue whose number is in *tracked_issue_numbers* (already
+    a FeatureState) and any issue that carries a feat:*, state:*, or queue:*
+    label (already in the pipeline or finished).
+    """
+    from agentharness.github_labels import FEAT_STATUS_LABELS, QUEUE_NAME_TO_LABEL, TASK_STATE_LABELS
+
+    skip_labels = FEAT_STATUS_LABELS | TASK_STATE_LABELS | frozenset(QUEUE_NAME_TO_LABEL.values())
+    try:
+        all_issues = await client.list_issues(labels=[config.github.feature_marker])
+    except Exception as exc:
+        log.warning("Auto-mode raw issue fetch failed: %s", exc)
+        return []
+
+    result = []
+    for issue in all_issues:
+        if issue["number"] in tracked_issue_numbers:
+            continue
+        label_names = {lbl["name"] for lbl in issue.get("labels", [])}
+        if label_names & skip_labels:
+            continue
+        result.append(issue)
+    return result
 
 
 async def _collect_states(client: "GitHubClient", issues: list[dict], config: Config) -> list[dict]:
