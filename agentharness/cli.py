@@ -220,8 +220,9 @@ def implement(ctx: click.Context, feature_id: str) -> None:
 
 
 @main.command("observe")
+@click.option("--auto", is_flag=True, help="Enable auto-mode: drain brainstormed features serially (one at a time).")
 @click.pass_context
-def observe(ctx: click.Context) -> None:
+def observe(ctx: click.Context, auto: bool) -> None:
     """Single observer process: polls all queues, spawns a subprocess per task."""
     import subprocess
     config = load_config(ctx.obj.get("config_path"))
@@ -230,24 +231,33 @@ def observe(ctx: click.Context) -> None:
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / "observer.log"
     fh = open(log_file, "a")
+    cmd = [exe, "_observe"]
+    if auto:
+        cmd.append("--auto")
     proc = subprocess.Popen(
-        [exe, "_observe"],
+        cmd,
         stdout=fh,
         stderr=fh,
         start_new_session=True,
     )
     console.print(f"[green]Observer started[/green] (pid {proc.pid}) → logs/observer.log")
+    if auto:
+        console.print("[dim]Auto-mode: ON — will drain brainstormed features serially.[/dim]")
     console.print("Monitor with: [bold]agentharness watch[/bold]")
 
 
 @main.command("_observe")
+@click.option("--auto", is_flag=True, hidden=True)
 @click.pass_context
-def _observe(ctx: click.Context) -> None:
+def _observe(ctx: click.Context, auto: bool) -> None:
     """Internal: run the observer loop (do not call directly)."""
+    from agentharness import auto_mode
     from agentharness.observer import observe as _run_observe
     from agentharness.run_task import configure_logging
     configure_logging()
     config = load_config(ctx.obj.get("config_path"))
+    if auto:
+        auto_mode.enable()
     asyncio.run(_run_observe(config))
 
 

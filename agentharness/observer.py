@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentharness.config import Config
-from agentharness.models import TaskMessage
+from agentharness.models import FeatureStatus, TaskMessage
 from agentharness.storage import create_task_queue
 from agentharness.storage_protocol import RawMessage, TaskQueue
 
@@ -19,6 +19,17 @@ log = logging.getLogger(__name__)
 _RENEWAL_INTERVAL = 60      # seconds between visibility renewals
 _VISIBILITY_TIMEOUT = 150   # seconds of visibility granted per renewal
 
+_ACTIVE_STATUSES: frozenset[FeatureStatus] = frozenset({
+    FeatureStatus.analyzing,
+    FeatureStatus.questioning,
+    FeatureStatus.architecting,
+    FeatureStatus.designing,
+    FeatureStatus.planning,
+    FeatureStatus.developing,
+    FeatureStatus.reviewing,
+    FeatureStatus.dev_revision,
+})
+
 _STALE_CLAIM_TIMEOUT = 600  # seconds before a claimed task is reclaimed
 _SWEEP_INTERVAL = 60        # seconds between sweeps
 _STATE_CACHE_INTERVAL = 30  # seconds between local state cache writes (GitHub backend)
@@ -26,6 +37,11 @@ STATE_CACHE_PATH = Path("logs/state-cache.json")
 
 async def observe(config: Config) -> None:
     """Poll all queues and spawn a subprocess per message."""
+    from agentharness import auto_mode
+    if config.auto_mode:
+        auto_mode.enable()
+        log.info("Auto-mode enabled via config.")
+
     queue_names = config.queue_names()
 
     if config.storage_backend == "github":
@@ -73,12 +89,67 @@ async def observe(config: Config) -> None:
                 _poll_queue(q_name, q, config, exe, active_procs, poll_interval)
                 for q_name, q in queues.items()
             ]
+        poll_tasks.append(_auto_mode_loop(config))
         await asyncio.gather(*poll_tasks)
     except asyncio.CancelledError:
         pass
     finally:
         for q in queues.values():
             await q.close()
+
+
+async def _auto_mode_loop(config: Config) -> None:
+    """When the auto-mode toggle is on, start the oldest brainstormed feature
+    if nothing else is currently active. Toggle is checked every cycle."""
+    from agentharness import auto_mode
+    from agentharness.brainstorm import enqueue_planner
+    from agentharness.storage import create_state_manager
+
+    interval = config.auto_mode_poll_seconds
+    log.info("Auto-mode loop started (interval=%.1fs)", interval)
+    state_mgr = create_state_manager(config)
+    try:
+        while True:
+            if not auto_mode.is_enabled():
+                await asyncio.sleep(interval)
+                continue
+
+            try:
+                features = await state_mgr.list_features()
+            except Exception as exc:
+                log.warning("Auto-mode list_features failed: %s", exc)
+                await asyncio.sleep(interval)
+                continue
+
+            if any(f.status in _ACTIVE_STATUSES for f in features):
+                await asyncio.sleep(interval)
+                continue
+
+            candidates = sorted(
+                (
+                    f for f in features
+                    if f.status == FeatureStatus.brainstormed and f.epic_parent is None
+                ),
+                key=lambda f: f.created_at,
+            )
+            if not candidates:
+                await asyncio.sleep(interval)
+                continue
+
+            target = candidates[0]
+            log.info(
+                "Auto-mode starting %s (created_at=%s)",
+                target.feature_id,
+                target.created_at.isoformat(),
+            )
+            try:
+                await enqueue_planner(target.feature_id, config)
+            except Exception as exc:
+                log.error("Auto-mode enqueue_planner(%s) failed: %s", target.feature_id, exc)
+
+            await asyncio.sleep(interval)
+    finally:
+        await state_mgr.close()
 
 
 async def _poll_queue(

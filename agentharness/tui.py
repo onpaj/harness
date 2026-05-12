@@ -552,6 +552,7 @@ class PipelineMonitor(App):
         Binding("p", "purge_queues", "Purge all queues"),
         Binding("i", "implement", "Implement selected feature"),
         Binding("o", "toggle_observer", "Observer on/off"),
+        Binding("a", "toggle_auto_mode", "Auto-mode on/off"),
         Binding("k", "kill_task", "Kill selected task"),
         Binding("t", "resume_task", "Resume selected task"),
         Binding("s", "open_state_change", "Change state"),
@@ -877,6 +878,13 @@ class PipelineMonitor(App):
         else:
             new_pid = _start_observer()
             self.notify(f"Observer started (pid {new_pid}).", severity="information")
+
+    def action_toggle_auto_mode(self) -> None:
+        from agentharness import auto_mode
+        new_state = auto_mode.toggle()
+        label = "ON" if new_state else "OFF"
+        severity = "information" if new_state else "warning"
+        self.notify(f"Auto-mode: {label}", severity=severity)
 
     def action_implement(self) -> None:
         feature_id = self.query_one(FeatureList).selected_feature_id()

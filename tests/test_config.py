@@ -152,6 +152,28 @@ class TestWorktreeConfig:
         assert config.worktree_base_branch is None
 
 
+class TestAutoModeConfig:
+    def test_auto_mode_defaults_false(self, tmp_path):
+        cfg_path = write_config(tmp_path, base_config())
+        config = load_config(cfg_path)
+        assert config.auto_mode is False
+
+    def test_auto_mode_poll_seconds_defaults_to_60(self, tmp_path):
+        cfg_path = write_config(tmp_path, base_config())
+        config = load_config(cfg_path)
+        assert config.auto_mode_poll_seconds == 60.0
+
+    def test_auto_mode_can_be_enabled_via_config(self, tmp_path):
+        cfg_path = write_config(tmp_path, {**base_config(), "auto_mode": True})
+        config = load_config(cfg_path)
+        assert config.auto_mode is True
+
+    def test_auto_mode_poll_seconds_configurable(self, tmp_path):
+        cfg_path = write_config(tmp_path, {**base_config(), "auto_mode_poll_seconds": 120.0})
+        config = load_config(cfg_path)
+        assert config.auto_mode_poll_seconds == 120.0
+
+
 class TestParseGithubRemote:
     def _mock_remote(self, url: str):
         return patch("subprocess.check_output", return_value=url)

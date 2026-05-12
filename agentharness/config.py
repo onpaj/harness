@@ -110,6 +110,8 @@ class Config(BaseModel):
     worktree_base_dir: str = ".worktrees"
     worktree_base_branch: str | None = None
     max_analyst_iterations: int = 2
+    auto_mode: bool = False
+    auto_mode_poll_seconds: float = 60.0
 
     def queue_names(self) -> list[str]:
         return list(self.queues.keys())
