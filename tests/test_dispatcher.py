@@ -1064,7 +1064,7 @@ class TestOpenFeaturePrWithStore:
 
         state_mgr.open_review.assert_awaited_once_with(
             "feat-x",
-            pr_title="Add PR Summary Design",
+            pr_title="feat: Add PR Summary Design",
             pr_summary="Developer-authored body.",
         )
 
@@ -1129,6 +1129,59 @@ class TestExtractBriefTitle:
     def test_returns_empty_string_for_whitespace_only(self):
         from agentharness.dispatcher import _extract_brief_title
         assert _extract_brief_title("   \n\n  \t\n") == ""
+
+
+class TestFormatPrTitle:
+    def test_wraps_plain_title_with_feat_prefix(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("Telemetry") == "feat: Telemetry"
+
+    def test_preserves_existing_feat_prefix(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("feat: Something") == "feat: Something"
+
+    def test_preserves_feat_with_scope(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("feat(scope): Something") == "feat(scope): Something"
+
+    def test_preserves_fix_prefix(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("fix: broken thing") == "fix: broken thing"
+
+    def test_preserves_breaking_change_marker(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("feat!: breaking change") == "feat!: breaking change"
+
+    def test_returns_empty_string_unchanged(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("") == ""
+
+    def test_case_insensitive_detection(self):
+        from agentharness.dispatcher import _format_pr_title
+        assert _format_pr_title("FEAT: Something") == "FEAT: Something"
+
+
+class TestExtractBriefBody:
+    def test_returns_content_after_first_heading(self):
+        from agentharness.dispatcher import _extract_brief_body
+        content = "# Title\n\n## Problem\nSome problem.\n"
+        assert _extract_brief_body(content) == "## Problem\nSome problem."
+
+    def test_returns_none_when_no_body(self):
+        from agentharness.dispatcher import _extract_brief_body
+        assert _extract_brief_body("# Title\n") is None
+
+    def test_returns_none_for_whitespace_only_body(self):
+        from agentharness.dispatcher import _extract_brief_body
+        assert _extract_brief_body("# Title\n\n   \n") is None
+
+    def test_returns_none_when_no_heading(self):
+        from agentharness.dispatcher import _extract_brief_body
+        assert _extract_brief_body("plain text\n") is None
+
+    def test_returns_none_for_empty_input(self):
+        from agentharness.dispatcher import _extract_brief_body
+        assert _extract_brief_body("") is None
 
 
 class TestExtractPrSummary:
@@ -1396,7 +1449,7 @@ class TestBuildPrContent:
             ),
         })
         title, summary = await _build_pr_content(state, store)
-        assert title == "Add PR Summary Design"
+        assert title == "feat: Add PR Summary Design"
         assert summary is not None
         assert "Implemented PR summary support." in summary
         assert "### Changes" in summary
@@ -1432,7 +1485,7 @@ class TestBuildPrContent:
             "artifacts/feat-x/brief.md": "# Title\n",
         })
         title, summary = await _build_pr_content(state, store)
-        assert title == "Title"
+        assert title == "feat: Title"
         assert summary is None
 
     @pytest.mark.asyncio
@@ -1441,7 +1494,7 @@ class TestBuildPrContent:
         state = FeatureState(feature_id="feat-x", status=FeatureStatus.done, tasks=[])
         store = _FakeStore({"artifacts/feat-x/brief.md": "# Title\n"})
         title, summary = await _build_pr_content(state, store)
-        assert title == "Title"
+        assert title == "feat: Title"
         assert summary is None
 
     @pytest.mark.asyncio
@@ -1481,7 +1534,7 @@ class TestBuildPrContent:
         )
         with caplog.at_level(logging.INFO, logger="agentharness.dispatcher"):
             title, summary = await _build_pr_content(state, store)
-        assert title == "Title"
+        assert title == "feat: Title"
         assert summary is None
         assert any("PR summary fallback" in rec.message for rec in caplog.records)
 
@@ -1502,3 +1555,17 @@ class TestBuildPrContent:
         title, summary = await _build_pr_content(state, BoomStore())
         assert title is None
         assert summary is None
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_brief_body_when_impl_has_no_pr_summary(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "# Telemetry\n\n## Problem\nNeed metrics.\n",
+            "artifacts/feat-x/impl/main.r1.md": "## Notes\nno summary here\n## Status\nDONE\n",
+        })
+        title, summary = await _build_pr_content(state, store)
+        assert title == "feat: Telemetry"
+        assert summary is not None
+        assert "## Problem" in summary
+        assert "Need metrics." in summary

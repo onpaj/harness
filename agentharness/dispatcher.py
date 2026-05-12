@@ -773,6 +773,38 @@ def _extract_brief_title(content: str) -> str:
     return first_non_empty or ""
 
 
+_CONVENTIONAL_COMMIT_RE = re.compile(
+    r'^(?:feat|fix|chore|refactor|docs|test|ci|perf|style)(?:\([^)]+\))?!?: .+',
+    re.IGNORECASE,
+)
+
+
+def _format_pr_title(raw_title: str) -> str:
+    """Wrap *raw_title* in conventional-commit format if it isn't already."""
+    if not raw_title or _CONVENTIONAL_COMMIT_RE.match(raw_title):
+        return raw_title
+    return f"feat: {raw_title}"
+
+
+def _extract_brief_body(content: str) -> str | None:
+    """Return the brief content after the first heading, stripped.
+
+    Used as a fallback PR description when the developer impl has no ## PR Summary.
+    Returns None when content is empty or has no body after the title.
+    """
+    lines = content.splitlines()
+    past_title = False
+    buffer: list[str] = []
+    for line in lines:
+        if not past_title:
+            if line.strip().startswith("#"):
+                past_title = True
+            continue
+        buffer.append(line)
+    body = "\n".join(buffer).strip()
+    return body if body else None
+
+
 _PR_SUMMARY_HEADER = "## PR Summary"
 
 
@@ -851,6 +883,7 @@ async def _build_pr_content(
     feature_id = state.feature_id
     pr_title: str | None = None
     pr_summary: str | None = None
+    brief_content: str | None = None
 
     try:
         brief_path = _BRIEF_PATH_TEMPLATE.format(feature_id=feature_id)
@@ -864,7 +897,7 @@ async def _build_pr_content(
         else:
             extracted = _extract_brief_title(brief_content)
             if extracted:
-                pr_title = extracted
+                pr_title = _format_pr_title(extracted)
             else:
                 log.info(
                     "[%s] PR title fallback: brief.md has no heading or content",
@@ -892,6 +925,9 @@ async def _build_pr_content(
                         "[%s] PR summary fallback: no ## PR Summary section in impl artifact",
                         feature_id,
                     )
+
+        if pr_summary is None and brief_content:
+            pr_summary = _extract_brief_body(brief_content)
 
         return pr_title, pr_summary
 
