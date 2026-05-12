@@ -406,11 +406,11 @@ class GitHubStateManager:
         synthetic form — the next ``patch_existing_issue`` call writes the real
         state block. ``state.is_raw`` distinguishes raw from initialised states.
 
-        Results are sorted by issue number descending (newest first). When the
+        Results are sorted by issue number ascending (oldest/lowest ID first). When the
         same ``feature_id`` appears in multiple issues, only the highest-numbered
         issue is kept (raw + initialised dedup using the same rule).
         """
-        items = await self._client.list_issues(labels=[self._feature_marker], direction="desc")
+        items = await self._client.list_issues(labels=[self._feature_marker], direction="asc")
 
         # feature_id -> (issue_number, issue_dict, parsed_state_or_None) — prefer initialized, else newest
         seen: dict[str, tuple[int, dict, FeatureState | None]] = {}
@@ -435,7 +435,7 @@ class GitHubStateManager:
                 # Same type: take the newer one
                 seen[feature_id] = (issue["number"], issue, parsed)
 
-        sorted_triples = sorted(seen.values(), key=lambda t: t[0], reverse=True)
+        sorted_triples = sorted(seen.values(), key=lambda t: t[0])
 
         states: list[FeatureState] = []
         for _issue_number, issue, parsed in sorted_triples:

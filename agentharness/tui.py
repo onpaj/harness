@@ -942,11 +942,7 @@ async def _load_all_states(config: Config) -> list[FeatureState]:
     state_mgr = create_state_manager(config)
     states = await state_mgr.list_features()
 
-    def sort_key(s: FeatureState):
-        active = s.status not in (FeatureStatus.done, FeatureStatus.failed)
-        return (not active, -(s.updated_at.timestamp() if s.updated_at else 0))
-
-    return sorted(states, key=sort_key)
+    return sorted(states, key=lambda s: s.feature_id)
 
 
 async def _load_queue_depths(config: Config) -> dict[str, int]:

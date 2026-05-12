@@ -434,17 +434,17 @@ async def test_list_features_returns_correct_pairs():
     issue_a = _make_issue(state_a, number=1)
     issue_b = _make_issue(state_b, number=2)
     client = _mock_client()
-    # list_issues returns newest first (higher number first)
-    client.list_issues.return_value = [issue_b, issue_a]
+    # list_issues returns oldest first (lower number first)
+    client.list_issues.return_value = [issue_a, issue_b]
     mgr = GitHubStateManager(client, feature_marker=TEST_FEATURE_MARKER)
 
     # Act
     results = await mgr.list_features()
 
-    # Assert — returns list of FeatureState sorted by issue number descending
+    # Assert — returns list of FeatureState sorted by issue number ascending (lowest ID first)
     assert len(results) == 2
-    assert results[0].feature_id == "feat-20260427-bbb"
-    assert results[1].feature_id == "feat-20260427-aaa"
+    assert results[0].feature_id == "feat-20260427-aaa"
+    assert results[1].feature_id == "feat-20260427-bbb"
 
 
 @pytest.mark.asyncio
