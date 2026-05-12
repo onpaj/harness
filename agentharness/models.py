@@ -65,6 +65,7 @@ class PhaseInfo(BaseModel):
     agent: str | None = None
     revision: int = 1
     tokens_used: TokenUsage | None = None
+    pid: int | None = None
 
 
 class TaskEntry(BaseModel):

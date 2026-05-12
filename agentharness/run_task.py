@@ -208,10 +208,12 @@ async def _recover_task(
 
 def _mark_started(state, task: TaskMessage):
     phase = state.status.value
+    pid = os.getpid()
+    is_phase_level = not _is_per_task_message(task.task_id, task.feature_id)
     return (
         state
-        .with_task_update(task.task_id, status=TaskStatus.in_progress, worker_id=WORKER_ID, started_at=datetime.now(UTC), pid=os.getpid())
-        .with_phase(phase, PhaseInfo(status=PhaseStatus.in_progress))
+        .with_task_update(task.task_id, status=TaskStatus.in_progress, worker_id=WORKER_ID, started_at=datetime.now(UTC), pid=pid)
+        .with_phase(phase, PhaseInfo(status=PhaseStatus.in_progress, pid=pid if is_phase_level else None))
         .with_event("task_started", phase=phase, task_id=task.task_id, worker_id=WORKER_ID)
     )
 

@@ -646,25 +646,63 @@ class PipelineMonitor(App):
 
         feature_id = self.query_one(FeatureList).selected_feature_id()
         state = next((s for s in self._states if s.feature_id == feature_id), None)
-        entry = next((t for t in (state.tasks if state else []) if t.task_id == task_id), None)
-        pid = entry.pid if entry else None
+
+        is_phase = task_id in _PHASE_ORDER
+        if is_phase:
+            phase_info = state.phases.get(task_id) if state else None
+            pid = phase_info.pid if phase_info else None
+            github_task_id = f"{feature_id}-{task_id}-1"
+            short = task_id
+        else:
+            entry = next((t for t in (state.tasks if state else []) if t.task_id == task_id), None)
+            pid = entry.pid if entry else None
+            github_task_id = task_id
+            short = task_id.split("-dev-")[-1]
 
         def on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
-            if not pid:
-                self.notify(f"No PID recorded for task {task_id.split('-dev-')[-1]}.", severity="warning")
-                return
-            try:
-                os.kill(pid, signal.SIGTERM)
-                self.notify(f"Sent SIGTERM to pid {pid} for {task_id.split('-dev-')[-1]}.", severity="warning")
-            except ProcessLookupError:
-                self.notify(f"Process {pid} already exited.", severity="warning")
-            except Exception as exc:
-                self.notify(f"Kill failed: {exc}", severity="error")
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    self.notify(f"Sent SIGTERM to pid {pid} for {short}.", severity="warning")
+                except ProcessLookupError:
+                    self.notify(f"Process {pid} already exited.", severity="warning")
+                except Exception as exc:
+                    self.notify(f"Kill failed: {exc}", severity="error")
+            else:
+                self.notify(f"No PID recorded for {short} — attempting GitHub cleanup only.", severity="warning")
+            self.run_worker(self._do_kill_github_task(feature_id, github_task_id), exclusive=False)
 
-        short = task_id.split("-dev-")[-1]
-        self.push_screen(ConfirmScreen(f"Kill process for task: {short}?"), on_confirm)
+        self.push_screen(ConfirmScreen(f"Kill {'phase' if is_phase else 'task'}: {short}?"), on_confirm)
+
+    async def _do_kill_github_task(self, feature_id: str, task_id: str) -> None:
+        if self._config.storage_backend != "github":
+            return
+        try:
+            from agentharness.github_client import GitHubClient
+            from agentharness.github_labels import STATE_IN_PROGRESS, is_claimed_by_label
+            from agentharness.github_queue import _update_body_status
+
+            prefix = f"{feature_id}-"
+            display = task_id[len(prefix):] if task_id.startswith(prefix) else task_id
+            async with GitHubClient.from_config(self._config) as client:
+                issues = await client.list_issues(labels=[STATE_IN_PROGRESS])
+                for issue in issues:
+                    if task_id not in issue.get("title", ""):
+                        continue
+                    number = issue["number"]
+                    current_labels = [lbl["name"] for lbl in issue.get("labels", [])]
+                    for lbl in current_labels:
+                        if lbl == STATE_IN_PROGRESS or is_claimed_by_label(lbl):
+                            await client.remove_label(number, lbl)
+                    body = _update_body_status(issue.get("body") or "", "failed")
+                    await client.update_issue(number, state="closed", body=body)
+                    self.notify(f"Closed GitHub issue #{number} for {display}.", severity="information")
+                    return
+            self.notify(f"No in-progress GitHub issue found for {display}.", severity="warning")
+        except Exception as exc:
+            self.notify(f"GitHub cleanup failed: {exc}", severity="error")
 
     def action_resume_task(self) -> None:
         feature_id = self.query_one(FeatureList).selected_feature_id()
@@ -942,7 +980,7 @@ async def _load_all_states(config: Config) -> list[FeatureState]:
     state_mgr = create_state_manager(config)
     states = await state_mgr.list_features()
 
-    return sorted(states, key=lambda s: s.feature_id)
+    return sorted(states, key=lambda s: s.state_issue_number if s.state_issue_number is not None else 0)
 
 
 async def _load_queue_depths(config: Config) -> dict[str, int]:

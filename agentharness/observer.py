@@ -141,9 +141,10 @@ async def _auto_mode_loop(config: Config) -> None:
                 continue
 
             # Build candidate list: (sort_key, feature_id_or_None, raw_issue_or_None)
-            # sort_key is feature_id for known features; "raw-{number:010d}" for untracked issues
+            # sort_key uses GH issue number so both groups sort by ascending ID.
+            # "feat-" prefix keeps known brainstormed features ranked before "raw-" untracked issues.
             candidates: list[tuple[str, str | None, dict | None]] = [
-                (f.feature_id, f.feature_id, None)
+                (f"feat-{f.state_issue_number or 0:010d}", f.feature_id, None)
                 for f in features
                 if f.status == FeatureStatus.brainstormed
             ]
