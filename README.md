@@ -27,7 +27,7 @@ Each agent is a Claude Code CLI subprocess. State lives in a pluggable backend (
 ### Setup
 
 ```bash
-pip install -e ".[dev]"
+uv tool install git+https://github.com/pajgrtondrej/AgentHarness.git
 cp .env.example .env
 # Choose your backend: set "storage_backend" in .pipeline/config.json
 # See Environment section below for required variables
@@ -69,16 +69,13 @@ This section covers running AgentHarness locally while targeting a **different G
 ### 1. Install
 
 ```bash
-git clone https://github.com/pajgrtondrej/AgentHarness.git
-cd AgentHarness
-python -m venv .venv
-.venv/bin/pip install -e .
+uv tool install git+https://github.com/pajgrtondrej/AgentHarness.git
 ```
 
 Verify:
 
 ```bash
-.venv/bin/agentharness --version
+agentharness --version
 ```
 
 ### 2. Configure for a target project
@@ -109,10 +106,8 @@ The token must have read/write access to issues and branches on the target repo.
 
 ### 4. Start the observer
 
-Run from the AgentHarness directory:
-
 ```bash
-.venv/bin/agentharness observe
+agentharness observe
 ```
 
 The observer polls the target repo's issues for queued tasks and spawns agent subprocesses as work arrives. It clones the target repo into `.runs-cache/owner/repo/` on first use.
@@ -122,14 +117,14 @@ The observer polls the target repo's issues for queued tasks and spawns agent su
 In a separate terminal (or Claude Code session in the target project), use the `/brainstorm` skill or CLI:
 
 ```bash
-.venv/bin/agentharness brainstorm          # interactive → uploads brief
-.venv/bin/agentharness implement <feat-id> # kick off the pipeline
+agentharness brainstorm          # interactive → uploads brief
+agentharness implement <feat-id> # kick off the pipeline
 ```
 
-Or set `AGENTHARNESS_CONFIG` to an absolute path if you want to run commands from outside the AgentHarness directory:
+Or set `AGENTHARNESS_CONFIG` to an absolute path if you have a custom config location:
 
 ```bash
-export AGENTHARNESS_CONFIG=/path/to/AgentHarness/.pipeline/config.json
+export AGENTHARNESS_CONFIG=/path/to/.pipeline/config.json
 agentharness observe
 ```
 
@@ -365,8 +360,9 @@ cp .env.example .env
 ## Running tests
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest tests/ -v
+git clone https://github.com/pajgrtondrej/AgentHarness.git
+cd AgentHarness
+uv run --extra dev pytest tests/ -v
 ```
 
 Tests use mocked Azure clients — no real storage needed.
