@@ -126,10 +126,7 @@ async def _auto_mode_loop(config: Config) -> None:
                 continue
 
             candidates = sorted(
-                (
-                    f for f in features
-                    if f.status == FeatureStatus.brainstormed and f.epic_parent is None
-                ),
+                (f for f in features if f.status == FeatureStatus.brainstormed),
                 key=lambda f: f.created_at,
             )
             if not candidates:

@@ -105,14 +105,16 @@ class TestAutoModeLoopCandidateSelection:
         feature_id = mock_enqueue.call_args.args[0]
         assert feature_id == "old-feat"
 
-    async def test_skips_epic_children(self):
+    async def test_starts_epic_children(self):
+        """Brainstormed epic children are eligible — all brainstormed TUI entries should be startable."""
         mock_enqueue = await _run_one_cycle(
             features=[_brainstormed("epic-child", epic_parent=99)],
             is_auto_enabled=True,
         )
-        mock_enqueue.assert_not_called()
+        mock_enqueue.assert_called_once_with("epic-child", Config())
 
-    async def test_prefers_non_epic_over_epic_child(self):
+    async def test_oldest_brainstormed_wins_regardless_of_epic_parent(self):
+        """Oldest feature by created_at wins, even if it has an epic parent."""
         mock_enqueue = await _run_one_cycle(
             features=[
                 _brainstormed("epic-child", year=2023, epic_parent=1),
@@ -121,7 +123,7 @@ class TestAutoModeLoopCandidateSelection:
             is_auto_enabled=True,
         )
         feature_id = mock_enqueue.call_args.args[0]
-        assert feature_id == "standalone"
+        assert feature_id == "epic-child"
 
     async def test_does_not_start_brainstorming_status(self):
         """Features in 'brainstorming' (brief upload in progress) must be skipped."""
