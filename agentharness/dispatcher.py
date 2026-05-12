@@ -864,6 +864,22 @@ def _last_developer_artifact(state: FeatureState) -> str | None:
 
 
 _BRIEF_PATH_TEMPLATE = "artifacts/{feature_id}/brief.md"
+_SPEC_TITLE_PREFIXES = ("Specification: ", "Spec: ", "Feature Specification: ", "Feature Spec: ")
+
+
+def _extract_spec_title(content: str) -> str:
+    """Extract title from a spec artifact, stripping analyst-added prefixes.
+
+    Strips prefixes like "Specification: " that analysts prepend to spec headings,
+    leaving only the human-readable description.
+    """
+    raw = _extract_brief_title(content)
+    if not raw:
+        return ""
+    for prefix in _SPEC_TITLE_PREFIXES:
+        if raw.lower().startswith(prefix.lower()):
+            return raw[len(prefix):].strip()
+    return raw
 
 
 async def _build_pr_content(
@@ -876,6 +892,8 @@ async def _build_pr_content(
     log-style PR content. Otherwise downloads brief.md and the last completed
     developer impl artifact, extracts title + summary, and logs INFO on each
     fallback path. Unexpected exceptions are caught with log.exception.
+
+    Title priority: spec artifact (analyst-generated, descriptive) > brief heading.
     """
     if store is None:
         return None, None
@@ -903,6 +921,16 @@ async def _build_pr_content(
                     "[%s] PR title fallback: brief.md has no heading or content",
                     feature_id,
                 )
+
+        # Try spec artifact for a more descriptive title (overrides brief heading).
+        spec_path = phase_artifact_path(feature_id, "spec", _latest_spec_revision(state))
+        try:
+            spec_content = await store.download(spec_path)
+            spec_title = _extract_spec_title(spec_content)
+            if spec_title:
+                pr_title = _format_pr_title(spec_title)
+        except Exception:
+            pass
 
         impl_path = _last_developer_artifact(state)
         if impl_path is None:

@@ -1053,6 +1053,8 @@ class TestOpenFeaturePrWithStore:
             async def download(self, path: str) -> str:
                 if "brief" in path:
                     return "# Add PR Summary Design\n"
+                if "spec" in path:
+                    raise FileNotFoundError(path)
                 return "## PR Summary\nDeveloper-authored body.\n## Status\nDONE\n"
             async def upload(self, path, content): pass
             async def exists(self, path): return True
@@ -1129,6 +1131,37 @@ class TestExtractBriefTitle:
     def test_returns_empty_string_for_whitespace_only(self):
         from agentharness.dispatcher import _extract_brief_title
         assert _extract_brief_title("   \n\n  \t\n") == ""
+
+
+class TestExtractSpecTitle:
+    def test_strips_specification_prefix(self):
+        from agentharness.dispatcher import _extract_spec_title
+        content = "# Specification: Consolidate mapper into shared utility\nbody"
+        assert _extract_spec_title(content) == "Consolidate mapper into shared utility"
+
+    def test_strips_spec_prefix(self):
+        from agentharness.dispatcher import _extract_spec_title
+        assert _extract_spec_title("# Spec: Add telemetry\nbody") == "Add telemetry"
+
+    def test_strips_feature_specification_prefix(self):
+        from agentharness.dispatcher import _extract_spec_title
+        assert _extract_spec_title("# Feature Specification: Auth flow\n") == "Auth flow"
+
+    def test_strips_feature_spec_prefix(self):
+        from agentharness.dispatcher import _extract_spec_title
+        assert _extract_spec_title("# Feature Spec: Auth flow\n") == "Auth flow"
+
+    def test_case_insensitive_prefix_match(self):
+        from agentharness.dispatcher import _extract_spec_title
+        assert _extract_spec_title("# SPECIFICATION: Auth flow\n") == "Auth flow"
+
+    def test_returns_heading_without_prefix_unchanged(self):
+        from agentharness.dispatcher import _extract_spec_title
+        assert _extract_spec_title("# Add payment support\nbody") == "Add payment support"
+
+    def test_returns_empty_for_empty_input(self):
+        from agentharness.dispatcher import _extract_spec_title
+        assert _extract_spec_title("") == ""
 
 
 class TestFormatPrTitle:
@@ -1569,3 +1602,40 @@ class TestBuildPrContent:
         assert summary is not None
         assert "## Problem" in summary
         assert "Need metrics." in summary
+
+    @pytest.mark.asyncio
+    async def test_spec_title_overrides_generic_brief_heading(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "## Module\nJournal\n\n## Finding\nDuplicated mapper.",
+            "artifacts/feat-x/spec.r1.md": (
+                "# Specification: Consolidate JournalEntry→JournalEntryDto into shared mapper\n\nbody"
+            ),
+            "artifacts/feat-x/impl/main.r1.md": "## PR Summary\nDone.\n## Status\nDONE\n",
+        })
+        title, _ = await _build_pr_content(state, store)
+        assert title == "feat: Consolidate JournalEntry→JournalEntryDto into shared mapper"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_brief_title_when_spec_missing(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "# Add auth flow\n",
+            "artifacts/feat-x/impl/main.r1.md": "## PR Summary\nDone.\n## Status\nDONE\n",
+        })
+        title, _ = await _build_pr_content(state, store)
+        assert title == "feat: Add auth flow"
+
+    @pytest.mark.asyncio
+    async def test_spec_with_already_conventional_title_preserved(self):
+        from agentharness.dispatcher import _build_pr_content
+        state = self._state_with_dev_task()
+        store = _FakeStore({
+            "artifacts/feat-x/brief.md": "## Module\nPayments\n",
+            "artifacts/feat-x/spec.r1.md": "# refactor: extract payment mapper\nbody",
+            "artifacts/feat-x/impl/main.r1.md": "## PR Summary\nDone.\n## Status\nDONE\n",
+        })
+        title, _ = await _build_pr_content(state, store)
+        assert title == "refactor: extract payment mapper"
