@@ -292,7 +292,7 @@ class TaskPanel(DataTable):
                 _fmt_tokens(phase_tokens),
             ))
             ids.append(phase)
-        for task in state.tasks:
+        for task in sorted(state.tasks, key=lambda t: t.task_id):
             color = _task_status_color(task.status)
             rows.append((
                 f"[{color}]{task.task_id.split('-dev-')[-1]}[/]",

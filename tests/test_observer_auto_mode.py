@@ -132,18 +132,18 @@ class TestAutoModeLoopToggle:
 
 
 class TestAutoModeLoopCandidateSelection:
-    async def test_starts_oldest_brainstormed_feature(self):
+    async def test_starts_first_brainstormed_feature_by_id(self):
         mock_enqueue, _ = await _run_one_cycle(
             features=[
-                _brainstormed("new-feat", year=2025),
-                _brainstormed("old-feat", year=2023),
-                _brainstormed("mid-feat", year=2024),
+                _brainstormed("feat-2025-ccc"),
+                _brainstormed("feat-2023-aaa"),
+                _brainstormed("feat-2024-bbb"),
             ],
             is_auto_enabled=True,
         )
         mock_enqueue.assert_called_once()
         feature_id = mock_enqueue.call_args.args[0]
-        assert feature_id == "old-feat"
+        assert feature_id == "feat-2023-aaa"
 
     async def test_starts_epic_children(self):
         """Brainstormed epic children are eligible — all brainstormed TUI entries should be startable."""
@@ -154,7 +154,7 @@ class TestAutoModeLoopCandidateSelection:
         mock_enqueue.assert_called_once_with("epic-child", Config())
 
     async def test_oldest_brainstormed_wins_regardless_of_epic_parent(self):
-        """Oldest feature by created_at wins, even if it has an epic parent."""
+        """First feature by ID (asc) wins, even if it has an epic parent."""
         mock_enqueue, _ = await _run_one_cycle(
             features=[
                 _brainstormed("epic-child", year=2023, epic_parent=1),
@@ -281,17 +281,16 @@ class TestAutoModeLoopRawIssues:
         mock_bootstrap.assert_called_once()
         mock_enqueue.assert_called_once()
 
-    async def test_raw_issue_older_than_brainstormed_feature_wins(self):
-        """Raw issue created in 2022 should be started before a brainstormed feature from 2024."""
+    async def test_brainstormed_feature_wins_over_raw_issue(self):
+        """Brainstormed features (feat-...) sort before raw issues (raw-...) by ID."""
         raw = _raw_issue(99, "Old bug", ["agent"], year=2022)
         mock_enqueue, mock_bootstrap = await _run_one_cycle(
-            features=[_brainstormed("newer-feat", year=2024)],
+            features=[_brainstormed("feat-newer")],
             is_auto_enabled=True,
             raw_issues=[raw],
         )
-        mock_bootstrap.assert_called_once()
-        # enqueue_planner called with the auto-bootstrapped feature_id
-        mock_enqueue.assert_called_once_with("feat-auto-bootstrapped", Config(storage_backend="github"))
+        mock_bootstrap.assert_not_called()
+        mock_enqueue.assert_called_once_with("feat-newer", Config(storage_backend="github"))
 
     async def test_brainstormed_feature_older_than_raw_issue_wins(self):
         """Brainstormed FeatureState from 2020 wins over raw issue from 2025."""

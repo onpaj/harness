@@ -140,9 +140,10 @@ async def _auto_mode_loop(config: Config) -> None:
                 await asyncio.sleep(interval)
                 continue
 
-            # Build candidate list: (created_at, feature_id_or_None, raw_issue_or_None)
-            candidates: list[tuple[datetime, str | None, dict | None]] = [
-                (f.created_at, f.feature_id, None)
+            # Build candidate list: (sort_key, feature_id_or_None, raw_issue_or_None)
+            # sort_key is feature_id for known features; "raw-{number:010d}" for untracked issues
+            candidates: list[tuple[str, str | None, dict | None]] = [
+                (f.feature_id, f.feature_id, None)
                 for f in features
                 if f.status == FeatureStatus.brainstormed
             ]
@@ -151,24 +152,18 @@ async def _auto_mode_loop(config: Config) -> None:
                 tracked = {f.state_issue_number for f in features if f.state_issue_number is not None}
                 raw_issues = await _collect_raw_candidates(client, tracked, config)
                 for raw in raw_issues:
-                    try:
-                        created_at = datetime.fromisoformat(
-                            raw["created_at"].replace("Z", "+00:00")
-                        )
-                    except (KeyError, ValueError):
-                        created_at = datetime.now(UTC)
-                    candidates.append((created_at, None, raw))
+                    candidates.append((f"raw-{raw.get('number', 0):010d}", None, raw))
 
             if not candidates:
                 await asyncio.sleep(interval)
                 continue
 
-            candidates.sort(key=lambda t: t[0] if t[0].tzinfo is not None else t[0].replace(tzinfo=UTC))
-            created_at, feature_id, raw_issue = candidates[0]
+            candidates.sort(key=lambda t: t[0])
+            _, feature_id, raw_issue = candidates[0]
 
             try:
                 if feature_id is not None:
-                    log.info("Auto-mode starting %s (created_at=%s)", feature_id, created_at.isoformat())
+                    log.info("Auto-mode starting %s", feature_id)
                     await enqueue_planner(feature_id, config)
                 else:
                     number = raw_issue["number"]  # type: ignore[index]
