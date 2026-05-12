@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.8.0 (2026-05-12)
+
+### Features
+
+- Order features by ID ascending throughout (lowest ID first)
+  ([`543b9ce`](https://github.com/onpaj/harness/commit/543b9ce5f4875a61022b6c73fd5a81dc33535baa))
+
+- github_state.list_features(): fetch with direction=asc and sort by issue number ascending so
+  oldest/lowest-ID features come first - tui._load_all_states(): replace active-first/updated_at
+  sort with simple feature_id ascending sort - Update test to reflect ascending order
+
+
 ## v0.7.1 (2026-05-12)
 
 ### Bug Fixes
