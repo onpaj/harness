@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.5.1 (2026-05-12)
+
+### Bug Fixes
+
+- Enforce conventional commit format on PR titles and fall back to brief body for PR description
+  ([`ad23ef7`](https://github.com/onpaj/harness/commit/ad23ef7b9345f43ae03a00468c678bc9d0f0d290))
+
+PR titles derived from brief headings now always follow conventional commits format (e.g. "feat:
+  Telemetry" instead of "Telemetry"). When the developer impl artifact lacks a ## PR Summary
+  section, the PR description falls back to the brief content instead of the raw phase log.
+
+
 ## v0.5.0 (2026-05-12)
 
 ### Features
