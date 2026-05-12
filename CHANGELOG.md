@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.6.3 (2026-05-12)
+
+### Bug Fixes
+
+- Use spec artifact title for PR instead of generic brief heading
+  ([`07e859b`](https://github.com/onpaj/harness/commit/07e859bc2f7c578b31883d3f04eb60f140ee1a9b))
+
+Brief templates use section headers like '## Module' that produce useless PR titles like 'feat:
+  Module'. The analyst spec always has a descriptive heading, so prefer it as the primary title
+  source.
+
+Adds _extract_spec_title() that strips analyst prefixes ('Specification: ' etc.) and updates
+  _build_pr_content() to download and apply the spec title, falling back to the brief heading when
+  the spec is unavailable.
+
+
 ## v0.6.2 (2026-05-12)
 
 ### Bug Fixes
