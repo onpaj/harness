@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.7.1 (2026-05-12)
+
+### Bug Fixes
+
+- Sync agentharness-task-state JSON block with label on task status changes
+  ([`3982e39`](https://github.com/onpaj/harness/commit/3982e39b7426087792c7b8737c145c18d09b2329))
+
+Task queue issues now carry an `agentharness-task-state` fenced block alongside the existing
+  `agentharness-task` block. The status field in that block is kept in sync with the label on every
+  transition: - claim_issue: queued → in_progress - delete_message: in_progress → completed -
+  move_to_dead_letter: in_progress → dead_letter - _reclaim_issue: in_progress → queued (stale claim
+  reset)
+
+
 ## v0.7.0 (2026-05-12)
 
 ### Documentation
