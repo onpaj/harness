@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.7.0 (2026-05-12)
+
+### Documentation
+
+- Update install instructions to use uv and git URL
+  ([`a8d50e3`](https://github.com/onpaj/harness/commit/a8d50e3e3e7b3b1f7654f6f5d9352663e172cb41))
+
+Replace pip/venv setup with uv tool install from git URL and drop .venv/bin/ prefixes throughout the
+  deployment guide and test section.
+
+### Features
+
+- Order tasks by ID asc in TUI and auto-mode candidate selection
+  ([`274b104`](https://github.com/onpaj/harness/commit/274b104400c241828721d0022604b47581ff710c))
+
+- TUI task panel: sort tasks by task_id ascending before rendering - Observer auto-mode: pick
+  candidate by feature_id asc instead of created_at; raw GitHub issues sort after known features
+  (raw- > feat- lexicographically) - Update auto-mode tests to reflect ID-based ordering
+
+
 ## v0.6.4 (2026-05-12)
 
 ### Bug Fixes
