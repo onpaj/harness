@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.8.1 (2026-05-12)
+
+### Bug Fixes
+
+- Sort features and auto-mode candidates by GH issue ID ascending
+  ([`c50d8ee`](https://github.com/onpaj/harness/commit/c50d8ee4b156aabf826c484591160dd00efca8d1))
+
+- tui.py: _load_all_states sorts by state_issue_number (GitHub ID) instead of feature_id string -
+  observer.py: auto-mode uses feat-{issue_number:010d} sort key so brainstormed candidates are
+  picked by lowest GH ID - models.py: add pid field to PhaseInfo for phase-level process tracking -
+  run_task.py: record PID on PhaseInfo for phase-level tasks; enable SIGTERM kill from TUI - tui.py:
+  kill action handles both phase-level and dev tasks, with GitHub issue cleanup fallback
+
+
 ## v0.8.0 (2026-05-12)
 
 ### Features
