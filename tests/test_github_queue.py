@@ -233,8 +233,11 @@ async def test_delete_message_removes_in_progress_and_closes_issue() -> None:
     added_labels = client.add_labels.call_args[0][1]
     assert STATE_COMPLETED in added_labels
 
-    # issue closed
-    client.update_issue.assert_called_once_with(7, state="closed")
+    # issue closed with status updated in body
+    client.update_issue.assert_called_once()
+    call_kwargs = client.update_issue.call_args[1]
+    assert call_kwargs["state"] == "closed"
+    assert '"status": "completed"' in call_kwargs["body"]
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +267,11 @@ async def test_move_to_dead_letter_adds_dead_letter_label_and_closes() -> None:
     client.create_comment.assert_called_once()
     assert "Dead-lettered" in client.create_comment.call_args[0][1]
 
-    client.update_issue.assert_called_once_with(7, state="closed")
+    # issue closed with status updated in body
+    client.update_issue.assert_called_once()
+    call_kwargs = client.update_issue.call_args[1]
+    assert call_kwargs["state"] == "closed"
+    assert '"status": "dead_letter"' in call_kwargs["body"]
 
 
 # ---------------------------------------------------------------------------

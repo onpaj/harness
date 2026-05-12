@@ -36,22 +36,35 @@ if TYPE_CHECKING:
 # Fence tag used to embed TaskMessage JSON in issue bodies
 _TASK_FENCE = "agentharness-task"
 _RECLAIM_MARKER = "⚠️ Reclaimed"
+_STATUS_FENCE = "agentharness-task-state"
+_STATUS_BLOCK_RE = re.compile(r"```agentharness-task-state\s*\n(.*?)\n```", re.DOTALL)
+
 
 def _default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
-def _build_issue_body(task: TaskMessage) -> str:
+def _build_issue_body(task: TaskMessage, status: str = "queued") -> str:
     task_json = task.model_dump_json(indent=2)
     parent_line = (
         f"Feature: #{task.state_issue_number}\n\n"
         if task.state_issue_number is not None
         else ""
     )
+    state_block = f"```{_STATUS_FENCE}\n{{\"status\": \"{status}\"}}\n```"
     return (
         f"{parent_line}Task: {task.task_id}\n\n"
+        f"{state_block}\n\n"
         f"```{_TASK_FENCE}\n{task_json}\n```"
     )
+
+
+def _update_body_status(body: str, status: str) -> str:
+    """Replace the status value in the agentharness-task-state block, or append it."""
+    new_block = f"```{_STATUS_FENCE}\n{{\"status\": \"{status}\"}}\n```"
+    if _STATUS_BLOCK_RE.search(body):
+        return _STATUS_BLOCK_RE.sub(new_block, body)
+    return f"{body}\n\n{new_block}\n"
 
 
 class GitHubTaskQueue:
@@ -168,6 +181,7 @@ class GitHubTaskQueue:
         await self._client.add_labels(
             number, [STATE_IN_PROGRESS, claimed_by_label(self._worker_id)]
         )
+        await self._client.update_issue(number, body=_update_body_status(raw_body, "in_progress"))
 
         task = self._parse_task_from_body(raw_body)
         raw = RawMessage(
@@ -204,7 +218,8 @@ class GitHubTaskQueue:
             await self._client.remove_label(number, lbl)
 
         await self._client.add_labels(number, [STATE_COMPLETED])
-        await self._client.update_issue(number, state="closed")
+        body = _update_body_status(issue.get("body") or "", "completed")
+        await self._client.update_issue(number, state="closed", body=body)
 
     # ------------------------------------------------------------------
     # Dead letter
@@ -231,7 +246,8 @@ class GitHubTaskQueue:
         await self._client.create_comment(
             number, "⚠️ Dead-lettered after max retries"
         )
-        await self._client.update_issue(number, state="closed")
+        body = _update_body_status(issue.get("body") or "", "dead_letter")
+        await self._client.update_issue(number, state="closed", body=body)
 
     # ------------------------------------------------------------------
     # Purge

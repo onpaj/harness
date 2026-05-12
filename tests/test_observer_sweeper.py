@@ -25,6 +25,7 @@ def _make_client(owner: str = "test-owner", repo: str = "test-repo") -> MagicMoc
     client.search_issues = AsyncMock(return_value=[])
     client.remove_label = AsyncMock()
     client.add_labels = AsyncMock()
+    client.update_issue = AsyncMock()
     client.create_comment = AsyncMock()
     client.close = AsyncMock()
     return client
@@ -119,3 +120,17 @@ async def test_reclaim_issue_no_labels_to_remove() -> None:
 
     client.remove_label.assert_not_awaited()
     client.add_labels.assert_awaited_once_with(2, [STATE_QUEUED])
+
+
+@pytest.mark.asyncio
+async def test_reclaim_issue_resets_body_status_to_queued() -> None:
+    """_reclaim_issue updates the task issue body to reflect queued status."""
+    client = _make_client()
+    existing_body = '```agentharness-task-state\n{"status": "in_progress"}\n```'
+    issue = _make_issue(number=11, labels=[STATE_IN_PROGRESS], body=existing_body)
+
+    await _reclaim_issue(client, issue)
+
+    client.update_issue.assert_awaited_once()
+    call_kwargs = client.update_issue.await_args.kwargs
+    assert '"status": "queued"' in call_kwargs["body"]

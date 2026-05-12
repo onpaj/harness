@@ -566,6 +566,7 @@ async def _wait_with_renewal(proc: asyncio.Process, task_id: str, raw_msg: RawMe
 async def _reclaim_issue(client, issue: dict) -> None:
     """Remove stale claim labels and requeue the issue."""
     from agentharness.github_labels import STATE_IN_PROGRESS, STATE_QUEUED, is_claimed_by_label
+    from agentharness.github_queue import _update_body_status
     number = issue["number"]
     labels_to_remove = [
         lbl["name"] for lbl in issue.get("labels", [])
@@ -577,5 +578,7 @@ async def _reclaim_issue(client, issue: dict) -> None:
         except Exception:
             pass
     await client.add_labels(number, [STATE_QUEUED])
+    body = _update_body_status(issue.get("body") or "", "queued")
+    await client.update_issue(number, body=body)
     await client.create_comment(number, "⚠️ Reclaimed: stale claim (observer restart or crash)")
     log.info("Reclaimed stale issue #%d", number)
