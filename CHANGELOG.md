@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.6.2 (2026-05-12)
+
+### Bug Fixes
+
+- Allow state changes from failed features and add product-queue to init template
+  ([`6e65aea`](https://github.com/onpaj/harness/commit/6e65aea7d81d96f58282101e91fd0b4ba496276d))
+
+- TUI state-change modal now shows all canonical rollback targets when the current status is
+  `failed` (previously the list was empty) - Rollback from `failed` adds a `phase_resumed` event so
+  the retry counter resets — without this the re-enqueued task would exhaust its limit immediately
+  and fail again - `agentharness init` template now includes `product-queue`; omitting it caused
+  features to fail when the analyst returned HAS_QUESTIONS
+
+
 ## v0.6.1 (2026-05-12)
 
 ### Bug Fixes
