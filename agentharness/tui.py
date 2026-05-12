@@ -499,7 +499,9 @@ class StatusBar(Static):
             queues_part = ""
         pid = _observer_pid()
         observer_part = f"  |  [green]observer pid:{pid}[/green]" if pid else "  |  [red]observer off[/red]"
-        self.update(f"[dim]Last refresh: {now}  |  Refreshing every {refresh_seconds:.0f}s{queues_part}{observer_part}[/dim]")
+        from agentharness import auto_mode
+        auto_part = "  |  [green]auto: on[/green]" if auto_mode.is_enabled() else "  |  [dim]auto: off[/dim]"
+        self.update(f"[dim]Last refresh: {now}  |  Refreshing every {refresh_seconds:.0f}s{queues_part}{observer_part}{auto_part}[/dim]")
 
 
 class PipelineMonitor(App):

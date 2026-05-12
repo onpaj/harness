@@ -204,9 +204,7 @@ async def enqueue_planner(feature_id: str, config: Config) -> None:
                 await store._ensure_clone()
                 await store._checkout_or_create(branch_name)
 
-                # Write brief.md to the worktree so the analyst finds it immediately.
                 work_dir = store.get_work_dir()
-                (work_dir / "brief.md").write_text(brief_content, encoding="utf-8")
                 work_dir_str = str(work_dir)
 
                 # Also commit brief.md to the branch so artifact downloads succeed.
