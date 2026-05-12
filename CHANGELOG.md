@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-05-12)
+
+### Features
+
+- Allow architect to skip design phase for non-UI features
+  ([`5fde7f3`](https://github.com/onpaj/harness/commit/5fde7f3e161520a652427ac546b67a449cdeac9b))
+
+The designer agent previously ran unconditionally after every architect review. The architect now
+  emits `## Skip Design: true` in its output for backend-only work (performance fixes, migrations,
+  refactors, etc.), causing the dispatcher to jump straight from architecting to planning and bypass
+  the designer entirely.
+
+
 ## v0.4.0 (2026-05-12)
 
 ### Features
