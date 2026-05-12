@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.5.2 (2026-05-12)
+
+### Bug Fixes
+
+- Auto-mode now starts all brainstormed features including epic children
+  ([`fd9d327`](https://github.com/onpaj/harness/commit/fd9d32781deaf98b462ba4305516ba80d6d56bef))
+
+Previously the candidate filter excluded features with epic_parent set, so brainstormed epic
+  children were visible in the TUI but never picked up. All features shown as brainstormed in the
+  TUI are now eligible.
+
+
 ## v0.5.1 (2026-05-12)
 
 ### Bug Fixes
