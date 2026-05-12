@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.6.1 (2026-05-12)
+
+### Bug Fixes
+
+- Remove brief.md written to worktree root and show auto-mode in TUI status bar
+  ([`3a4404f`](https://github.com/onpaj/harness/commit/3a4404f8a10512ba9f4bed81b7346abb80bbdb96))
+
+- Remove erroneous write of brief.md to clone root — store.upload already commits it to
+  artifacts/{feature_id}/brief.md on the feature branch, and run_task.py re-downloads it there
+  before the analyst runs. Root-level brief.md caused merge conflicts across features sharing the
+  same clone. - Show auto-mode on/off indicator in TUI StatusBar, updated every refresh cycle.
+
+
 ## v0.6.0 (2026-05-12)
 
 ### Features
