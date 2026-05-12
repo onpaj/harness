@@ -347,3 +347,151 @@ async def test_checkout_or_create_creates_fresh_branch_when_no_remote() -> None:
 async def test_close_is_noop() -> None:
     store = _make_store()
     await store.close()  # Must not raise.
+
+
+# ---------------------------------------------------------------------------
+# sync_working_branch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_fetches_then_merges_feature_and_base() -> None:
+    """Happy path: fetch → checkout feature → ff-merge feature → merge default branch."""
+    store = _make_store()
+
+    recorded: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        recorded.append(args)
+        # Return default branch ref for symbolic-ref call
+        if "symbolic-ref" in args:
+            return b"origin/main\n"
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()
+
+    subcommands = [a for a in (args[2] if len(args) > 2 else args[0] for args in recorded) if a in ("fetch", "checkout", "merge", "symbolic-ref")]
+    assert "fetch" in subcommands
+    assert "checkout" in subcommands
+    assert "merge" in subcommands
+
+    # Verify merge of default branch with -X ours
+    merge_calls = [args for args in recorded if "merge" in args]
+    ours_merges = [args for args in merge_calls if "-X" in args and "ours" in args]
+    assert any("origin/main" in args for args in ours_merges)
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_returns_early_on_fetch_failure() -> None:
+    """If fetch fails, sync bails out gracefully without raising."""
+    store = _make_store()
+
+    call_count = 0
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        nonlocal call_count
+        call_count += 1
+        if "fetch" in args:
+            raise RuntimeError("network error")
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()  # Must not raise
+
+    # Only one call (fetch) should have been made before early return
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_falls_back_to_ours_when_ff_fails() -> None:
+    """When fast-forward merge fails, retries with -X ours strategy."""
+    store = _make_store()
+
+    recorded: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        recorded.append(args)
+        if "symbolic-ref" in args:
+            return b"origin/main\n"
+        # Fail the ff-only merge, succeed on -X ours and everything else
+        if "--ff-only" in args:
+            raise RuntimeError("not a fast-forward")
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()
+
+    # Should have attempted -X ours for the feature branch
+    ours_feature_merges = [
+        args for args in recorded
+        if "merge" in args and "-X" in args and "ours" in args and f"origin/{_FEATURE_ID}" in args
+    ]
+    assert ours_feature_merges
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_skips_base_merge_when_no_default_branch() -> None:
+    """When symbolic-ref fails to resolve origin/HEAD, base branch merge is skipped."""
+    store = _make_store()
+
+    recorded: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        recorded.append(args)
+        if "symbolic-ref" in args:
+            raise RuntimeError("ref not found")
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()
+
+    # Only feature-branch merges should have happened (no base branch merge)
+    base_merges = [
+        args for args in recorded
+        if "merge" in args and "-X" in args and "ours" in args and "origin/main" in args
+    ]
+    assert not base_merges
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_aborts_when_base_merge_fails() -> None:
+    """When base branch merge fails, merge --abort is called to restore clean state."""
+    store = _make_store()
+
+    recorded: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        recorded.append(args)
+        if "symbolic-ref" in args:
+            return b"origin/main\n"
+        # Fail when merging origin/main
+        if "merge" in args and "origin/main" in args:
+            raise RuntimeError("merge conflict")
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()  # Must not raise
+
+    abort_calls = [args for args in recorded if "merge" in args and "--abort" in args]
+    assert abort_calls

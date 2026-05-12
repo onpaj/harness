@@ -306,6 +306,70 @@ class GitHubArtifactStore:
         await _run_git("-C", str(self._clone_root), "push", "origin", self._feature_id)
         return True
 
+    async def sync_working_branch(self) -> None:
+        """Sync the working branch with remote before running an agent task.
+
+        Fetches origin, fast-forwards the feature branch (falling back to
+        -X ours on conflict), then merges the default base branch to reduce
+        divergence from upstream. All conflict resolution prefers existing
+        feature-branch content (-X ours).
+        """
+        await self._ensure_clone()
+
+        try:
+            await _run_git("-C", str(self._clone_root), "fetch", "origin")
+        except RuntimeError as exc:
+            log.warning("sync_working_branch: fetch failed, skipping sync: %s", exc)
+            return
+
+        await self._checkout_or_create(self._feature_id)
+
+        try:
+            await _run_git(
+                "-C", str(self._clone_root),
+                "merge", "--ff-only", f"origin/{self._feature_id}",
+            )
+        except RuntimeError:
+            try:
+                await _run_git(
+                    "-C", str(self._clone_root),
+                    "merge", "-X", "ours", "--no-edit", f"origin/{self._feature_id}",
+                )
+            except RuntimeError as exc:
+                log.warning("sync_working_branch: cannot sync remote feature branch: %s", exc)
+
+        default_branch = await self._get_default_branch()
+        if not default_branch or default_branch == self._feature_id:
+            return
+
+        try:
+            await _run_git(
+                "-C", str(self._clone_root),
+                "merge", "-X", "ours", "--no-edit", f"origin/{default_branch}",
+            )
+            log.info(
+                "sync_working_branch: merged origin/%s into %s",
+                default_branch, self._feature_id,
+            )
+        except RuntimeError as exc:
+            log.warning("sync_working_branch: base branch merge failed: %s — aborting", exc)
+            try:
+                await _run_git("-C", str(self._clone_root), "merge", "--abort")
+            except RuntimeError:
+                pass
+
+    async def _get_default_branch(self) -> str | None:
+        """Return the default branch name from origin/HEAD, or None if unavailable."""
+        try:
+            stdout = await _run_git(
+                "-C", str(self._clone_root),
+                "symbolic-ref", "refs/remotes/origin/HEAD", "--short",
+            )
+            ref = stdout.decode().strip()
+            return ref.removeprefix("origin/") if ref.startswith("origin/") else ref
+        except RuntimeError:
+            return None
+
     async def close(self) -> None:
         """No-op; git subprocesses are short-lived."""
 

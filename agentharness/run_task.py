@@ -97,6 +97,10 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         if work_dir is not None:
             work_dir.mkdir(parents=True, exist_ok=True)
 
+        if hasattr(store, "sync_working_branch"):
+            log.info("[%s] Syncing working branch for task %s", WORKER_ID, task.task_id)
+            await store.sync_working_branch()
+
         artifact_contents: dict[str, str] = {}
         for blob_path in task.input_artifacts:
             content = await _download_with_retry(store, blob_path)
