@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.6.4 (2026-05-12)
+
+### Bug Fixes
+
+- Sync working branch from remote and base before each agent task
+  ([`0dc626e`](https://github.com/onpaj/harness/commit/0dc626e25297da461e821cb640c4db7eb14b13eb))
+
+Before each task the GitHubArtifactStore now fetches origin, fast-forwards the feature branch
+  (falling back to -X ours on conflict), and merges in the default base branch so agents always
+  start on an up-to-date working tree. This prevents push failures when another feature was merged
+  to the target branch in parallel.
+
+
 ## v0.6.3 (2026-05-12)
 
 ### Bug Fixes
