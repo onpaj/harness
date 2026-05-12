@@ -73,6 +73,18 @@ class TestOptionsFor:
         # done is excluded from the list; we still allow marking failed manually
         assert all(s != FeatureStatus.done for s, _, _ in opts)
 
+    def test_failed_features_expose_all_canonical_rollback_options(self):
+        from agentharness.tui_state_change import CANONICAL_STATE_ORDER
+        opts = StateChangeModal._options_for(_state(FeatureStatus.failed))
+        rollback_statuses = [s for s, m, _ in opts if m == "rollback" and s != FeatureStatus.failed]
+        assert rollback_statuses == CANONICAL_STATE_ORDER
+
+    def test_failed_features_all_non_fail_rows_are_rollback(self):
+        opts = StateChangeModal._options_for(_state(FeatureStatus.failed))
+        for status, mode, _ in opts:
+            if status != FeatureStatus.failed:
+                assert mode == "rollback"
+
 
 # ---------------------------------------------------------------------------
 # action_open_state_change — raw feature guard

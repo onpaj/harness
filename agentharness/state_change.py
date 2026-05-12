@@ -102,7 +102,10 @@ async def apply_state_change(
         new_state = snapshot.with_status(result.target_status)
         if will_clear:
             new_state = new_state.with_tasks_cleared()
-        return new_state.with_event("manual_state_change", details=details)
+        new_state = new_state.with_event("manual_state_change", details=details)
+        if prev_status == FeatureStatus.failed:
+            new_state = new_state.with_event("phase_resumed", phase=result.target_status.value)
+        return new_state
 
     persisted: FeatureState = await state_mgr.update(feature_id, mutator)
 

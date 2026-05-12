@@ -317,3 +317,34 @@ class TestApplyStateChangeEnqueueRetry:
         assert exc_info.value.persisted_status == FeatureStatus.developing
         # Two attempts (one initial + one retry)
         assert bad_queue.send_task.await_count == 2
+
+
+@pytest.mark.asyncio
+class TestApplyStateChangeRollbackFromFailed:
+    async def test_rollback_from_failed_adds_phase_resumed_event(self):
+        initial = FeatureState(feature_id="feat-x", status=FeatureStatus.failed)
+        mgr = _make_state_mgr(initial)
+
+        await apply_state_change(
+            "feat-x",
+            StateChangeResult(target_status=FeatureStatus.analyzing, mode="rollback"),
+            state_mgr=mgr, queue_factory=_make_queue_factory(), config=_config(),
+        )
+
+        persisted = mgr._state_ref["value"]
+        events = [e.event for e in persisted.history]
+        assert "phase_resumed" in events
+
+    async def test_rollback_from_non_failed_does_not_add_phase_resumed(self):
+        initial = FeatureState(feature_id="feat-x", status=FeatureStatus.architecting)
+        mgr = _make_state_mgr(initial)
+
+        await apply_state_change(
+            "feat-x",
+            StateChangeResult(target_status=FeatureStatus.analyzing, mode="rollback"),
+            state_mgr=mgr, queue_factory=_make_queue_factory(), config=_config(),
+        )
+
+        persisted = mgr._state_ref["value"]
+        events = [e.event for e in persisted.history]
+        assert "phase_resumed" not in events

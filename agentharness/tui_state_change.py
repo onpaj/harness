@@ -108,6 +108,9 @@ class StateChangeModal(ModalScreen["StateChangeResult | None"]):
                 else:
                     label = f"{status.value:<20} (rollback)"
                     rows.append((status, "rollback", label))
+        elif current == FeatureStatus.failed:
+            for status in CANONICAL_STATE_ORDER:
+                rows.append((status, "rollback", f"{status.value:<20} (rollback)"))
 
         rows.append((
             FeatureStatus.failed,
