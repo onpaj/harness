@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-05-12)
+
+### Features
+
+- Introduce observer auto mode with TUI toggle
+  ([`9077e39`](https://github.com/onpaj/harness/commit/9077e39f36b2b06ceb3bf71c5a966d602094eca2))
+
+Add opt-in auto mode that drains brainstormed features one at a time serially. When enabled, the
+  observer picks the oldest brainstormed feature (by created_at) and calls enqueue_planner when no
+  other feature is actively running.
+
+- agentharness/auto_mode.py: sentinel-file toggle (logs/auto-mode.enabled) - observer.py:
+  _auto_mode_loop runs alongside queue pollers; checks active statuses across all features before
+  dispatching; skips epic children conservatively - config.py: auto_mode (bool) and
+  auto_mode_poll_seconds (float, 60s) - cli.py: agentharness observe --auto threads flag to _observe
+  subprocess - tui.py: 'a' binding toggles auto mode live with toast notification; no observer
+  restart needed — toggle takes effect on next poll cycle - 30 new tests covering toggle module,
+  loop behaviour, and config defaults
+
+
 ## v0.3.7 (2026-05-06)
 
 ### Bug Fixes
