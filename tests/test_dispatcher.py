@@ -60,6 +60,87 @@ class TestParseAnalystStatus:
         assert _parse_analyst_status("## Status:   HAS_QUESTIONS  \n") == "HAS_QUESTIONS"
 
 
+class TestParseArchitectSkipDesign:
+    def test_true_skips_design(self):
+        from agentharness.dispatcher import _parse_architect_skip_design
+        assert _parse_architect_skip_design("# Review\n\n## Skip Design: true\n") is True
+
+    def test_false_does_not_skip(self):
+        from agentharness.dispatcher import _parse_architect_skip_design
+        assert _parse_architect_skip_design("# Review\n\n## Skip Design: false\n") is False
+
+    def test_missing_defaults_to_false(self):
+        from agentharness.dispatcher import _parse_architect_skip_design
+        assert _parse_architect_skip_design("# Review body without signal") is False
+
+    def test_case_insensitive(self):
+        from agentharness.dispatcher import _parse_architect_skip_design
+        assert _parse_architect_skip_design("## skip design: TRUE\n") is True
+
+    def test_extra_whitespace_ignored(self):
+        from agentharness.dispatcher import _parse_architect_skip_design
+        assert _parse_architect_skip_design("## Skip Design:   true  \n") is True
+
+
+@pytest.mark.asyncio
+class TestDispatchAfterCompletionArchitecting:
+    def _state(self) -> FeatureState:
+        return FeatureState(feature_id="feat-arch", status=FeatureStatus.architecting)
+
+    def _task(self) -> TaskMessage:
+        return TaskMessage(
+            feature_id="feat-arch",
+            task_id="feat-arch-architecting-1",
+            input_artifacts=["artifacts/feat-arch/spec.r1.md"],
+            output_artifact="artifacts/feat-arch/arch-review.r1.md",
+            agent_role="architect",
+        )
+
+    def _queues(self) -> dict:
+        return {
+            "designer-queue": AsyncMock(send_task=AsyncMock()),
+            "planner-queue": AsyncMock(send_task=AsyncMock()),
+        }
+
+    def _config(self) -> MagicMock:
+        from pathlib import Path
+        cfg = MagicMock()
+        cfg.agent_path_for_queue.side_effect = lambda q: {
+            "designer-queue": Path(".agents/designer.md"),
+            "planner-queue": Path(".agents/planner.md"),
+        }[q]
+        return cfg
+
+    async def test_without_skip_signal_transitions_to_designing(self):
+        queues = self._queues()
+        result = await dispatch_after_completion(
+            self._state(), self._task(), "# Arch Review\n\n## Skip Design: false\n",
+            self._config(), queues,
+        )
+        assert result.status == FeatureStatus.designing
+        queues["designer-queue"].send_task.assert_awaited_once()
+        queues["planner-queue"].send_task.assert_not_awaited()
+
+    async def test_with_skip_signal_jumps_to_planning(self):
+        queues = self._queues()
+        result = await dispatch_after_completion(
+            self._state(), self._task(), "# Arch Review\n\n## Skip Design: true\n",
+            self._config(), queues,
+        )
+        assert result.status == FeatureStatus.planning
+        queues["planner-queue"].send_task.assert_awaited_once()
+        queues["designer-queue"].send_task.assert_not_awaited()
+
+    async def test_missing_skip_signal_defaults_to_designing(self):
+        queues = self._queues()
+        result = await dispatch_after_completion(
+            self._state(), self._task(), "# Arch Review with no skip signal",
+            self._config(), queues,
+        )
+        assert result.status == FeatureStatus.designing
+        queues["designer-queue"].send_task.assert_awaited_once()
+
+
 class TestLatestSpecRevision:
     def test_initial_state_returns_one(self):
         from agentharness.dispatcher import _latest_spec_revision

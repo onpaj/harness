@@ -163,7 +163,13 @@ async def dispatch_after_completion(
     if status == FeatureStatus.questioning:
         return await _dispatch_analyst_rerun(state, config, queues)
 
-    if status in (FeatureStatus.architecting, FeatureStatus.designing):
+    if status == FeatureStatus.architecting:
+        if _parse_architect_skip_design(agent_output):
+            log.info("Architect signalled skip-design — jumping straight to planning for %s", state.feature_id)
+            return await _dispatch_linear_to(state, "planning", "planner-queue", config, queues)
+        return await _dispatch_linear(state, status, config, queues)
+
+    if status == FeatureStatus.designing:
         return await _dispatch_linear(state, status, config, queues)
 
     if status == FeatureStatus.planning:
@@ -555,6 +561,14 @@ def _parse_analyst_status(output: str) -> str:
     if match and match.group(1) == "HAS_QUESTIONS":
         return "HAS_QUESTIONS"
     return "COMPLETE"
+
+
+_SKIP_DESIGN_RE = re.compile(r"^##\s+Skip Design:\s*true\s*$", re.MULTILINE | re.IGNORECASE)
+
+
+def _parse_architect_skip_design(output: str) -> bool:
+    """Return True when the architect signals that the design phase should be skipped."""
+    return bool(_SKIP_DESIGN_RE.search(output))
 
 
 def _latest_spec_revision(state: FeatureState) -> int:
