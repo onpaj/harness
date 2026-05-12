@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.6.0 (2026-05-12)
+
+### Features
+
+- Auto-mode bootstraps raw agent-labeled issues without prior pipeline state
+  ([`2c1c510`](https://github.com/onpaj/harness/commit/2c1c5104a338dd871fc0c25e7b7d5cc570fc8bfd))
+
+Previously auto-mode only started features already in 'brainstormed' state (created via the
+  implement label flow). Now it also picks up any open issue carrying the feature-marker label
+  (agent) that has no feat:/state:/queue: labels, bootstrapping it and enqueuing the analyst
+  immediately.
+
+Candidates from both paths are sorted by created_at so the oldest eligible issue always runs first
+  regardless of whether it was pre-bootstrapped or raw.
+
+
 ## v0.5.2 (2026-05-12)
 
 ### Bug Fixes
