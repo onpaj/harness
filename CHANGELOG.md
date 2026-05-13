@@ -1,6 +1,32 @@
 # CHANGELOG
 
 
+## v0.9.1 (2026-05-13)
+
+### Bug Fixes
+
+- Drop stale tasks with wrong agent_role; cancel queued tasks on restart
+  ([`295bcc7`](https://github.com/onpaj/harness/commit/295bcc7bc94008de6ae23d258e2805510678094c))
+
+Two bugs caused the feat-coverage-gap-routine-design-spec failure:
+
+1. dispatch_after_completion routed purely on state.status, so any task completing in the wrong
+  phase (e.g. a stale analyst task completing while the feature was in planning) would trigger the
+  next dispatch as if it were the expected agent. Fix: add _EXPECTED_AGENT_ROLE guard that drops
+  tasks whose agent_role doesn't match the current phase.
+
+2. TUI manual restart with tasks_cleared=false left the old task GitHub issue open in the queue,
+  allowing it to be picked up later in a different phase. Fix: apply_state_change now calls
+  cancel_queued_for_feature on the queue (if supported) before enqueueing the replacement task on
+  restart.
+
+GitHubTaskQueue gains cancel_queued_for_feature(feature_id) -> int that closes all queued issues for
+  a given feature.
+
+- Sync_working_branch uses epic branch as base for epic children
+  ([`4904637`](https://github.com/onpaj/harness/commit/49046373018f7530605285b24b77d4de9f200c76))
+
+
 ## v0.9.0 (2026-05-13)
 
 ### Bug Fixes
