@@ -972,11 +972,22 @@ async def _open_feature_pr(
     state_mgr: StateBackend | None,
     store: ArtifactStorage | None = None,
 ) -> None:
-    """Open a GitHub PR for the completed feature via the state backend abstraction."""
+    """Open a GitHub PR for the completed feature via the state backend abstraction.
+
+    For epic children: opens a per-child PR targeting the epic branch (via open_review),
+    then ticks the umbrella PR checklist (via handle_epic_child_done).
+    For non-epic features: opens a regular PR targeting the default branch.
+    """
     if state_mgr is None:
         return
 
-    # Epic children: delegate to epic PR handler instead of opening a regular PR
+    pr_title, pr_summary = await _build_pr_content(state, store)
+    await state_mgr.open_review(
+        state.feature_id,
+        pr_title=pr_title,
+        pr_summary=pr_summary,
+    )
+
     if state.epic_parent is not None:
         from agentharness.github_state import GitHubStateManager
         if isinstance(state_mgr, GitHubStateManager):
@@ -986,12 +997,3 @@ async def _open_feature_pr(
                 "Epic PR lifecycle only supported on GitHub backend; skipping for %s",
                 state.feature_id,
             )
-        return
-
-    # Non-epic: existing behavior
-    pr_title, pr_summary = await _build_pr_content(state, store)
-    await state_mgr.open_review(
-        state.feature_id,
-        pr_title=pr_title,
-        pr_summary=pr_summary,
-    )

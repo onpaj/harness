@@ -537,53 +537,29 @@ class GitHubStateManager:
         return states
 
     async def handle_epic_child_done(self, state: FeatureState) -> None:
-        """Open/update/mark-ready the shared epic PR when an epic child completes."""
+        """Tick this child's checkbox in the umbrella PR; mark PR ready when last child.
+
+        Expects the umbrella PR to exist (created by ensure_epic_pr at bootstrap time).
+        Logs a warning and returns without error if no open umbrella PR is found.
+        """
         if state.epic_parent is None or state.epic_branch is None:
             return
 
-        # Find existing epic PR by branch
         prs = await self._client.list_pull_requests(head=state.epic_branch)
         open_pr = next((pr for pr in prs if pr.get("state") == "open"), None)
-
         if open_pr is None:
-            # First child: open draft PR
-            parent = await self._client.get_issue(state.epic_parent)
-            sub_issues = await self._client.list_sub_issues(state.epic_parent)
-
-            # Build PR title from parent epic title
-            pr_title = parent.get("title") or state.epic_branch or state.feature_id
-
-            # Build body: checklist of all child issues
-            checklist_items = "\n".join(
-                f"- [ ] #{si['number']} {si.get('title', '')}" for si in sub_issues
+            log.warning(
+                "No open umbrella PR found for epic branch %s — checklist not updated",
+                state.epic_branch,
             )
-            pr_body = f"## Epic\n\nPart of #{state.epic_parent}\n\n### Tasks\n\n{checklist_items}"
+            return
 
-            default_branch = await self._client.get_default_branch()
-            pr = await self._client.create_pull_request(
-                title=pr_title,
-                body=pr_body,
-                head=state.epic_branch,
-                base=default_branch,
-                draft=True,
-            )
-            log.info("Opened draft epic PR #%s for %s", pr.get("number"), state.feature_id)
-            open_pr = pr
-            # Tick the first child's own checkbox
-            if state.state_issue_number is not None:
-                updated_body = _tick_epic_pr_checkbox(open_pr.get("body") or "", state.state_issue_number)
-                if updated_body != (open_pr.get("body") or ""):
-                    await self._client.update_pull_request(open_pr["number"], body=updated_body)
-        else:
-            # Subsequent children: tick the checkbox for this child's issue number
-            child_issue_number = state.state_issue_number
-            if child_issue_number is not None:
-                current_body = open_pr.get("body") or ""
-                updated_body = _tick_epic_pr_checkbox(current_body, child_issue_number)
-                if updated_body != current_body:
-                    await self._client.update_pull_request(open_pr["number"], body=updated_body)
+        if state.state_issue_number is not None:
+            current_body = open_pr.get("body") or ""
+            updated_body = _tick_epic_pr_checkbox(current_body, state.state_issue_number)
+            if updated_body != current_body:
+                await self._client.update_pull_request(open_pr["number"], body=updated_body)
 
-        # If this is the last child, mark the PR ready for review
         if (
             state.epic_total is not None
             and state.epic_position is not None

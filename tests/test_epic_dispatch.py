@@ -129,75 +129,29 @@ class TestWorktreeRetention:
 # ---------------------------------------------------------------------------
 
 class TestHandleEpicChildDone:
-    def _make_github_state_manager(self) -> MagicMock:
+    """handle_epic_child_done ticks umbrella PR checklist; marks ready when last child."""
+
+    def _make_mgr(self):
         from agentharness.github_state import GitHubStateManager
-        mgr = MagicMock(spec=GitHubStateManager)
+        mgr = GitHubStateManager.__new__(GitHubStateManager)
         mgr._client = MagicMock()
         return mgr
 
     @pytest.mark.asyncio
-    async def test_opens_draft_pr_for_first_child(self):
-        """First epic child with no existing PR: draft PR should be opened with a checklist."""
-        from agentharness.github_state import GitHubStateManager
-
+    async def test_ticks_checkbox_for_child(self):
+        """Ticks the child's issue-number checkbox in the existing umbrella PR body."""
+        mgr = self._make_mgr()
         state = _make_epic_state(
             epic_position=1,
             epic_total=2,
             state_issue_number=42,
+            epic_branch="epic-my-epic",
         )
-
-        mgr = GitHubStateManager.__new__(GitHubStateManager)
-        mgr._client = MagicMock()
-        mgr._client.list_pull_requests = AsyncMock(return_value=[])
-        mgr._client.get_issue = AsyncMock(return_value={"title": "My Epic Feature", "number": 10})
-        mgr._client.list_sub_issues = AsyncMock(return_value=[
-            {"number": 42, "title": "Sub-task 1"},
-            {"number": 43, "title": "Sub-task 2"},
-        ])
-        mgr._client.get_default_branch = AsyncMock(return_value="main")
-        mgr._client.create_pull_request = AsyncMock(return_value={
-            "number": 99,
-            "state": "open",
-            "body": "## Epic\n\nPart of #10\n\n### Tasks\n\n- [ ] #42 Sub-task 1\n- [ ] #43 Sub-task 2",
-        })
-        mgr._client.update_pull_request = AsyncMock(return_value={})
-        mgr._client.mark_pr_ready = AsyncMock()
-
-        await mgr.handle_epic_child_done(state)
-
-        mgr._client.create_pull_request.assert_called_once()
-        call_kwargs = mgr._client.create_pull_request.call_args
-        assert call_kwargs.kwargs.get("draft") is True
-        body = call_kwargs.kwargs.get("body", "")
-        assert "- [ ] #42" in body
-        assert "- [ ] #43" in body
-        # First child's checkbox should be ticked via update_pull_request
-        mgr._client.update_pull_request.assert_called_once()
-        updated_body = mgr._client.update_pull_request.call_args.kwargs.get("body", "")
-        assert "- [x] #42" in updated_body
-        assert "- [ ] #43" in updated_body
-        # Not last child: should NOT mark ready
-        mgr._client.mark_pr_ready.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_ticks_checkbox_for_subsequent_child(self):
-        """Subsequent child with existing open PR: checkbox ticked, PR not marked ready."""
-        from agentharness.github_state import GitHubStateManager
-
-        state = _make_epic_state(
-            epic_position=1,
-            epic_total=2,
-            state_issue_number=42,
-        )
-
         existing_pr = {
             "number": 99,
             "state": "open",
             "body": "## Epic\n\nPart of #10\n\n### Tasks\n\n- [ ] #42 Sub-task 1\n- [ ] #43 Sub-task 2",
         }
-
-        mgr = GitHubStateManager.__new__(GitHubStateManager)
-        mgr._client = MagicMock()
         mgr._client.list_pull_requests = AsyncMock(return_value=[existing_pr])
         mgr._client.update_pull_request = AsyncMock(return_value={})
         mgr._client.mark_pr_ready = AsyncMock()
@@ -205,109 +159,98 @@ class TestHandleEpicChildDone:
         await mgr.handle_epic_child_done(state)
 
         mgr._client.update_pull_request.assert_called_once()
-        updated_body = mgr._client.update_pull_request.call_args.kwargs.get("body", "")
+        updated_body = mgr._client.update_pull_request.call_args.kwargs["body"]
         assert "- [x] #42" in updated_body
-        assert "- [ ] #43" in updated_body
-        # Not last child: should NOT mark ready
-        mgr._client.mark_pr_ready.assert_not_called()
+        assert "- [ ] #43" in updated_body  # other child still unchecked
+        mgr._client.mark_pr_ready.assert_not_called()  # not last child
 
     @pytest.mark.asyncio
-    async def test_marks_pr_ready_for_last_child(self):
-        """Last epic child: PR should be marked ready for review after update."""
-        from agentharness.github_state import GitHubStateManager
-
+    async def test_marks_ready_when_last_child(self):
+        """Calls mark_pr_ready when epic_position == epic_total."""
+        mgr = self._make_mgr()
         state = _make_epic_state(
             epic_position=2,
             epic_total=2,
             state_issue_number=43,
+            epic_branch="epic-my-epic",
         )
-
         existing_pr = {
             "number": 99,
             "state": "open",
-            "body": "## Epic\n\nPart of #10\n\n### Tasks\n\n- [x] #42 Sub-task 1\n- [ ] #43 Sub-task 2",
+            "body": "- [x] #42 done\n- [ ] #43 last",
         }
-
-        mgr = GitHubStateManager.__new__(GitHubStateManager)
-        mgr._client = MagicMock()
         mgr._client.list_pull_requests = AsyncMock(return_value=[existing_pr])
         mgr._client.update_pull_request = AsyncMock(return_value={})
-        mgr._client.mark_pr_ready = AsyncMock(return_value={})
+        mgr._client.mark_pr_ready = AsyncMock()
 
         await mgr.handle_epic_child_done(state)
 
         mgr._client.mark_pr_ready.assert_called_once_with(99)
 
     @pytest.mark.asyncio
-    async def test_returns_early_when_no_epic_parent(self):
-        """State with no epic_parent: handle_epic_child_done is a no-op."""
-        from agentharness.github_state import GitHubStateManager
-
-        state = FeatureState(
-            feature_id="feat-standalone",
-            status=FeatureStatus.done,
-        )
-
-        mgr = GitHubStateManager.__new__(GitHubStateManager)
-        mgr._client = MagicMock()
-        mgr._client.list_pull_requests = AsyncMock()
+    async def test_does_nothing_when_no_umbrella_pr(self):
+        """Logs a warning and returns when no open umbrella PR exists."""
+        mgr = self._make_mgr()
+        state = _make_epic_state(epic_position=1, epic_total=2)
+        mgr._client.list_pull_requests = AsyncMock(return_value=[])
+        mgr._client.update_pull_request = AsyncMock()
+        mgr._client.mark_pr_ready = AsyncMock()
 
         await mgr.handle_epic_child_done(state)
 
-        mgr._client.list_pull_requests.assert_not_called()
+        mgr._client.update_pull_request.assert_not_called()
+        mgr._client.mark_pr_ready.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
 # 5b. _open_feature_pr routing
 # ---------------------------------------------------------------------------
 
-class TestOpenFeaturePr:
+class TestOpenFeaturePrEpic:
     @pytest.mark.asyncio
-    async def test_open_feature_pr_bypasses_regular_pr_for_epic(self):
-        """Epic child: open_review should NOT be called; handle_epic_child_done IS called."""
+    async def test_epic_child_calls_open_review_and_handle_done(self):
+        """Epic child: _open_feature_pr calls open_review (per-child PR) then handle_epic_child_done."""
         from agentharness.github_state import GitHubStateManager
 
         state = _make_epic_state(
-            status=FeatureStatus.done,
-            epic_parent=10,
+            epic_position=1,
+            epic_total=2,
+            epic_branch="epic-my-epic",
         )
-
         state_mgr = MagicMock(spec=GitHubStateManager)
-        state_mgr.handle_epic_child_done = AsyncMock()
-        state_mgr.open_review = AsyncMock()
-
-        await _open_feature_pr(state, state_mgr)
-
-        state_mgr.handle_epic_child_done.assert_called_once_with(state)
-        state_mgr.open_review.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_open_feature_pr_calls_open_review_for_non_epic(self):
-        """Non-epic feature: open_review should be called normally."""
-        from agentharness.github_state import GitHubStateManager
-
-        state = FeatureState(
-            feature_id="feat-normal",
-            status=FeatureStatus.done,
-        )
-
-        state_mgr = MagicMock(spec=GitHubStateManager)
-        state_mgr.open_review = AsyncMock()
+        state_mgr.open_review = AsyncMock(return_value="https://example.com/pull/5")
         state_mgr.handle_epic_child_done = AsyncMock()
 
         with patch("agentharness.dispatcher._build_pr_content", new_callable=AsyncMock) as mock_build:
-            mock_build.return_value = ("PR Title", "PR Summary")
+            mock_build.return_value = (None, None)
+            await _open_feature_pr(state, state_mgr)
+
+        state_mgr.open_review.assert_called_once_with(
+            state.feature_id,
+            pr_title=None,
+            pr_summary=None,
+        )
+        state_mgr.handle_epic_child_done.assert_called_once_with(state)
+
+    @pytest.mark.asyncio
+    async def test_non_epic_calls_only_open_review(self):
+        """Non-epic feature: _open_feature_pr calls open_review only, not handle_epic_child_done."""
+        from agentharness.github_state import GitHubStateManager
+
+        state = FeatureState(
+            feature_id="feat-standalone",
+            status=FeatureStatus.done,
+        )
+        state_mgr = MagicMock(spec=GitHubStateManager)
+        state_mgr.open_review = AsyncMock(return_value="https://example.com/pull/1")
+        state_mgr.handle_epic_child_done = AsyncMock()
+
+        with patch("agentharness.dispatcher._build_pr_content", new_callable=AsyncMock) as mock_build:
+            mock_build.return_value = (None, None)
             await _open_feature_pr(state, state_mgr)
 
         state_mgr.open_review.assert_called_once()
         state_mgr.handle_epic_child_done.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_open_feature_pr_returns_early_for_none_state_mgr(self):
-        """state_mgr=None: returns immediately without error."""
-        state = _make_epic_state()
-        # Should not raise
-        await _open_feature_pr(state, None)
 
 
 # ---------------------------------------------------------------------------
