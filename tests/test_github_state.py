@@ -1125,3 +1125,57 @@ class TestEnsureEpicPr:
 
         client.create_pull_request.assert_not_called()
         assert result["number"] == 42
+
+
+# ---------------------------------------------------------------------------
+# TestOpenReview
+# ---------------------------------------------------------------------------
+
+
+class TestOpenReview:
+    def _make_mgr(self):
+        from agentharness.github_state import GitHubStateManager
+        mgr = GitHubStateManager.__new__(GitHubStateManager)
+        mgr._feature_marker = "agentharness-feature"
+        client = MagicMock()
+        client.get_default_branch = AsyncMock(return_value="main")
+        client.create_pull_request = AsyncMock(return_value={"number": 5, "html_url": "https://example.com/pull/5"})
+        mgr._client = client
+        return mgr, client
+
+    def _make_state_with_branch(self, branch_name, epic_branch=None):
+        from agentharness.models import FeatureState, FeatureStatus
+        return FeatureState(
+            feature_id="feat-my-feature",
+            status=FeatureStatus.done,
+            branch_name=branch_name,
+            epic_branch=epic_branch,
+            state_issue_number=42,
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_epic_uses_branch_name_and_default_base(self):
+        """Non-epic feature: head=state.branch_name, base=default_branch."""
+        mgr, client = self._make_mgr()
+        state = self._make_state_with_branch("feat-my-feature", epic_branch=None)
+        mgr.get = AsyncMock(return_value=state)
+
+        await mgr.open_review("feat-my-feature")
+
+        call_kwargs = client.create_pull_request.call_args.kwargs
+        assert call_kwargs["head"] == "feat-my-feature"
+        assert call_kwargs["base"] == "main"
+
+    @pytest.mark.asyncio
+    async def test_epic_child_uses_epic_branch_as_base(self):
+        """Epic child: head=state.branch_name, base=state.epic_branch."""
+        mgr, client = self._make_mgr()
+        state = self._make_state_with_branch("feat-child-slug", epic_branch="epic-parent-slug")
+        mgr.get = AsyncMock(return_value=state)
+
+        await mgr.open_review("feat-my-feature")
+
+        call_kwargs = client.create_pull_request.call_args.kwargs
+        assert call_kwargs["head"] == "feat-child-slug"
+        assert call_kwargs["base"] == "epic-parent-slug"
+        client.get_default_branch.assert_not_called()

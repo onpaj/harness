@@ -646,12 +646,17 @@ class GitHubStateManager:
         body = self._compose_pr_body(state, pr_summary)
 
         try:
-            default_branch = await self._client.get_default_branch()
+            head = state.branch_name or feature_id
+            if state.epic_branch is not None:
+                base = state.epic_branch
+            else:
+                base = await self._client.get_default_branch()
+
             pr = await self._client.create_pull_request(
                 title=title,
                 body=body,
-                head=feature_id,
-                base=default_branch,
+                head=head,
+                base=base,
                 labels=[self._feature_marker],
             )
             pr_url = pr.get("html_url")
