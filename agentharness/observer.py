@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentharness.config import Config
-from agentharness.github_state import ensure_child_branch, ensure_epic_branch
+from agentharness.github_state import ensure_child_branch, ensure_epic_branch, slug_title
 from agentharness.models import FeatureStatus, TaskMessage
 from agentharness.storage import create_task_queue
 from agentharness.storage_protocol import RawMessage, TaskQueue
@@ -344,7 +344,7 @@ async def _bootstrap_github_issue(
     """
     import base64
 
-    from agentharness.github_state import GitHubStateManager, slug_title
+    from agentharness.github_state import GitHubStateManager
     from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
 
     title: str = issue.get("title") or "untitled"
