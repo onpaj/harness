@@ -182,6 +182,89 @@ def _tick_epic_pr_checkbox(body: str, issue_number: int) -> str:
     return re.sub(rf"- \[ \] #{issue_number}\b", f"- [x] #{issue_number}", body)
 
 
+async def ensure_epic_branch(
+    gh_client: "GitHubClient",
+    epic_branch: str,
+    default_sha: str,
+) -> str:
+    """Create *epic_branch* from *default_sha* if it doesn't exist.
+
+    Returns the branch's current tip SHA. Idempotent: a 422 (Reference already
+    exists) is silently tolerated and the existing SHA is returned instead.
+    """
+    from agentharness.github_client import GitHubApiError
+
+    try:
+        await gh_client.create_ref(f"refs/heads/{epic_branch}", default_sha)
+        log.info("Created epic branch %s", epic_branch)
+        return default_sha
+    except GitHubApiError as exc:
+        if exc.status_code == 422:
+            log.info("Epic branch %s already exists — reusing", epic_branch)
+            ref = await gh_client.get_ref(f"heads/{epic_branch}")
+            return ref["object"]["sha"]
+        raise
+
+
+async def ensure_child_branch(
+    gh_client: "GitHubClient",
+    child_branch: str,
+    epic_branch: str,
+    epic_sha: str,
+) -> None:
+    """Create *child_branch* off *epic_sha* if it doesn't exist.
+
+    Idempotent: 422 is tolerated (branch already present for a re-run).
+    *epic_branch* is used only for log messages.
+    """
+    from agentharness.github_client import GitHubApiError
+
+    try:
+        await gh_client.create_ref(f"refs/heads/{child_branch}", epic_sha)
+        log.info("Created child branch %s off %s", child_branch, epic_branch)
+    except GitHubApiError as exc:
+        if exc.status_code == 422:
+            log.info("Child branch %s already exists — reusing", child_branch)
+        else:
+            raise
+
+
+async def ensure_epic_pr(
+    gh_client: "GitHubClient",
+    epic_branch: str,
+    parent_issue: dict,
+    sub_issues: list[dict],
+) -> dict:
+    """Open a draft umbrella PR (*epic_branch* → default) if one doesn't exist.
+
+    Returns the existing open PR dict if found, otherwise the newly created one.
+    Idempotent: checks for an existing open PR before creating.
+    """
+    prs = await gh_client.list_pull_requests(head=epic_branch, state="open")
+    if prs:
+        log.debug("Umbrella PR for %s already exists (#%s)", epic_branch, prs[0].get("number"))
+        return prs[0]
+
+    parent_number = parent_issue["number"]
+    pr_title = parent_issue.get("title") or epic_branch
+    checklist = "\n".join(
+        f"- [ ] #{si['number']} {si.get('title', '')}" for si in sub_issues
+    )
+    pr_body = (
+        f"## Epic\n\nPart of #{parent_number}\n\n### Tasks\n\n{checklist}"
+    )
+    default_branch = await gh_client.get_default_branch()
+    pr = await gh_client.create_pull_request(
+        title=pr_title,
+        body=pr_body,
+        head=epic_branch,
+        base=default_branch,
+        draft=True,
+    )
+    log.info("Opened draft umbrella PR #%s for epic branch %s", pr.get("number"), epic_branch)
+    return pr
+
+
 class GitHubStateManager:
     """StateBackend implementation backed by GitHub Issues."""
 

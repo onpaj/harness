@@ -1013,3 +1013,115 @@ class TestSynthesizeRawState:
         state = _synthesize_raw_state(issue)
         assert state.created_at is not None
         assert state.updated_at is not None
+
+
+# ---------------------------------------------------------------------------
+# ensure_epic_branch / ensure_child_branch / ensure_epic_pr
+# ---------------------------------------------------------------------------
+
+from agentharness.github_state import ensure_epic_branch, ensure_child_branch, ensure_epic_pr
+
+
+def _make_gh_client_for_epic() -> MagicMock:
+    from agentharness.github_client import GitHubClient
+    client = MagicMock(spec=GitHubClient)
+    client.get_ref = AsyncMock()
+    client.create_ref = AsyncMock()
+    client.get_default_branch = AsyncMock(return_value="main")
+    client.list_pull_requests = AsyncMock(return_value=[])
+    client.create_pull_request = AsyncMock(return_value={"number": 77, "html_url": "https://github.com/owner/repo/pull/77"})
+    return client
+
+
+class TestEnsureEpicBranch:
+    @pytest.mark.asyncio
+    async def test_creates_branch_when_missing(self):
+        """Creates epic branch off default_sha when it doesn't exist."""
+        client = _make_gh_client_for_epic()
+        client.create_ref = AsyncMock(return_value={"object": {"sha": "abc123"}})
+
+        sha = await ensure_epic_branch(client, "epic-foo", "abc123")
+
+        client.create_ref.assert_called_once_with("refs/heads/epic-foo", "abc123")
+        assert sha == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_returns_existing_sha_on_422(self):
+        """Returns existing branch SHA when branch already exists (422)."""
+        from agentharness.github_client import GitHubApiError
+        client = _make_gh_client_for_epic()
+        client.create_ref = AsyncMock(side_effect=GitHubApiError(422, "Reference already exists"))
+        client.get_ref = AsyncMock(return_value={"object": {"sha": "existing-sha"}})
+
+        sha = await ensure_epic_branch(client, "epic-foo", "ignored-sha")
+
+        client.get_ref.assert_called_once_with("heads/epic-foo")
+        assert sha == "existing-sha"
+
+    @pytest.mark.asyncio
+    async def test_re_raises_non_422_errors(self):
+        """Propagates non-422 GitHubApiErrors."""
+        from agentharness.github_client import GitHubApiError
+        client = _make_gh_client_for_epic()
+        client.create_ref = AsyncMock(side_effect=GitHubApiError(500, "Server error"))
+
+        with pytest.raises(GitHubApiError) as exc_info:
+            await ensure_epic_branch(client, "epic-foo", "sha")
+        assert exc_info.value.status_code == 500
+
+
+class TestEnsureChildBranch:
+    @pytest.mark.asyncio
+    async def test_creates_child_branch_off_epic_sha(self):
+        """Creates child branch using the provided epic_sha."""
+        client = _make_gh_client_for_epic()
+        client.create_ref = AsyncMock()
+
+        await ensure_child_branch(client, "feat-my-feature", "epic-foo", "epic-sha-xyz")
+
+        client.create_ref.assert_called_once_with("refs/heads/feat-my-feature", "epic-sha-xyz")
+
+    @pytest.mark.asyncio
+    async def test_ignores_422_when_child_branch_exists(self):
+        """Does not raise when child branch already exists (idempotent)."""
+        from agentharness.github_client import GitHubApiError
+        client = _make_gh_client_for_epic()
+        client.create_ref = AsyncMock(side_effect=GitHubApiError(422, "Reference already exists"))
+
+        await ensure_child_branch(client, "feat-my-feature", "epic-foo", "sha")  # should not raise
+
+
+class TestEnsureEpicPr:
+    @pytest.mark.asyncio
+    async def test_creates_draft_pr_when_none_exists(self):
+        """Opens draft umbrella PR when no open PR exists for the epic branch."""
+        client = _make_gh_client_for_epic()
+        client.list_pull_requests = AsyncMock(return_value=[])
+        client.create_pull_request = AsyncMock(return_value={"number": 77})
+
+        parent = {"number": 10, "title": "My Epic"}
+        sub_issues = [{"number": 55, "title": "Child A"}, {"number": 56, "title": "Child B"}]
+
+        result = await ensure_epic_pr(client, "epic-my-epic", parent, sub_issues)
+
+        client.create_pull_request.assert_called_once()
+        call_kwargs = client.create_pull_request.call_args.kwargs
+        assert call_kwargs["draft"] is True
+        assert call_kwargs["head"] == "epic-my-epic"
+        assert call_kwargs["base"] == "main"
+        assert "- [ ] #55" in call_kwargs["body"]
+        assert "- [ ] #56" in call_kwargs["body"]
+        assert result["number"] == 77
+
+    @pytest.mark.asyncio
+    async def test_returns_existing_pr_without_creating(self):
+        """Returns the existing open PR without calling create_pull_request."""
+        client = _make_gh_client_for_epic()
+        existing_pr = {"number": 42, "state": "open"}
+        client.list_pull_requests = AsyncMock(return_value=[existing_pr])
+
+        parent = {"number": 10, "title": "My Epic"}
+        result = await ensure_epic_pr(client, "epic-my-epic", parent, [])
+
+        client.create_pull_request.assert_not_called()
+        assert result["number"] == 42
