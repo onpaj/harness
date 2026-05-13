@@ -35,8 +35,8 @@ def _make_epic_state(
 
 class TestWorktreeRetention:
     @pytest.mark.asyncio
-    async def test_non_last_epic_child_done_preserves_worktree(self):
-        """Non-last epic child (position < total): worktree should NOT be removed."""
+    async def test_non_last_epic_child_done_removes_worktree(self):
+        """Non-last epic child: worktree IS removed (per-child branches are independent)."""
         state = _make_epic_state(
             status=FeatureStatus.done,
             epic_parent=10,
@@ -44,11 +44,12 @@ class TestWorktreeRetention:
             epic_total=2,
         )
         state_manager = MagicMock()
+        state_manager.set_cleanup_warning = AsyncMock()
 
-        with patch("agentharness.dispatcher.remove_worktree") as mock_remove:
+        with patch("agentharness.dispatcher.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await run_terminal_cleanup(state, state_manager)
 
-        mock_remove.assert_not_called()
+        mock_thread.assert_called_once()  # worktree removal IS triggered
 
     @pytest.mark.asyncio
     async def test_last_epic_child_done_removes_worktree(self):

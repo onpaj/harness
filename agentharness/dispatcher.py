@@ -40,42 +40,28 @@ async def run_terminal_cleanup(state: FeatureState, state_manager) -> None:
         return
 
     if state.status == FeatureStatus.done:
-        # Non-last epic child: skip worktree removal so next sibling can reuse the branch
-        is_non_last_epic_child = (
-            state.epic_parent is not None
-            and state.epic_total is not None
-            and state.epic_position is not None
-            and state.epic_position < state.epic_total
+        log.info(
+            "Worktree removal started for %s at %s",
+            state.feature_id, state.worktree_path,
         )
-        if is_non_last_epic_child:
+        try:
+            await asyncio.to_thread(remove_worktree, state.worktree_path)
             log.info(
-                "Skipping worktree removal for epic child %s (position %d/%d) — "
-                "next sibling will reuse branch",
-                state.feature_id, state.epic_position, state.epic_total,
-            )
-        else:
-            log.info(
-                "Worktree removal started for %s at %s",
+                "Worktree removal succeeded for %s at %s",
                 state.feature_id, state.worktree_path,
             )
+        except WorktreeRemovalError as exc:
+            log.error(
+                "Worktree removal failed for %s at %s: %s",
+                state.feature_id, state.worktree_path, exc,
+            )
             try:
-                await asyncio.to_thread(remove_worktree, state.worktree_path)
-                log.info(
-                    "Worktree removal succeeded for %s at %s",
-                    state.feature_id, state.worktree_path,
-                )
-            except WorktreeRemovalError as exc:
+                await state_manager.set_cleanup_warning(state.feature_id, str(exc))
+            except Exception as warn_exc:
                 log.error(
-                    "Worktree removal failed for %s at %s: %s",
-                    state.feature_id, state.worktree_path, exc,
+                    "Failed to persist cleanup_warning for %s: %s",
+                    state.feature_id, warn_exc,
                 )
-                try:
-                    await state_manager.set_cleanup_warning(state.feature_id, str(exc))
-                except Exception as warn_exc:
-                    log.error(
-                        "Failed to persist cleanup_warning for %s: %s",
-                        state.feature_id, warn_exc,
-                    )
 
     elif state.status == FeatureStatus.failed:
         log.info(
