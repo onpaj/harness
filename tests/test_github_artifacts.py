@@ -495,3 +495,84 @@ async def test_sync_working_branch_aborts_when_base_merge_fails() -> None:
 
     abort_calls = [args for args in recorded if "merge" in args and "--abort" in args]
     assert abort_calls
+
+
+# ---------------------------------------------------------------------------
+# sync_working_branch — base_branch override (epic children)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_uses_base_branch_instead_of_default_when_set() -> None:
+    """When base_branch is set, sync merges from base_branch, not origin/HEAD default."""
+    store = GitHubArtifactStore(
+        owner=_OWNER,
+        repo=_REPO,
+        feature_id=_FEATURE_ID,
+        clone_dir=_CLONE_DIR,
+        base_branch="epic-my-epic",
+    )
+
+    recorded: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        recorded.append(args)
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()
+
+    # Must merge from the epic branch
+    epic_merges = [
+        args for args in recorded
+        if "merge" in args and "origin/epic-my-epic" in args
+    ]
+    assert epic_merges, "Expected merge from epic branch"
+
+    # Must NOT call symbolic-ref (no need to detect default branch)
+    symbolic_ref_calls = [args for args in recorded if "symbolic-ref" in args]
+    assert not symbolic_ref_calls
+
+    # Must NOT merge from main
+    main_merges = [args for args in recorded if "merge" in args and "origin/main" in args]
+    assert not main_merges
+
+
+@pytest.mark.asyncio
+async def test_sync_working_branch_without_base_branch_merges_default() -> None:
+    """Without base_branch, sync behaviour is unchanged — merges from origin/HEAD default."""
+    store = _make_store()  # no base_branch
+
+    recorded: list[tuple[str, ...]] = []
+
+    async def fake_run_git(*args: str, cwd: Path | None = None) -> bytes:
+        recorded.append(args)
+        if "symbolic-ref" in args:
+            return b"origin/main\n"
+        return b""
+
+    with (
+        patch("agentharness.github_artifacts._run_git", side_effect=fake_run_git),
+        patch.object(Path, "exists", return_value=True),
+        patch.object(Path, "mkdir"),
+    ):
+        await store.sync_working_branch()
+
+    main_merges = [args for args in recorded if "merge" in args and "origin/main" in args]
+    assert main_merges
+
+
+def test_from_config_passes_base_branch() -> None:
+    """from_config forwards base_branch to the store."""
+    config = MagicMock()
+    config.github.owner = "org"
+    config.github.runs_repo = "runs"
+    config.github.clone_dir = ".worktrees"
+
+    store = GitHubArtifactStore.from_config(config, "feat-child", base_branch="epic-parent")
+
+    assert store._base_branch == "epic-parent"

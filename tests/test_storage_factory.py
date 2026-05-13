@@ -88,7 +88,7 @@ class TestCreateArtifactStore:
             store = create_artifact_store(config, feature_id="feat-x")
 
             # Assert
-            mock_from_config.assert_called_once_with(config, "feat-x")
+            mock_from_config.assert_called_once_with(config, "feat-x", base_branch=None)
             assert isinstance(store, GitHubArtifactStore)
 
     def test_github_config_without_feature_id_raises_value_error(self):

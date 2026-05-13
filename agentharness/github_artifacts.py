@@ -115,23 +115,25 @@ class GitHubArtifactStore:
         repo: str,
         feature_id: str,
         clone_dir: Path,
+        base_branch: str | None = None,
     ) -> None:
         self._owner = owner
         self._repo = repo
         self._feature_id = feature_id
         self._clone_dir = clone_dir
         self._clone_root = clone_dir / feature_id
+        self._base_branch = base_branch
 
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_config(cls, config: Config, feature_id: str) -> GitHubArtifactStore:
+    def from_config(cls, config: Config, feature_id: str, base_branch: str | None = None) -> GitHubArtifactStore:
         owner = config.github.owner
         repo = config.github.runs_repo
         clone_dir = Path(config.github.clone_dir)
-        return cls(owner=owner, repo=repo, feature_id=feature_id, clone_dir=clone_dir)
+        return cls(owner=owner, repo=repo, feature_id=feature_id, clone_dir=clone_dir, base_branch=base_branch)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -338,18 +340,22 @@ class GitHubArtifactStore:
             except RuntimeError as exc:
                 log.warning("sync_working_branch: cannot sync remote feature branch: %s", exc)
 
-        default_branch = await self._get_default_branch()
-        if not default_branch or default_branch == self._feature_id:
+        if self._base_branch is not None:
+            base = self._base_branch
+        else:
+            base = await self._get_default_branch()
+
+        if not base or base == self._feature_id:
             return
 
         try:
             await _run_git(
                 "-C", str(self._clone_root),
-                "merge", "-X", "ours", "--no-edit", f"origin/{default_branch}",
+                "merge", "-X", "ours", "--no-edit", f"origin/{base}",
             )
             log.info(
                 "sync_working_branch: merged origin/%s into %s",
-                default_branch, self._feature_id,
+                base, self._feature_id,
             )
         except RuntimeError as exc:
             log.warning("sync_working_branch: base branch merge failed: %s — aborting", exc)

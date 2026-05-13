@@ -274,7 +274,8 @@ class TestRunTaskUsesStorageFactory:
         ):
             await run_task("dev-queue", task_json, config)
 
-        mock_cas.assert_called_once_with(config, feature_id="feat-01")
+        feature_state = mock_state_mgr.get.return_value
+        mock_cas.assert_called_once_with(config, feature_id="feat-01", base_branch=feature_state.epic_branch)
         mock_csm.assert_called_once_with(config)
 
     async def test_no_direct_blob_service_client_import(self):

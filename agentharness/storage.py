@@ -51,13 +51,13 @@ def state_blob_path(feature_id: str) -> str:
     return f"artifacts/{feature_id}/state.json"
 
 
-def create_artifact_store(config, feature_id: str | None = None):
+def create_artifact_store(config, feature_id: str | None = None, base_branch: str | None = None):
     """Return ArtifactStorage backend based on config.storage_backend."""
     if config.storage_backend == "github":
         from agentharness.github_artifacts import GitHubArtifactStore
         if feature_id is None:
             raise ValueError("feature_id is required for GitHub artifact store")
-        return GitHubArtifactStore.from_config(config, feature_id)
+        return GitHubArtifactStore.from_config(config, feature_id, base_branch=base_branch)
     return AzureArtifactStore.from_config(config)
 
 

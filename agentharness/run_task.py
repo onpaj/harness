@@ -75,7 +75,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
                 return
 
         branch_name = feature_state.branch_name or task.feature_id
-        store = create_artifact_store(config, feature_id=branch_name)
+        store = create_artifact_store(config, feature_id=branch_name, base_branch=feature_state.epic_branch)
 
         all_queues = {
             q_name: create_task_queue(config, q_name)
