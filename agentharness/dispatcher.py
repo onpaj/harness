@@ -982,11 +982,17 @@ async def _open_feature_pr(
         return
 
     pr_title, pr_summary = await _build_pr_content(state, store)
-    await state_mgr.open_review(
-        state.feature_id,
-        pr_title=pr_title,
-        pr_summary=pr_summary,
-    )
+    try:
+        await state_mgr.open_review(
+            state.feature_id,
+            pr_title=pr_title,
+            pr_summary=pr_summary,
+        )
+    except Exception:
+        log.exception(
+            "[%s] open_review raised unexpectedly; will still attempt epic checklist update",
+            state.feature_id,
+        )
 
     if state.epic_parent is not None:
         from agentharness.github_state import GitHubStateManager

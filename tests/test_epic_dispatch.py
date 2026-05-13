@@ -233,6 +233,26 @@ class TestOpenFeaturePrEpic:
         state_mgr.handle_epic_child_done.assert_called_once_with(state)
 
     @pytest.mark.asyncio
+    async def test_epic_child_handle_done_called_even_if_open_review_raises(self):
+        """handle_epic_child_done is called even when open_review raises."""
+        from agentharness.github_state import GitHubStateManager
+
+        state = _make_epic_state(
+            epic_position=1,
+            epic_total=2,
+            epic_branch="epic-my-epic",
+        )
+        state_mgr = MagicMock(spec=GitHubStateManager)
+        state_mgr.open_review = AsyncMock(side_effect=RuntimeError("network error"))
+        state_mgr.handle_epic_child_done = AsyncMock()
+
+        with patch("agentharness.dispatcher._build_pr_content", new_callable=AsyncMock) as mock_build:
+            mock_build.return_value = (None, None)
+            await _open_feature_pr(state, state_mgr)  # should not raise
+
+        state_mgr.handle_epic_child_done.assert_called_once_with(state)
+
+    @pytest.mark.asyncio
     async def test_non_epic_calls_only_open_review(self):
         """Non-epic feature: _open_feature_pr calls open_review only, not handle_epic_child_done."""
         from agentharness.github_state import GitHubStateManager
