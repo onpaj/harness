@@ -558,6 +558,7 @@ class PipelineMonitor(App):
         Binding("k", "kill_task", "Kill selected task"),
         Binding("t", "resume_task", "Resume selected task"),
         Binding("s", "open_state_change", "Change state"),
+        Binding("y", "copy_name", "Copy name"),
     ]
 
     TITLE = "AgentHarness Pipeline Monitor"
@@ -909,6 +910,20 @@ class PipelineMonitor(App):
 
         short = task_id.split("-dev-")[-1]
         self.notify(f"Task {short!r} queued → {queue_name}", severity="information")
+
+    def action_copy_name(self) -> None:
+        feature_id = self.query_one(FeatureList).selected_feature_id()
+        if not feature_id:
+            self.notify("No feature selected.", severity="warning")
+            return
+        task_id = self.query_one(TaskPanel).selected_task_id()
+        if task_id and task_id not in _PHASE_ORDER:
+            self.copy_to_clipboard(task_id)
+            short = task_id.split("-dev-")[-1]
+            self.notify(f"Copied: {short}")
+        else:
+            self.copy_to_clipboard(feature_id)
+            self.notify(f"Copied: {feature_id}")
 
     def action_toggle_observer(self) -> None:
         pid = _observer_pid()
