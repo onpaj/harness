@@ -379,3 +379,75 @@ async def test_close_delegates_to_client() -> None:
     await queue.close()
 
     client.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# cancel_queued_for_feature
+# ---------------------------------------------------------------------------
+
+
+def _issue_with_feature(number: int, feature_id: str, body_prefix: str = "") -> dict:
+    return {
+        "number": number,
+        "body": f"{body_prefix}Feature: #{number}\n\nTask: {feature_id}-analyst\n",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_for_feature_closes_matching_issues() -> None:
+    client = _make_client()
+    client.search_issues.return_value = [
+        _issue_with_feature(10, "feat-x"),
+        _issue_with_feature(11, "feat-x"),
+    ]
+    queue = _make_queue(client)
+
+    count = await queue.cancel_queued_for_feature("feat-x")
+
+    assert count == 2
+    assert client.update_issue.await_count == 2
+    calls = [c.args[0] for c in client.update_issue.call_args_list]
+    assert 10 in calls
+    assert 11 in calls
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_for_feature_skips_non_matching_issues() -> None:
+    client = _make_client()
+    client.search_issues.return_value = [
+        _issue_with_feature(10, "feat-x"),
+        _issue_with_feature(11, "feat-y"),  # different feature
+    ]
+    queue = _make_queue(client)
+
+    count = await queue.cancel_queued_for_feature("feat-x")
+
+    assert count == 1
+    closed_numbers = [c.args[0] for c in client.update_issue.call_args_list]
+    assert 10 in closed_numbers
+    assert 11 not in closed_numbers
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_for_feature_returns_zero_when_no_matching() -> None:
+    client = _make_client()
+    client.search_issues.return_value = []
+    queue = _make_queue(client)
+
+    count = await queue.cancel_queued_for_feature("feat-unknown")
+
+    assert count == 0
+    client.update_issue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_for_feature_searches_correct_queue_label() -> None:
+    client = _make_client()
+    client.search_issues.return_value = []
+    queue = _make_queue(client)
+
+    await queue.cancel_queued_for_feature("feat-x")
+
+    query = client.search_issues.call_args[0][0]
+    assert STATE_QUEUED in query
+    assert _QUEUE_LABEL in query

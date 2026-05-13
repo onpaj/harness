@@ -348,3 +348,117 @@ class TestApplyStateChangeRollbackFromFailed:
         persisted = mgr._state_ref["value"]
         events = [e.event for e in persisted.history]
         assert "phase_resumed" not in events
+
+
+@pytest.mark.asyncio
+class TestApplyStateChangeRestartCancelStale:
+    """On restart, apply_state_change cancels stale queued tasks if the queue supports it."""
+
+    def _analyzing_state(self):
+        return FeatureState(feature_id="feat-x", status=FeatureStatus.analyzing)
+
+    def _make_queue_factory_with_cancel(self, cancel_return: int = 1):
+        queues: dict = {}
+
+        def factory(name: str):
+            if name not in queues:
+                q = AsyncMock()
+                q.send_task = AsyncMock()
+                q.close = AsyncMock()
+                q.cancel_queued_for_feature = AsyncMock(return_value=cancel_return)
+                queues[name] = q
+            return queues[name]
+
+        factory.queues = queues  # type: ignore[attr-defined]
+        return factory
+
+    def _make_queue_factory_without_cancel(self):
+        queues: dict = {}
+
+        def factory(name: str):
+            if name not in queues:
+                q = AsyncMock()
+                q.send_task = AsyncMock()
+                q.close = AsyncMock()
+                # Intentionally no cancel_queued_for_feature attribute
+                if hasattr(q, "cancel_queued_for_feature"):
+                    del q.cancel_queued_for_feature
+                queues[name] = q
+            return queues[name]
+
+        factory.queues = queues  # type: ignore[attr-defined]
+        return factory
+
+    async def test_restart_calls_cancel_queued_for_feature_before_enqueue(self):
+        initial = self._analyzing_state()
+        mgr = _make_state_mgr(initial)
+        factory = self._make_queue_factory_with_cancel(cancel_return=1)
+
+        await apply_state_change(
+            "feat-x",
+            StateChangeResult(target_status=FeatureStatus.analyzing, mode="restart"),
+            state_mgr=mgr, queue_factory=factory, config=_config(),
+        )
+
+        queue = factory.queues["analyst-queue"]
+        queue.cancel_queued_for_feature.assert_awaited_once_with("feat-x")
+        queue.send_task.assert_awaited_once()
+
+    async def test_cancel_is_called_before_send(self):
+        initial = self._analyzing_state()
+        mgr = _make_state_mgr(initial)
+
+        call_order: list[str] = []
+
+        def factory(name: str):
+            q = AsyncMock()
+
+            async def cancel(fid):
+                call_order.append("cancel")
+                return 1
+
+            async def send(task, **kwargs):
+                call_order.append("send")
+
+            q.cancel_queued_for_feature = cancel
+            q.send_task = send
+            q.close = AsyncMock()
+            return q
+
+        await apply_state_change(
+            "feat-x",
+            StateChangeResult(target_status=FeatureStatus.analyzing, mode="restart"),
+            state_mgr=mgr, queue_factory=factory, config=_config(),
+        )
+
+        assert call_order == ["cancel", "send"]
+
+    async def test_restart_proceeds_normally_when_queue_lacks_cancel_method(self):
+        initial = self._analyzing_state()
+        mgr = _make_state_mgr(initial)
+        factory = self._make_queue_factory_without_cancel()
+
+        # Should not raise even when cancel_queued_for_feature is absent
+        await apply_state_change(
+            "feat-x",
+            StateChangeResult(target_status=FeatureStatus.analyzing, mode="restart"),
+            state_mgr=mgr, queue_factory=factory, config=_config(),
+        )
+
+        queue = factory.queues["analyst-queue"]
+        queue.send_task.assert_awaited_once()
+
+    async def test_rollback_does_not_call_cancel(self):
+        """cancel_queued_for_feature is only called on restart, not rollback."""
+        initial = FeatureState(feature_id="feat-x", status=FeatureStatus.architecting)
+        mgr = _make_state_mgr(initial)
+        factory = self._make_queue_factory_with_cancel()
+
+        await apply_state_change(
+            "feat-x",
+            StateChangeResult(target_status=FeatureStatus.analyzing, mode="rollback"),
+            state_mgr=mgr, queue_factory=factory, config=_config(),
+        )
+
+        queue = factory.queues["analyst-queue"]
+        queue.cancel_queued_for_feature.assert_not_awaited()

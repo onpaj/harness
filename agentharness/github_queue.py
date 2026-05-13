@@ -288,6 +288,22 @@ class GitHubTaskQueue:
         return len(issues)
 
     # ------------------------------------------------------------------
+    # Cancel stale tasks for a feature
+    # ------------------------------------------------------------------
+
+    async def cancel_queued_for_feature(self, feature_id: str) -> int:
+        """Close all queued issues for a given feature. Returns count of cancelled issues."""
+        query = f"is:open label:{STATE_QUEUED} label:{self._queue_label}"
+        issues = await self._client.search_issues(query)
+        count = 0
+        for issue in issues:
+            body = issue.get("body") or ""
+            if feature_id in body:
+                await self._client.update_issue(issue["number"], state="closed")
+                count += 1
+        return count
+
+    # ------------------------------------------------------------------
     # Close
     # ------------------------------------------------------------------
 

@@ -1421,6 +1421,142 @@ class TestLastDeveloperArtifact:
         assert _last_developer_artifact(self._state(tasks)) == "artifacts/x/impl/main.r2.md"
 
 
+@pytest.mark.asyncio
+class TestStaleTaskGuard:
+    """dispatch_after_completion drops tasks whose agent_role doesn't match the current phase."""
+
+    def _planning_state(self) -> FeatureState:
+        return FeatureState(feature_id="feat-x", status=FeatureStatus.planning)
+
+    def _analyzing_state(self) -> FeatureState:
+        return FeatureState(feature_id="feat-x", status=FeatureStatus.analyzing)
+
+    def _developing_state(self) -> FeatureState:
+        entries = [
+            TaskEntry(
+                task_id="feat-x-dev-main",
+                phase="developing",
+                status=TaskStatus.in_progress,
+                queued_message=TaskMessage(
+                    feature_id="feat-x",
+                    task_id="feat-x-dev-main",
+                    input_artifacts=[],
+                    output_artifact="artifacts/feat-x/impl/main.r1.md",
+                    agent_role="developer",
+                ).model_dump(),
+            )
+        ]
+        return FeatureState(feature_id="feat-x", status=FeatureStatus.developing).with_tasks_added(entries)
+
+    def _stale_analyst_task(self) -> TaskMessage:
+        return TaskMessage(
+            feature_id="feat-x",
+            task_id="feat-x-analyst",
+            input_artifacts=["artifacts/feat-x/brief.md"],
+            output_artifact="artifacts/feat-x/spec.r1.md",
+            agent_role="analyst",
+        )
+
+    def _planner_task(self) -> TaskMessage:
+        return TaskMessage(
+            feature_id="feat-x",
+            task_id="feat-x-planning-1",
+            input_artifacts=[],
+            output_artifact="artifacts/feat-x/task-plan.r1.md",
+            agent_role="planner",
+        )
+
+    def _analyst_task(self) -> TaskMessage:
+        return TaskMessage(
+            feature_id="feat-x",
+            task_id="feat-x-analyzing-r1",
+            input_artifacts=["artifacts/feat-x/brief.md"],
+            output_artifact="artifacts/feat-x/spec.r1.md",
+            agent_role="analyst",
+        )
+
+    def _queues_with_dev(self) -> dict:
+        return {"developer-queue": AsyncMock(send_task=AsyncMock())}
+
+    def _queues_with_architect(self) -> dict:
+        from pathlib import Path
+        cfg = MagicMock()
+        cfg.agent_path_for_queue.side_effect = lambda q: {
+            "architect-queue": Path(".agents/architect.md"),
+            "product-queue": Path(".agents/product.md"),
+        }[q]
+        return {"architect-queue": AsyncMock(send_task=AsyncMock()), "product-queue": AsyncMock(send_task=AsyncMock())}
+
+    def _config_for_planning(self) -> MagicMock:
+        from pathlib import Path
+        cfg = MagicMock()
+        cfg.agent_path_for_queue.side_effect = lambda q: {
+            "developer-queue": Path(".agents/developer.md"),
+        }[q]
+        return cfg
+
+    def _config_for_analyzing(self) -> MagicMock:
+        from pathlib import Path
+        cfg = MagicMock()
+        cfg.agent_path_for_queue.side_effect = lambda q: {
+            "architect-queue": Path(".agents/architect.md"),
+            "product-queue": Path(".agents/product.md"),
+        }[q]
+        return cfg
+
+    async def test_stale_analyst_completing_during_planning_returns_none(self):
+        queues = self._queues_with_dev()
+        result = await dispatch_after_completion(
+            self._planning_state(), self._stale_analyst_task(), "analyst output",
+            self._config_for_planning(), queues,
+        )
+        assert result is None
+        queues["developer-queue"].send_task.assert_not_awaited()
+
+    async def test_stale_analyst_completing_during_developing_returns_none(self):
+        queues = self._queues_with_dev()
+        result = await dispatch_after_completion(
+            self._developing_state(), self._stale_analyst_task(), "analyst output",
+            self._config_for_planning(), queues,
+        )
+        assert result is None
+        queues["developer-queue"].send_task.assert_not_awaited()
+
+    async def test_stale_task_drop_is_logged_as_warning(self, caplog):
+        import logging
+        queues = self._queues_with_dev()
+        with caplog.at_level(logging.WARNING, logger="agentharness.dispatcher"):
+            await dispatch_after_completion(
+                self._planning_state(), self._stale_analyst_task(), "analyst output",
+                self._config_for_planning(), queues,
+            )
+        assert any("stale" in r.message.lower() or "dropping" in r.message.lower() for r in caplog.records)
+
+    async def test_planner_completing_during_planning_proceeds_normally(self):
+        queues = self._queues_with_dev()
+        result = await dispatch_after_completion(
+            self._planning_state(), self._planner_task(), "planner output",
+            self._config_for_planning(), queues,
+        )
+        assert result is not None
+        assert result.status == FeatureStatus.developing
+
+    async def test_analyst_completing_during_analyzing_proceeds_normally(self):
+        from pathlib import Path
+        cfg = MagicMock()
+        cfg.agent_path_for_queue.side_effect = lambda q: Path(f".agents/{q.replace('-queue', '')}.md")
+        queues = {
+            "architect-queue": AsyncMock(send_task=AsyncMock()),
+            "product-queue": AsyncMock(send_task=AsyncMock()),
+        }
+        result = await dispatch_after_completion(
+            self._analyzing_state(), self._analyst_task(), "## Status: COMPLETE\n",
+            cfg, queues,
+        )
+        assert result is not None
+        assert result.status == FeatureStatus.architecting
+
+
 class _FakeStore:
     """Minimal in-memory ArtifactStorage for unit tests."""
 

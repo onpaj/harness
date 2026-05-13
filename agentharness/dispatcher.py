@@ -83,6 +83,19 @@ async def run_terminal_cleanup(state: FeatureState, state_manager) -> None:
                 )
 
 
+# Maps feature status → the agent_role expected to complete a task in that phase.
+# Used to drop stale tasks that were queued before a phase transition or manual restart.
+_EXPECTED_AGENT_ROLE: dict[FeatureStatus, str] = {
+    FeatureStatus.analyzing:    "analyst",
+    FeatureStatus.questioning:  "product",
+    FeatureStatus.architecting: "architect",
+    FeatureStatus.designing:    "designer",
+    FeatureStatus.planning:     "planner",
+    FeatureStatus.developing:   "developer",
+    FeatureStatus.dev_revision: "developer",
+    FeatureStatus.reviewing:    "reviewer",
+}
+
 # Maps feature status → (next_status, next_queue_key)
 _LINEAR_TRANSITIONS: dict[str, tuple[str, str]] = {
     "architecting": ("designing", "designer-queue"),
@@ -129,6 +142,14 @@ async def dispatch_after_completion(
     Returns the updated FeatureState, or None if no further action (fan-in wait).
     """
     status = state.status
+
+    expected_role = _EXPECTED_AGENT_ROLE.get(status)
+    if expected_role is not None and completed_task.agent_role != expected_role:
+        log.warning(
+            "Dropping stale task %s (agent_role=%r) — expected %r for phase %r",
+            completed_task.task_id, completed_task.agent_role, expected_role, status.value,
+        )
+        return None
 
     if status == FeatureStatus.analyzing:
         analyst_status = _parse_analyst_status(agent_output)

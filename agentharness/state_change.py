@@ -119,6 +119,21 @@ async def apply_state_change(
 
     task = build_phase_task(persisted, persisted.status, config)
     queue = queue_factory(queue_name)
+
+    if result.mode == "restart" and hasattr(queue, "cancel_queued_for_feature"):
+        try:
+            cancelled = await queue.cancel_queued_for_feature(feature_id)
+            if cancelled:
+                log.info(
+                    "apply_state_change: cancelled %d stale queued task(s) for %s on %s",
+                    cancelled, feature_id, queue_name,
+                )
+        except Exception as exc:
+            log.warning(
+                "apply_state_change: cancel_queued_for_feature failed for %s on %s: %s",
+                feature_id, queue_name, exc,
+            )
+
     last_exc: Exception | None = None
     try:
         for attempt in range(2):
