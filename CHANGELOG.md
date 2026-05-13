@@ -1,6 +1,17 @@
 # CHANGELOG
 
 
+## v0.10.0 (2026-05-13)
+
+### Features
+
+- Add y keybinding to copy feature/task name in TUI
+  ([`d961b05`](https://github.com/onpaj/harness/commit/d961b05edb967c48f3f297937521bd1f3a96fc9d))
+
+Press y to copy the selected feature_id or dev task_id to clipboard. Phase rows fall back to copying
+  the feature_id.
+
+
 ## v0.9.1 (2026-05-13)
 
 ### Bug Fixes
