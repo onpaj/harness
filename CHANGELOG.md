@@ -1,6 +1,68 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-05-13)
+
+### Bug Fixes
+
+- Add body-marker fallback to get_parent_issue for flaky sub-issues beta API
+  ([`43491b4`](https://github.com/onpaj/harness/commit/43491b402b1ef8cd5a2cdeec7c361b8348cf65b5))
+
+- Ensure handle_epic_child_done runs even if open_review raises
+  ([`033a59d`](https://github.com/onpaj/harness/commit/033a59d0843ff496a733638db1a31565f2d53627))
+
+- Open_review exception only suppressed for epic children; remove duplicate import
+  ([`129fab9`](https://github.com/onpaj/harness/commit/129fab9bbb20579695e3850ce80210c2df6c812e))
+
+- In _open_feature_pr, re-raise open_review exceptions for non-epic features so errors propagate
+  correctly; only suppress for epic children (where handle_epic_child_done must still run even if PR
+  creation fails). - Remove duplicate deferred import of ensure_epic_branch/ensure_child_branch/
+  ensure_epic_pr from the first branch of _convert_raw_issue; slug_title is already imported at the
+  top of the function so no separate re-import needed.
+
+- Open_review uses state.branch_name as head and state.epic_branch as base for epic children
+  ([`ba1d03e`](https://github.com/onpaj/harness/commit/ba1d03e0a10094547c9ee9975554ddb28b7b8f45))
+
+For epic child features, the PR must target the shared epic branch (state.epic_branch) as base
+  instead of the repo default branch, and use state.branch_name as head rather than the raw
+  feature_id. Non-epic features fall back to the default branch.
+
+### Documentation
+
+- Convertforagent skill delegates to agentharness convert, documents epic branch behavior
+  ([`b58eeba`](https://github.com/onpaj/harness/commit/b58eebab423f6e4e48890c685884933572f65fc7))
+
+### Features
+
+- _convert_raw_issue — per-child branches off epic, drop prev-sibling gate, open umbrella PR
+  ([`1b7853d`](https://github.com/onpaj/harness/commit/1b7853d33e3537a0a705e132aa02da24d6de6b8a))
+
+Each epic child now gets its own feat-<slug> branch (not the shared epic-<slug> branch). Calls
+  ensure_epic_branch, ensure_child_branch, and ensure_epic_pr for idempotent branch and PR setup.
+  Removes the prev-sibling gate that prevented child N>1 from starting until child N-1 was done.
+
+- Add agentharness convert CLI subcommand wrapping _convert_raw_issue
+  ([`66428c9`](https://github.com/onpaj/harness/commit/66428c97250ffe71616af15a0917f0018c999ae9))
+
+- Add ensure_epic_branch, ensure_child_branch, ensure_epic_pr helpers
+  ([`828631b`](https://github.com/onpaj/harness/commit/828631bb4f4a3b159dab669d468f9955524da154))
+
+- Observer bootstrap detects epic parent and branches off epic-<slug>
+  ([`06d3cf1`](https://github.com/onpaj/harness/commit/06d3cf1ead795c11cc913e45e0706eb9141ef038))
+
+- Per-child PRs for epic children — open_review targets epic branch, handle_epic_child_done ticks
+  umbrella
+  ([`d81e2f0`](https://github.com/onpaj/harness/commit/d81e2f0c6c02b9bee7ba14dcc0e2975691201bbf))
+
+- Remove worktree-skip for non-last epic children — per-child branches are independent
+  ([`9f93344`](https://github.com/onpaj/harness/commit/9f93344a88e6e7e51c406e70a7f3d0e1bf74e4d9))
+
+### Refactoring
+
+- Move slug_title to module-level import in observer.py
+  ([`c7a23d0`](https://github.com/onpaj/harness/commit/c7a23d0ec4440e98e87837afe157a389cf28dd1f))
+
+
 ## v0.8.1 (2026-05-12)
 
 ### Bug Fixes
