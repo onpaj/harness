@@ -696,3 +696,77 @@ async def test_mark_pr_ready_calls_update_pull_request_with_draft_false() -> Non
     assert result == ready_pr
     mock_update.assert_awaited_once_with(20, draft=False)
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# get_parent_issue – body-marker fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_parent_issue_falls_back_to_body_marker_when_api_returns_none():
+    """When API parent_issue is None, parse 'Epic: #N' from issue body."""
+    from agentharness.github_client import GitHubClient
+
+    client = GitHubClient.__new__(GitHubClient)
+    client._client = MagicMock()
+    client.owner = _OWNER
+    client.repo = _REPO
+
+    child_issue = {
+        "number": 55,
+        "body": "Some description\n\nEpic: #10\n\nMore text",
+    }
+    parent_issue = {"number": 10, "title": "Parent Epic"}
+
+    async def mock_request(method, url, **kwargs):
+        if "/issues/55" in url and "sub_issues" not in url:
+            return child_issue
+        if "/issues/10" in url:
+            return parent_issue
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    client._request = mock_request
+    result = await client.get_parent_issue(55)
+    assert result is not None
+    assert result["number"] == 10
+
+
+@pytest.mark.asyncio
+async def test_get_parent_issue_returns_none_when_no_parent_and_no_marker():
+    """Returns None when API has no parent_issue and body has no Epic marker."""
+    from agentharness.github_client import GitHubClient
+
+    client = GitHubClient.__new__(GitHubClient)
+    client.owner = _OWNER
+    client.repo = _REPO
+    child_issue = {"number": 55, "body": "Just a regular issue with no epic."}
+
+    async def mock_request(method, url, **kwargs):
+        return child_issue
+
+    client._request = mock_request
+    result = await client.get_parent_issue(55)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_parent_issue_uses_api_result_when_available():
+    """When API returns parent_issue, use it (don't fall back to body parsing)."""
+    from agentharness.github_client import GitHubClient
+
+    client = GitHubClient.__new__(GitHubClient)
+    client.owner = _OWNER
+    client.repo = _REPO
+    child_issue = {
+        "number": 55,
+        "body": "Epic: #99",
+        "parent_issue": {"number": 10, "title": "Actual Parent"},
+    }
+
+    async def mock_request(method, url, **kwargs):
+        return child_issue
+
+    client._request = mock_request
+    result = await client.get_parent_issue(55)
+    assert result["number"] == 10

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -30,6 +31,9 @@ class GitHubApiError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"GitHub API error {status_code}: {message}")
+
+
+_EPIC_BODY_MARKER_RE = re.compile(r"^Epic:\s*#(\d+)\s*$", re.MULTILINE)
 
 
 class GitHubClient:
@@ -245,18 +249,27 @@ class GitHubClient:
     async def get_parent_issue(self, child_number: int) -> dict | None:
         """Return the parent issue dict if *child_number* is a sub-issue.
 
-        GitHub's REST API (as of the sub-issues beta) exposes the parent
-        relationship via a ``parent_issue`` field on the issue response when
-        the issue was created as a sub-issue.  If the field is absent or
-        ``None`` the issue is a standalone issue and ``None`` is returned.
-
-        Note: ``parent_issue`` is part of the GitHub sub-issues *beta* and
-        may not be present for all issues or all API versions.  This is a
-        best-effort implementation; callers should handle ``None`` gracefully.
+        Primary: reads the ``parent_issue`` field from the GitHub sub-issues beta API.
+        Fallback: parses an ``Epic: #<number>`` line from the issue body when the
+        API field is absent (the field is beta and can be flaky).
         """
         issue = await self._request("GET", self._repo_url(f"/issues/{child_number}"))
         parent: dict | None = issue.get("parent_issue")
-        return parent if parent else None
+        if parent:
+            return parent
+
+        # Fallback: body marker "Epic: #N"
+        body = issue.get("body") or ""
+        match = _EPIC_BODY_MARKER_RE.search(body)
+        if match:
+            parent_number = int(match.group(1))
+            log.debug(
+                "Issue #%d: parent_issue not in API response; found body marker Epic: #%d",
+                child_number,
+                parent_number,
+            )
+            return await self._request("GET", self._repo_url(f"/issues/{parent_number}"))
+        return None
 
     # ------------------------------------------------------------------
     # Refs / branches
