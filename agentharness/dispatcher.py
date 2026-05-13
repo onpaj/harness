@@ -989,6 +989,8 @@ async def _open_feature_pr(
             pr_summary=pr_summary,
         )
     except Exception:
+        if state.epic_parent is None:
+            raise  # non-epic: propagate as before
         log.exception(
             "[%s] open_review raised unexpectedly; will still attempt epic checklist update",
             state.feature_id,

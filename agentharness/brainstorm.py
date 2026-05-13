@@ -307,11 +307,6 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         sub_issues: list[dict] = []
 
         if parent_issue is not None:
-            from agentharness.github_state import (
-                ensure_child_branch,
-                ensure_epic_branch,
-                ensure_epic_pr,
-            )
             parent_number = int(parent_issue["number"])
             epic_branch = "epic-" + slug_title(parent_issue.get("title") or "")
             epic_parent = parent_number
