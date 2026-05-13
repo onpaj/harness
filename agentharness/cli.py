@@ -17,7 +17,8 @@ from agentharness.config import load_config
 from agentharness.storage import create_state_manager
 from agentharness.github_labels import EPIC_PAUSED
 from agentharness.github_client import GitHubClient, GitHubApiError
-from agentharness.brainstorm import enqueue_planner
+from agentharness.brainstorm import enqueue_planner, _convert_raw_issue
+from agentharness.github_state import slug_title
 
 console = Console()
 
@@ -217,6 +218,38 @@ def implement(ctx: click.Context, feature_id: str) -> None:
     """Start the pipeline for an uploaded feature brief."""
     config = load_config(ctx.obj.get("config_path"))
     asyncio.run(_implement_with_epic_check(feature_id, config))
+
+
+@main.command("convert")
+@click.argument("issue_number", type=int)
+@click.pass_context
+def convert(ctx: click.Context, issue_number: int) -> None:
+    """Convert an existing GitHub issue into an AgentHarness feature (in-place).
+
+    Detects epic sub-issue relationships automatically and creates branches accordingly.
+    Equivalent to the /convertforagent skill but as a CLI command.
+    """
+    config = load_config(ctx.obj.get("config_path"))
+
+    async def run() -> None:
+        gh_client = GitHubClient.from_config(config)
+        try:
+            issue = await gh_client.get_issue(issue_number)
+        except GitHubApiError as exc:
+            console.print(f"[red]Error fetching issue #{issue_number}:[/red] {exc.message}")
+            raise SystemExit(1) from exc
+        finally:
+            await gh_client.close()
+
+        title = issue.get("title") or "untitled"
+        feature_id = f"feat-{slug_title(title)}"
+        console.print(f"[dim]Issue #{issue_number}:[/dim] {title}")
+        console.print(f"[dim]Feature ID:[/dim] {feature_id}")
+        await _convert_raw_issue(feature_id, config)
+        console.print(f"[green]Converted:[/green] {feature_id}")
+        console.print(f"Start pipeline: [bold]agentharness implement {feature_id}[/bold]")
+
+    asyncio.run(run())
 
 
 @main.command("observe")
