@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentharness.config import Config
+from agentharness.github_state import ensure_child_branch, ensure_epic_branch
 from agentharness.models import FeatureStatus, TaskMessage
 from agentharness.storage import create_task_queue
 from agentharness.storage_protocol import RawMessage, TaskQueue
@@ -337,28 +338,45 @@ async def _bootstrap_github_issue(
 
     Returns the computed feature_id. Raises on any error. Does NOT enqueue or
     close/comment on the original issue — callers do that based on their context.
+
+    When the issue is a GitHub sub-issue (has an epic parent), the child branch
+    is created off the epic branch instead of the default branch.
     """
     import base64
-    import re
 
-    from agentharness.github_state import GitHubStateManager
+    from agentharness.github_state import GitHubStateManager, slug_title
     from agentharness.models import FeatureState, FeatureStatus, PipelineConfig
 
     title: str = issue.get("title") or "untitled"
     body: str = issue.get("body") or ""
     number: int = issue["number"]
 
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
-    feature_id = f"feat-{slug}"
-    branch_name = f"{feature_id}-{number}"
-    log.info("Bootstrapping feature %s from issue #%d (branch: %s)", feature_id, number, branch_name)
+    feature_id = f"feat-{slug_title(title)}"
+    branch_name = feature_id  # child branch = feature_id for both epic and non-epic
+    log.info("Bootstrapping feature %s from issue #%d", feature_id, number)
 
     default_branch = await client.get_default_branch()
     main_sha = (await client.get_ref(f"heads/{default_branch}"))["object"]["sha"]
-    try:
-        await client.create_ref(f"refs/heads/{branch_name}", main_sha)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to create branch {branch_name!r}: {exc}") from exc
+
+    # Detect epic parent
+    parent_issue = await client.get_parent_issue(number)
+    epic_parent: int | None = None
+    epic_branch: str | None = None
+
+    if parent_issue is not None:
+        epic_parent = int(parent_issue["number"])
+        epic_branch = "epic-" + slug_title(parent_issue.get("title") or "")
+        log.info(
+            "Issue #%d is a sub-issue of #%d — using epic branch %s",
+            number, epic_parent, epic_branch,
+        )
+        epic_sha = await ensure_epic_branch(client, epic_branch, main_sha)
+        await ensure_child_branch(client, branch_name, epic_branch, epic_sha)
+    else:
+        try:
+            await client.create_ref(f"refs/heads/{branch_name}", main_sha)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to create branch {branch_name!r}: {exc}") from exc
 
     brief_blob_path = f"artifacts/{feature_id}/brief.md"
     await client.put_content(
@@ -380,6 +398,8 @@ async def _bootstrap_github_issue(
             max_analyst_iterations=config.max_analyst_iterations,
         ),
         branch_name=branch_name,
+        epic_parent=epic_parent,
+        epic_branch=epic_branch,
     )
     await GitHubStateManager(client, feature_marker=config.github.feature_marker).create(state, body)
     return feature_id
