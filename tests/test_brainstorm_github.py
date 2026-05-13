@@ -650,9 +650,10 @@ class TestConvertRawIssueEpic:
 
     @pytest.mark.asyncio
     async def test_convert_raw_issue_epic_child_1(self):
-        """First epic child: branch created as epic_branch, state has epic fields."""
+        """First epic child: child gets its own feat-<slug> branch off epic-<slug>."""
         from agentharness.brainstorm import _convert_raw_issue
         from agentharness.models import FeatureStatus
+        from unittest.mock import AsyncMock
 
         config = _make_config()
         config.github.feature_marker = "agent"
@@ -676,26 +677,28 @@ class TestConvertRawIssueEpic:
             patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
             patch("agentharness.brainstorm.create_artifact_store", return_value=store),
             patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.github_state.ensure_epic_branch", new=AsyncMock(return_value="epic-sha")),
+            patch("agentharness.github_state.ensure_child_branch", new=AsyncMock()),
+            patch("agentharness.github_state.ensure_epic_pr", new=AsyncMock(return_value={"number": 99})),
         ):
             await _convert_raw_issue("feat-task-one", config)
 
-        # Branch created as epic_branch
-        gh_client.create_ref.assert_awaited_once()
-        ref_arg = gh_client.create_ref.call_args.args[0]
-        assert ref_arg == "refs/heads/epic-my-epic"
+        # create_ref is NOT called directly — ensure_child_branch handles it
+        gh_client.create_ref.assert_not_awaited()
 
-        # State has correct epic fields
+        # State has correct epic fields; branch_name is the child's own feat-slug
         patched_state = state_mgr.patch_existing_issue.call_args.args[1]
-        assert patched_state.branch_name == "epic-my-epic"
+        assert patched_state.branch_name == "feat-task-one"
         assert patched_state.epic_parent == 1
         assert patched_state.epic_position == 1
         assert patched_state.epic_branch == "epic-my-epic"
         assert patched_state.status == FeatureStatus.brainstormed
 
     @pytest.mark.asyncio
-    async def test_convert_raw_issue_epic_child_2_prev_done(self):
-        """Second epic child when previous sibling is done: skips branch creation, proceeds."""
+    async def test_convert_raw_issue_epic_child_2_independent(self):
+        """Second epic child starts independently — no prev-sibling gate, own branch."""
         from agentharness.brainstorm import _convert_raw_issue
+        from unittest.mock import AsyncMock
 
         config = _make_config()
         config.github.feature_marker = "agent"
@@ -712,62 +715,23 @@ class TestConvertRawIssueEpic:
             sub_issues=sub_issues,
         )
         store = _make_store()
-        # Previous sibling (feat-task-one) is done
-        state_mgr = self._make_state_mgr_for_epic(prev_status="done")
-
-        with (
-            patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
-            patch("agentharness.brainstorm.create_artifact_store", return_value=store),
-            patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
-        ):
-            # Must not raise
-            await _convert_raw_issue("feat-task-two", config)
-
-        # Branch creation skipped for child 2, so get_default_branch and get_ref not called
-        gh_client.create_ref.assert_not_awaited()
-        gh_client.get_default_branch.assert_not_awaited()
-        gh_client.get_ref.assert_not_awaited()
-
-        # State has correct epic fields, branch_name is epic_branch
-        patched_state = state_mgr.patch_existing_issue.call_args.args[1]
-        assert patched_state.branch_name == "epic-my-epic"
-        assert patched_state.epic_parent == 1
-        assert patched_state.epic_position == 2
-        assert patched_state.epic_branch == "epic-my-epic"
-
-    @pytest.mark.asyncio
-    async def test_convert_raw_issue_epic_child_2_prev_not_done(self):
-        """Second epic child when previous sibling is not done: raises ValueError."""
-        from agentharness.brainstorm import _convert_raw_issue
-
-        config = _make_config()
-        config.github.feature_marker = "agent"
-
-        parent = {"number": 1, "title": "My Epic", "body": "Epic body."}
-        sub_issues = [
-            {"number": 10, "title": "Task One"},
-            {"number": 11, "title": "Task Two"},
-        ]
-        gh_client = self._make_gh_client(
-            issue_number=11,
-            issue_title="Task Two",
-            parent_issue=parent,
-            sub_issues=sub_issues,
-        )
-        store = _make_store()
-        # Previous sibling (feat-task-one) is still developing — not done
+        # Even with sibling not done, must not raise
         state_mgr = self._make_state_mgr_for_epic(prev_status="developing")
 
         with (
             patch("agentharness.brainstorm.GitHubClient.from_config", return_value=gh_client),
             patch("agentharness.brainstorm.create_artifact_store", return_value=store),
             patch("agentharness.brainstorm.create_state_manager", return_value=state_mgr),
+            patch("agentharness.github_state.ensure_epic_branch", new=AsyncMock(return_value="epic-sha")),
+            patch("agentharness.github_state.ensure_child_branch", new=AsyncMock()),
+            patch("agentharness.github_state.ensure_epic_pr", new=AsyncMock(return_value={"number": 99})),
         ):
-            with pytest.raises(ValueError, match="not done"):
-                await _convert_raw_issue("feat-task-two", config)
+            # Must not raise — prev-sibling gate is gone
+            await _convert_raw_issue("feat-task-two", config)
 
-        # Branch creation skipped, so get_default_branch and get_ref not called
-        gh_client.create_ref.assert_not_awaited()
-        gh_client.get_default_branch.assert_not_awaited()
-        gh_client.get_ref.assert_not_awaited()
-        state_mgr.patch_existing_issue.assert_not_awaited()
+        # Each child has its own branch, not the shared epic branch
+        patched_state = state_mgr.patch_existing_issue.call_args.args[1]
+        assert patched_state.branch_name == "feat-task-two"
+        assert patched_state.epic_parent == 1
+        assert patched_state.epic_position == 2
+        assert patched_state.epic_branch == "epic-my-epic"

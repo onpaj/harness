@@ -303,59 +303,60 @@ async def _convert_raw_issue(feature_id: str, config: Config) -> None:
         epic_parent: int | None = None
         epic_position: int | None = None
         epic_branch: str | None = None
-        branch_name = feature_id  # default for non-epic features
+        branch_name = feature_id  # each child keeps its own branch name (not shared)
         sub_issues: list[dict] = []
 
         if parent_issue is not None:
+            from agentharness.github_state import (
+                ensure_child_branch,
+                ensure_epic_branch,
+                ensure_epic_pr,
+            )
             parent_number = int(parent_issue["number"])
             epic_branch = "epic-" + slug_title(parent_issue.get("title") or "")
-            branch_name = epic_branch
             epic_parent = parent_number
 
             sub_issues = await gh_client.list_sub_issues(parent_number)
-            sub_numbers = [int(s["number"]) for s in sub_issues]
-            try:
-                epic_position = sub_numbers.index(issue_number) + 1
-            except ValueError:
-                epic_position = len(sub_numbers) + 1  # fallback: treat as last
+            if not sub_issues:
+                log.warning(
+                    "list_sub_issues returned empty for parent #%d — ignoring epic relationship",
+                    parent_number,
+                )
+                epic_parent = None
+                epic_branch = None
+            else:
+                sub_numbers = [int(s["number"]) for s in sub_issues]
+                try:
+                    epic_position = sub_numbers.index(issue_number) + 1
+                except ValueError:
+                    epic_position = len(sub_numbers) + 1
 
-        # 3. Create store with correct branch (branch_name now known)
+        # 3. Create store with the child's own branch (branch_name = feature_id)
         store = create_artifact_store(config, feature_id=branch_name)
 
-        # 4. Create branch (or verify previous sibling done)
-        if epic_position is None or epic_position == 1:
-            # Non-epic or first epic child: create the branch
-            default_branch = await gh_client.get_default_branch()
-            ref = await gh_client.get_ref(f"heads/{default_branch}")
-            sha = ref["object"]["sha"]
+        # 4. Create branches idempotently
+        default_branch = await gh_client.get_default_branch()
+        ref = await gh_client.get_ref(f"heads/{default_branch}")
+        default_sha = ref["object"]["sha"]
+
+        if epic_parent is not None and epic_branch is not None:
+            from agentharness.github_state import (
+                ensure_child_branch,
+                ensure_epic_branch,
+                ensure_epic_pr,
+            )
+            epic_sha = await ensure_epic_branch(gh_client, epic_branch, default_sha)
+            await ensure_child_branch(gh_client, branch_name, epic_branch, epic_sha)
+            await ensure_epic_pr(gh_client, epic_branch, parent_issue, sub_issues)
+        else:
             try:
-                await gh_client.create_ref(f"refs/heads/{branch_name}", sha)
+                await gh_client.create_ref(f"refs/heads/{branch_name}", default_sha)
                 log.info("Created branch %s", branch_name)
             except GitHubApiError as exc:
                 if exc.status_code == 422:
                     log.info("Branch %s already exists — skipping creation", branch_name)
                 else:
                     raise
-        else:
-            # Epic child N>1: verify previous sibling is done (reuse sub_issues from above)
-            prev_sibling = sub_issues[epic_position - 2]  # 0-indexed, previous sibling
-            prev_title = prev_sibling.get("title") or ""
-            prev_feature_id = f"feat-{slug_title(prev_title)}"
-            try:
-                prev_state = await state_mgr.get(prev_feature_id)
-                is_done = prev_state.status == FeatureStatus.done
-            except KeyError:
-                is_done = False
-
-            if not is_done:
-                raise ValueError(
-                    f"Epic child #{issue_number} (position {epic_position}) cannot start: "
-                    f"previous sibling {prev_feature_id!r} is not done"
-                )
-            log.info(
-                "Epic child #%d (position %d): previous sibling %s is done — skipping branch creation",
-                issue_number, epic_position, prev_feature_id,
-            )
 
         # 5. Upload brief
         await store.upload(artifact_path(feature_id, "brief.md"), brief_content)
