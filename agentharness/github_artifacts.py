@@ -205,13 +205,26 @@ class GitHubArtifactStore:
 
         # Fast-forward local branch to match remote (another agent may have pushed
         # since this clone was initialised; tolerate missing remote branch).
+        # If ff-only fails the branches have diverged — reset hard to origin so the
+        # subsequent push doesn't get rejected as non-fast-forward.
         try:
             await _run_git(
                 "-C", str(self._clone_root),
                 "merge", "--ff-only", f"origin/{self._feature_id}",
             )
         except RuntimeError:
-            pass
+            try:
+                await _run_git(
+                    "-C", str(self._clone_root),
+                    "reset", "--hard", f"origin/{self._feature_id}",
+                )
+                log.warning(
+                    "Branch %s diverged from origin — reset hard to origin before upload",
+                    self._feature_id,
+                )
+            except RuntimeError:
+                # Remote branch doesn't exist yet — proceed with local branch as-is.
+                pass
 
         # Write the file into the working tree.
         dest = self._clone_root / path
