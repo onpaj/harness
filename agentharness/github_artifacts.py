@@ -205,13 +205,26 @@ class GitHubArtifactStore:
 
         # Fast-forward local branch to match remote (another agent may have pushed
         # since this clone was initialised; tolerate missing remote branch).
+        # If ff-only fails the branches have diverged — reset hard to origin so the
+        # subsequent push doesn't get rejected as non-fast-forward.
         try:
             await _run_git(
                 "-C", str(self._clone_root),
                 "merge", "--ff-only", f"origin/{self._feature_id}",
             )
         except RuntimeError:
-            pass
+            try:
+                await _run_git(
+                    "-C", str(self._clone_root),
+                    "reset", "--hard", f"origin/{self._feature_id}",
+                )
+                log.warning(
+                    "Branch %s diverged from origin — reset hard to origin before upload",
+                    self._feature_id,
+                )
+            except RuntimeError:
+                # Remote branch doesn't exist yet — proceed with local branch as-is.
+                pass
 
         # Write the file into the working tree.
         dest = self._clone_root / path
@@ -276,6 +289,7 @@ class GitHubArtifactStore:
         """Stage all changes under the work dir, commit, and push to the feature branch.
 
         Returns True if a new commit was created, False if nothing was staged.
+        Always pushes so that commits the agent made during execution reach the remote.
         """
         await self._ensure_clone()
 
@@ -298,15 +312,29 @@ class GitHubArtifactStore:
 
         await _unstage_oversized_files(self._clone_root)
 
+        # Only call git commit when the index actually has staged changes.
+        # Calling commit with nothing staged is harmless normally, but some repos
+        # have pre-commit hooks that exit non-zero even when they "skip" work (e.g.
+        # "Skipping linter on feature branch"). Those exits are misread as failures
+        # here. `git diff --cached --quiet` exits 0 (nothing staged) or 1 (staged
+        # changes present) without running any hooks, so we use it as a guard.
+        new_commit = False
         try:
-            await _run_git("-C", str(self._clone_root), "commit", "-m", message)
-        except RuntimeError as exc:
-            if "nothing to commit" in str(exc).lower():
-                return False
-            raise
+            await _run_git("-C", str(self._clone_root), "diff", "--cached", "--quiet")
+            # Exit 0 → nothing staged, skip commit.
+        except RuntimeError:
+            # Exit 1 → staged changes exist, commit them.
+            try:
+                await _run_git("-C", str(self._clone_root), "commit", "-m", message)
+                new_commit = True
+            except RuntimeError as exc:
+                if "nothing to commit" not in str(exc).lower():
+                    raise
 
+        # Always push: flushes both the new commit (if any) and any commits the
+        # agent made directly during its execution.
         await _run_git("-C", str(self._clone_root), "push", "origin", self._feature_id)
-        return True
+        return new_commit
 
     async def sync_working_branch(self) -> None:
         """Sync the working branch with remote before running an agent task.
