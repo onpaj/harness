@@ -1,6 +1,40 @@
 # CHANGELOG
 
 
+## v0.10.1 (2026-05-17)
+
+### Bug Fixes
+
+- Skip git commit when nothing staged in commit_workdir_changes
+  ([#113](https://github.com/onpaj/harness/pull/113),
+  [`bb3a3f3`](https://github.com/onpaj/harness/commit/bb3a3f31aa02242e1ac3a689890ec5de26342d25))
+
+* fix: reset hard to origin when ff-only merge fails in upload
+
+When branches diverge (e.g. after a PR was merged and the remote branch got additional commits), git
+  merge --ff-only fails silently and the subsequent push is rejected as non-fast-forward, causing an
+  infinite auto-mode retry loop.
+
+On ff-only failure, reset --hard to origin/<branch> so the local clone matches remote before
+  committing and pushing the artifact.
+
+* fix: skip git commit when nothing staged in commit_workdir_changes
+
+Pre-commit hooks in the target repo may exit non-zero even when they intend to skip (e.g. "Skipping
+  linter on feature branch"). Previously commit_workdir_changes called git commit unconditionally
+  after git add -A, which triggered the hook and raised RuntimeError when there was nothing new to
+  commit (the developer agent had already committed everything itself). That exception was misread
+  as a task failure, causing the feature to be marked feat:failed despite the implementation being
+  complete.
+
+Fix: use git diff --cached --quiet to check for staged changes before calling git commit. When
+  nothing is staged the commit is skipped entirely, avoiding hooks. Also changed the function to
+  always push so that commits the agent made during its own execution are flushed to the remote even
+  when no additional commit is created here.
+
+@claude
+
+
 ## v0.10.0 (2026-05-13)
 
 ### Features
