@@ -11,7 +11,7 @@ allowed_tools:
   - task
 output_format: markdown
 visibility_timeout: 7200
-retry_limit: 1
+retry_limit: 2
 output_parsing: none
 context_files:
   - ~/.claude/plugins/cache/superpowers-marketplace/superpowers/*/skills/subagent-driven-development/SKILL.md
