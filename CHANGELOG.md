@@ -1,6 +1,17 @@
 # CHANGELOG
 
 
+## v0.10.2 (2026-05-21)
+
+### Bug Fixes
+
+- Allow one retry for developer tasks and record log file path in state
+  ([#114](https://github.com/onpaj/harness/pull/114),
+  [`37f0418`](https://github.com/onpaj/harness/commit/37f0418c0dcb7fcf062cb37fe96dcedb62d88015))
+
+@claude
+
+
 ## v0.10.1 (2026-05-17)
 
 ### Bug Fixes
