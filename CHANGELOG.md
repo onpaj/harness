@@ -1,6 +1,38 @@
 # CHANGELOG
 
 
+## v0.10.3 (2026-05-28)
+
+### Bug Fixes
+
+- Keep developer code on the feature branch instead of an isolated worktree
+  ([#115](https://github.com/onpaj/harness/pull/115),
+  [`43e8898`](https://github.com/onpaj/harness/commit/43e8898074c34394d1e45f399c7ca1b6a2892a9f))
+
+The developer agent followed the superpowers subagent-driven-development workflow, which creates a
+  dedicated git worktree/branch and finishes with the interactive finishing-a-development-branch
+  skill (a Merge/Push/Keep/Discard menu). Running non-interactively under `claude -p`, the agent
+  committed its implementation to that orphan worktree branch and then stalled on the menu, which it
+  could never answer.
+
+As a result commit_workdir_changes() ran git add -A on the feature branch in clone_root and found
+  nothing to commit — the code lived on a branch the pipeline never saw. PRs ended up containing
+  only the plan artifacts (pushed during the analyst/architect/designer/planner phases) plus the
+  dangling menu text as impl/main.r1.md, with no code changes at all.
+
+Add hard constraints to developer.md that override the skill: work in-place on the
+  already-checked-out branch, never create a worktree/branch, commit changes to the current branch,
+  and never run finishing-a-development-branch or wait for interactive input. The pipeline handles
+  merging and PR creation.
+
+Also update the stale test_upload_runs_git_commands_in_order assertion to include the merge
+  --ff-only step added in commit bb3a3f3.
+
+https://claude.ai/code/session_01DrrSkqrm1wHMkK85GLd29f
+
+Co-authored-by: Claude <noreply@anthropic.com>
+
+
 ## v0.10.2 (2026-05-21)
 
 ### Bug Fixes
