@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 import subprocess
 import sys
@@ -49,6 +51,14 @@ def _gh_login_if_needed() -> str | None:
     return None
 
 
+def _detect_azure_env() -> dict[str, str]:
+    values: dict[str, str] = {}
+    conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+    if conn_str:
+        values["AZURE_STORAGE_CONNECTION_STRING"] = conn_str
+    return values
+
+
 def _detect_github_env(target: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     token = _gh_login_if_needed()
@@ -75,12 +85,19 @@ def _read_env_file(env_file: Path) -> dict[str, str]:
     return existing
 
 
-def _write_env(target: Path, force: bool) -> None:
+_SECRET_KEYS = {"GITHUB_TOKEN", "AZURE_STORAGE_CONNECTION_STRING"}
+_BACKEND_KEYS: dict[str, list[str]] = {
+    "azure": ["AZURE_STORAGE_CONNECTION_STRING"],
+    "github": ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_RUNS_REPO"],
+}
+
+
+def _write_env(target: Path, backend: str, force: bool) -> None:
     env_file = target / ".env"
     existing = _read_env_file(env_file)
-    detected = _detect_github_env(target)
+    detected = _detect_azure_env() if backend == "azure" else _detect_github_env(target)
 
-    KEYS = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_RUNS_REPO"]
+    KEYS = _BACKEND_KEYS.get(backend, _BACKEND_KEYS["github"])
     missing = [k for k in KEYS if k not in existing]
 
     if not missing and not force:
@@ -94,10 +111,10 @@ def _write_env(target: Path, force: bool) -> None:
     for key in keys_to_set:
         if key in detected:
             new_values[key] = detected[key]
-            display = detected[key][:8] + "…" if key == "GITHUB_TOKEN" else detected[key]
+            display = detected[key][:8] + "…" if key in _SECRET_KEYS else detected[key]
             console.print(f"  [dim]auto-detected[/dim] {key}={display}")
         else:
-            value = click.prompt(key, default="", hide_input=key == "GITHUB_TOKEN", show_default=False, prompt_suffix=": ")
+            value = click.prompt(key, default="", hide_input=key in _SECRET_KEYS, show_default=False, prompt_suffix=": ")
             new_values[key] = value
 
     # Strip previous harness section, keep everything else intact
@@ -357,6 +374,24 @@ def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
         console.print("[red]Data files not found in package — reinstall agentharness.[/red]")
         sys.exit(1)
 
+    # Detect current backend from existing config (becomes the prompt default)
+    existing_pipeline_config = target / ".pipeline" / "config.json"
+    default_backend = "azure"
+    if existing_pipeline_config.exists():
+        try:
+            default_backend = json.loads(existing_pipeline_config.read_text()).get("storage_backend", "azure")
+        except Exception:
+            pass
+
+    console.print("\n[bold]Backend selection[/bold]")
+    console.print("  azure  — Azure Blob Storage + Azure Storage Queues (requires AZURE_STORAGE_CONNECTION_STRING)")
+    console.print("  github — GitHub Issues + branches (requires GITHUB_TOKEN, auto-detects owner/repo)")
+    backend = click.prompt(
+        "Storage backend",
+        type=click.Choice(["azure", "github"]),
+        default=default_backend,
+    )
+
     flat_destinations = [
         (data_root / "agents", target / ".agents"),
         (data_root / "pipeline", target / ".pipeline"),
@@ -374,17 +409,19 @@ def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
             shutil.copy2(src_file, dst_file)
             console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
 
+    # Update storage_backend in .pipeline/config.json to match the selected backend
+    pipeline_config_path = target / ".pipeline" / "config.json"
+    if pipeline_config_path.exists():
+        try:
+            config_data = json.loads(pipeline_config_path.read_text())
+            config_data["storage_backend"] = backend
+            pipeline_config_path.write_text(json.dumps(config_data, indent=2) + "\n")
+            console.print(f"[green]set[/green] storage_backend={backend} in .pipeline/config.json")
+        except Exception as exc:
+            console.print(f"[yellow]Warning:[/yellow] Could not update storage_backend in config.json: {exc}")
+
     skills_src = data_root / "skills"
     if skills_src.exists():
-        # Determine which backend-specific skill to install based on config
-        try:
-            config = load_config(ctx.obj.get("config_path") if ctx.obj else None)
-            backend = config.storage_backend
-        except Exception:
-            backend = "azure"
-
-        # Map backend to the matching skill directory name
-        # github-storage skill will be added in Task 13; fall back to azure-storage if not yet present
         backend_skill_name = "github-storage" if backend == "github" else "azure-storage"
         backend_skill_src = skills_src / backend_skill_name
         if not backend_skill_src.exists():
@@ -393,7 +430,6 @@ def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
         for skill_dir in skills_src.iterdir():
             if not skill_dir.is_dir():
                 continue
-            # Skip backend-specific skills that don't match this installation
             if skill_dir.name in ("azure-storage", "github-storage") and skill_dir != backend_skill_src:
                 continue
             dst_skill = target / ".claude" / "skills" / skill_dir.name
@@ -406,7 +442,7 @@ def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
                 shutil.copy2(src_file, dst_file)
                 console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
 
-    _write_env(target, force)
+    _write_env(target, backend, force)
 
     console.print("\n[bold]Done.[/bold] Run [bold]agentharness observe[/bold] to start the pipeline.")
 

@@ -63,7 +63,7 @@ az storage container create \
   --connection-string "$AZURE_STORAGE_CONNECTION_STRING"
 
 # Queues
-for q in planner-queue architect-queue designer-queue developer-queue review-queue; do
+for q in analyst-queue product-queue architect-queue designer-queue planner-queue developer-queue review-queue; do
   az storage queue create --name "$q" \
     --connection-string "$AZURE_STORAGE_CONNECTION_STRING"
 done
@@ -138,7 +138,7 @@ az storage blob delete-batch \
 
 ### Check message count on all queues
 ```bash
-for q in planner-queue architect-queue designer-queue developer-queue review-queue; do
+for q in analyst-queue product-queue architect-queue designer-queue planner-queue developer-queue review-queue; do
   count=$(az storage queue show --name "$q" \
     --connection-string "$AZURE_STORAGE_CONNECTION_STRING" \
     --query "approximateMessageCount" -o tsv 2>/dev/null || echo "?")
@@ -195,7 +195,7 @@ Dead-letter queues are named `{queue-name}-poison`.
 
 ### Check dead-letter queues for failed tasks
 ```bash
-for q in planner-queue-poison architect-queue-poison designer-queue-poison developer-queue-poison review-queue-poison; do
+for q in analyst-queue-poison product-queue-poison architect-queue-poison designer-queue-poison planner-queue-poison developer-queue-poison review-queue-poison; do
   count=$(az storage queue show --name "$q" \
     --connection-string "$AZURE_STORAGE_CONNECTION_STRING" \
     --query "approximateMessageCount" -o tsv 2>/dev/null)
@@ -244,14 +244,14 @@ az storage message delete \
 ### Full pipeline health check
 ```bash
 echo "=== Queues ===" && \
-for q in planner-queue architect-queue designer-queue developer-queue review-queue; do
+for q in analyst-queue product-queue architect-queue designer-queue planner-queue developer-queue review-queue; do
   count=$(az storage queue show --name "$q" \
     --connection-string "$AZURE_STORAGE_CONNECTION_STRING" \
     --query "approximateMessageCount" -o tsv 2>/dev/null || echo "MISSING")
   echo "  $q: $count"
 done && \
 echo "=== Dead-letter ===" && \
-for q in planner-queue architect-queue designer-queue developer-queue review-queue; do
+for q in analyst-queue product-queue architect-queue designer-queue planner-queue developer-queue review-queue; do
   count=$(az storage queue show --name "${q}-poison" \
     --connection-string "$AZURE_STORAGE_CONNECTION_STRING" \
     --query "approximateMessageCount" -o tsv 2>/dev/null || echo "0")
