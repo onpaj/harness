@@ -98,9 +98,10 @@ async def test_upload_runs_git_commands_in_order() -> None:
 
     assert subcommands[0] == "fetch"
     assert subcommands[1] == "checkout"
-    assert subcommands[2] == "add"
-    assert subcommands[3] == "commit"
-    assert subcommands[4] == "push"
+    assert subcommands[2] == "merge"  # ff-only sync with origin before writing
+    assert subcommands[3] == "add"
+    assert subcommands[4] == "commit"
+    assert subcommands[5] == "push"
 
 
 @pytest.mark.asyncio
