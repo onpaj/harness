@@ -10,3 +10,4 @@ implementations/**
 brief.md
 .worktrees/
 .runs-cache/**
+.claude/scheduled_tasks.lock

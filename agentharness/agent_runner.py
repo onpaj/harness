@@ -178,6 +178,11 @@ def _build_command(agent_def: AgentDefinition, prompt: str) -> list[str]:
 
     if agent_def.allowed_tools:
         cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
+        # Agents that use tools run autonomously in isolated worktrees; without
+        # this, every Edit/Write/Bash file mutation waits forever for an
+        # interactive approval that never arrives, so the agent gives up with
+        # zero output.
+        cmd.extend(["--permission-mode", "bypassPermissions"])
 
     if agent_def.max_turns > 1:
         cmd.extend(["--max-turns", str(agent_def.max_turns)])
