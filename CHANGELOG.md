@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v0.10.4 (2026-05-29)
+
+### Bug Fixes
+
+- Pass --permission-mode bypassPermissions for tool-using agents
+  ([#116](https://github.com/onpaj/harness/pull/116),
+  [`1118ae0`](https://github.com/onpaj/harness/commit/1118ae080adeaae1f7e4ccc1e9cd85eacefb8fa9))
+
+* fix: pass --permission-mode bypassPermissions for agents with allowed_tools
+
+Claude CLI now requires explicit permission-mode for non-interactive file writes. Without it, the
+  developer agent's Edit/Write/Bash mutations wait forever for an approval that never arrives, then
+  give up with 0 chars of output — leaving plans/specs committed but no actual implementation.
+
+* chore: gitignore .claude/scheduled_tasks.lock runtime lock
+
+
 ## v0.10.3 (2026-05-28)
 
 ### Bug Fixes
