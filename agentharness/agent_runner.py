@@ -176,12 +176,14 @@ def _build_command(agent_def: AgentDefinition, prompt: str) -> list[str]:
         "--output-format", "stream-json",
     ]
 
-    if agent_def.allowed_tools:
-        cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
-        # Agents that use tools run autonomously in isolated worktrees; without
+    if agent_def.allowed_tools or agent_def.output_file_glob:
+        if agent_def.allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(agent_def.allowed_tools)])
+        # Agents that write files run autonomously in isolated worktrees; without
         # this, every Edit/Write/Bash file mutation waits forever for an
         # interactive approval that never arrives, so the agent gives up with
-        # zero output.
+        # zero output. This applies both to tool-using agents and to tool-less
+        # agents that write output via a skill (output_file_glob set).
         cmd.extend(["--permission-mode", "bypassPermissions"])
 
     if agent_def.max_turns > 1:
