@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.11.1 (2026-06-01)
+
+### Bug Fixes
+
+- Add bypassPermissions for agents with output_file_glob but no tools
+  ([#118](https://github.com/onpaj/harness/pull/118),
+  [`d52d164`](https://github.com/onpaj/harness/commit/d52d1641a0e4e21ef20618be207758bc8b328520))
+
+Agents like planner, analyst, and designer have output_file_glob set but allowed_tools: [] — they
+  write files via injected skills (e.g.
+
+superpowers:writing-plans). Without --permission-mode bypassPermissions the sandbox blocks those
+  writes, causing "Sandbox is blocking file writes...".
+
+Mirror the condition already used in run_task.py:123 so bypassPermissions is passed whenever an
+  agent is expected to produce file output.
+
+@claude
+
+
 ## v0.11.0 (2026-06-01)
 
 ### Features
