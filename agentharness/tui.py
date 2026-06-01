@@ -224,7 +224,8 @@ class FeatureList(ListView):
         short_id = state.feature_id.removeprefix("feat-")
         total = _fmt_tokens(state.total_tokens_used())
         token_part = f"  [dim cyan]{total}[/dim cyan]" if total != "—" else ""
-        return f"[{color}]{icon}[/]  {short_id}  [{color}]{bar}[/]  [dim]{summary}[/dim]{token_part}"
+        issue_prefix = f"[dim]#{state.state_issue_number}[/dim]  " if state.state_issue_number is not None else ""
+        return f"[{color}]{icon}[/]  {issue_prefix}{short_id}  [{color}]{bar}[/]  [dim]{summary}[/dim]{token_part}"
 
     def selected_feature_id(self) -> str | None:
         idx = self.index
