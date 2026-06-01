@@ -1,6 +1,17 @@
 # CHANGELOG
 
 
+## v0.12.0 (2026-06-01)
+
+### Features
+
+- Show GitHub issue ID before feature name in TUI
+  ([#120](https://github.com/onpaj/harness/pull/120),
+  [`0682f00`](https://github.com/onpaj/harness/commit/0682f006d6c08273563a0bd5105627940e6af301))
+
+@claude
+
+
 ## v0.11.2 (2026-06-01)
 
 ### Bug Fixes
