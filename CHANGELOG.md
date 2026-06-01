@@ -1,6 +1,24 @@
 # CHANGELOG
 
 
+## v0.11.2 (2026-06-01)
+
+### Bug Fixes
+
+- Prevent output-only agents from using Bash and triggering git push on disk-full
+  ([#119](https://github.com/onpaj/harness/pull/119),
+  [`9c058fa`](https://github.com/onpaj/harness/commit/9c058fa0aafa998ce9db2d1fa8af4bec56fb41b9))
+
+- Restrict output_file_glob agents (planner, designer) to Write,Edit tools only — previously
+  bypassPermissions was set with no --allowedTools restriction, letting them run arbitrary Bash
+  commands (e.g. disk cleanup) - Use a temp dir for output_file_glob agents without allowed_tools
+  instead of the GitHub store's clone root, keeping the feature branch clean - Only call
+  commit_workdir_changes for developer agents (allowed_tools set); the unguarded git push was
+  killing tasks when the VM disk was full
+
+@claude
+
+
 ## v0.11.1 (2026-06-01)
 
 ### Bug Fixes
