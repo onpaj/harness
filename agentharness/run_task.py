@@ -89,7 +89,14 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
 
         started_state = await state_mgr.update(task.feature_id, lambda s: _mark_started(s, task, queue_name))
 
-        work_dir = store.get_work_dir()
+        # Developer agents (allowed_tools set) write code to the feature-branch clone.
+        # Output-only agents (output_file_glob, no allowed_tools) just need a scratch
+        # directory for their single output file; using the clone root for them pollutes
+        # the branch with uncommitted debris and triggers unnecessary git pushes.
+        if agent_def.allowed_tools:
+            work_dir = store.get_work_dir()
+        else:
+            work_dir = None
         if work_dir is None and task.work_dir:
             work_dir = Path(task.work_dir)
         if work_dir is None and agent_def.output_file_glob:
@@ -120,7 +127,7 @@ async def run_task(queue_name: str, task_json: str, config: Config) -> None:
         if agent_def.output_file_glob and work_dir:
             result = _resolve_output_file(result, agent_def.output_file_glob, work_dir)
 
-        if agent_def.allowed_tools or agent_def.output_file_glob:
+        if agent_def.allowed_tools:
             committed = await store.commit_workdir_changes(f"agent: {agent_def.id} output {task.task_id}")
             if committed:
                 log.info("[%s] Committed workdir changes for task %s", WORKER_ID, task.task_id)

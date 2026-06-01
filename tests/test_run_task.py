@@ -553,29 +553,37 @@ class TestRunTaskGetWorkDir:
 
         mock_store.commit_workdir_changes.assert_awaited_once()
 
-    async def test_output_file_glob_triggers_commit(self, tmp_path: Path):
-        """When output_file_glob is set (no allowed_tools), commit_workdir_changes is still called."""
+    async def test_output_file_glob_skips_commit(self, tmp_path: Path):
+        """output_file_glob agents without allowed_tools must NOT call commit_workdir_changes.
+
+        These agents write a single output file to a temp dir; their content is pushed
+        via store.upload. Committing the clone root for them is unnecessary and risks
+        failing the task on a full disk.
+        """
         task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result = (
             _make_run_task_fixtures("github")
         )
-        spec_file = tmp_path / "spec.md"
-        spec_file.write_text("# Spec content")
         mock_store.get_work_dir = MagicMock(return_value=tmp_path)
         mock_store.commit_workdir_changes = AsyncMock(return_value=True)
         mock_agent_def.allowed_tools = []
         mock_agent_def.output_file_glob = "spec.md"
+
+        async def run_agent_writes_file(agent_def, prompt, work_dir=None, **kwargs):
+            assert work_dir is not None
+            (work_dir / "spec.md").write_text("# Spec content")
+            return mock_run_result
 
         with (
             patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
             patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
             patch("agentharness.run_task.create_task_queue"),
             patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
-            patch("agentharness.run_task.run_agent", return_value=mock_run_result),
+            patch("agentharness.run_task.run_agent", side_effect=run_agent_writes_file),
             patch("agentharness.run_task.dispatch_after_completion", return_value=None),
         ):
             await run_task("analyst-queue", task_json, config)
 
-        mock_store.commit_workdir_changes.assert_awaited_once()
+        mock_store.commit_workdir_changes.assert_not_awaited()
         content = mock_store.upload.call_args[0][1]
         assert content == "# Spec content"
 
@@ -615,10 +623,10 @@ class TestRunTaskGetWorkDir:
             f"Expected file content to be uploaded, got agent text summary instead: {uploaded_content[:100]!r}"
         )
 
-    async def test_output_file_glob_with_store_work_dir_uses_file_not_text_output(self, tmp_path: Path):
-        """Regression (designer): even when get_work_dir() returns a real path,
-        store.upload must use the file content — not the agent's text summary.
-        Verifies the glob matches the file the agent actually writes (design.md)."""
+    async def test_output_file_glob_uses_temp_dir_not_store_work_dir(self):
+        """Regression (designer): output_file_glob agents without allowed_tools must use a
+        temp dir, not the store's clone root — so store.upload gets the file content, not
+        the agent's text summary, and the clone root is left clean."""
         task_json, config, mock_store, mock_state_mgr, mock_agent_def, mock_run_result = (
             _make_run_task_fixtures("github")
         )
@@ -626,23 +634,30 @@ class TestRunTaskGetWorkDir:
         AGENT_TEXT_SUMMARY = "`design.r1.md` written and committed. Here's what it covers: **UX/UI Design** — ..."
         DESIGN_FILE_CONTENT = "# Design: My Feature\n\n## UX/UI Design\nFull design here."
 
-        (tmp_path / "design.md").write_text(DESIGN_FILE_CONTENT)
-        mock_store.get_work_dir = MagicMock(return_value=tmp_path)
+        store_work_dir = MagicMock()  # pretend clone root — must NOT be used as work_dir
+        mock_store.get_work_dir = MagicMock(return_value=store_work_dir)
         mock_store.commit_workdir_changes = AsyncMock(return_value=True)
         mock_agent_def.allowed_tools = []
         mock_agent_def.output_file_glob = "design.md"
         mock_run_result.output = AGENT_TEXT_SUMMARY
+
+        async def run_agent_writes_file(agent_def, prompt, work_dir=None, **kwargs):
+            assert work_dir is not None, "agent must receive a work_dir"
+            assert work_dir is not store_work_dir, "agent must NOT write directly to clone root"
+            (work_dir / "design.md").write_text(DESIGN_FILE_CONTENT)
+            return mock_run_result
 
         with (
             patch("agentharness.run_task.create_artifact_store", return_value=mock_store),
             patch("agentharness.run_task.create_state_manager", return_value=mock_state_mgr),
             patch("agentharness.run_task.create_task_queue"),
             patch("agentharness.run_task.load_agent_definition", return_value=mock_agent_def),
-            patch("agentharness.run_task.run_agent", return_value=mock_run_result),
+            patch("agentharness.run_task.run_agent", side_effect=run_agent_writes_file),
             patch("agentharness.run_task.dispatch_after_completion", return_value=None),
         ):
             await run_task("designer-queue", task_json, config)
 
+        mock_store.commit_workdir_changes.assert_not_awaited()
         uploaded_content = mock_store.upload.call_args[0][1]
         assert uploaded_content == DESIGN_FILE_CONTENT, (
             f"Expected file content to be uploaded, got agent text summary instead: {uploaded_content[:100]!r}"
