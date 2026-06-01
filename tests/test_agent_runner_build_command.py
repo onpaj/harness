@@ -27,13 +27,18 @@ def test_allowed_tools_adds_bypass_and_allowed_tools_flag():
     assert "bash" in cmd[idx + 1]
 
 
-def test_output_file_glob_adds_bypass_without_allowed_tools_flag():
-    """Agents with output_file_glob but no tools must still get bypassPermissions."""
+def test_output_file_glob_adds_bypass_with_restricted_tools():
+    """output_file_glob agents get bypassPermissions + Write/Edit only (no Bash)."""
     agent_def = _make_agent_def(allowed_tools=[], output_file_glob="spec.md")
     cmd = _build_command(agent_def, "analyse")
     assert "--permission-mode" in cmd
     assert "bypassPermissions" in cmd
-    assert "--allowedTools" not in cmd
+    assert "--allowedTools" in cmd
+    idx = cmd.index("--allowedTools")
+    allowed = cmd[idx + 1]
+    assert "write" in allowed
+    assert "edit" in allowed
+    assert "bash" not in allowed
 
 
 def test_no_tools_no_glob_no_bypass():
