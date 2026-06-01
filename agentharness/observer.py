@@ -62,6 +62,8 @@ async def observe(config: Config) -> None:
     exe = str(Path(sys.executable).parent / "agentharness")
 
     active_procs: dict[str, asyncio.Process] = {}
+    queue_active: dict[str, int] = {}
+    max_concurrent = config.defaults.max_concurrent_workers
 
     is_github = config.storage_backend == "github"
 
@@ -83,11 +85,11 @@ async def observe(config: Config) -> None:
 
     try:
         if is_github:
-            poll_tasks = [_unified_github_poll(queues, config, exe, active_procs)]
+            poll_tasks = [_unified_github_poll(queues, config, exe, active_procs, queue_active, max_concurrent)]
         else:
             poll_interval = config.defaults.poll_interval_seconds
             poll_tasks = [
-                _poll_queue(q_name, q, config, exe, active_procs, poll_interval)
+                _poll_queue(q_name, q, config, exe, active_procs, queue_active, poll_interval, max_concurrent)
                 for q_name, q in queues.items()
             ]
         poll_tasks.append(_auto_mode_loop(config))
@@ -190,10 +192,15 @@ async def _poll_queue(
     config: Config,
     exe: str,
     active_procs: dict[str, asyncio.Process],
+    queue_active: dict[str, int],
     poll_interval: float,
+    max_concurrent: int,
 ) -> None:
     log.info("Polling %s (interval=%.1fs)", queue_name, poll_interval)
     while True:
+        if queue_active.get(queue_name, 0) >= max_concurrent:
+            await asyncio.sleep(poll_interval)
+            continue
         result = await queue.receive_task(visibility_timeout=_VISIBILITY_TIMEOUT)
         if result is None:
             await asyncio.sleep(poll_interval)
@@ -201,7 +208,7 @@ async def _poll_queue(
         task, raw_msg = result
         log.info("Received task %s from %s", task.task_id, queue_name)
         asyncio.create_task(
-            _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs),
+            _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs, queue_active),
             name=f"task-{task.task_id}",
         )
 
@@ -211,6 +218,8 @@ async def _unified_github_poll(
     config: Config,
     exe: str,
     active_procs: dict[str, asyncio.Process],
+    queue_active: dict[str, int],
+    max_concurrent: int,
 ) -> None:
     """Single-search poller for GitHub: one API call per cycle handles polling, sweeping, and state cache."""
     import json
@@ -272,6 +281,8 @@ async def _unified_github_poll(
                 )
                 if not queue_name or queue_name in dispatched or queue_name not in queues:
                     continue
+                if queue_active.get(queue_name, 0) >= max_concurrent:
+                    continue
                 dispatched.add(queue_name)
                 queue = queues[queue_name]
                 if not isinstance(queue, GitHubTaskQueue):
@@ -283,7 +294,7 @@ async def _unified_github_poll(
                     continue
                 log.info("Claimed task %s from %s", task.task_id, queue_name)
                 asyncio.create_task(
-                    _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs),
+                    _run_subprocess(queue_name, task, raw_msg, queue, exe, active_procs, queue_active),
                     name=f"task-{task.task_id}",
                 )
 
@@ -511,6 +522,7 @@ async def _run_subprocess(
     queue: TaskQueue,
     exe: str,
     active_procs: dict[str, asyncio.Process],
+    queue_active: dict[str, int],
 ) -> None:
     log_dir = Path("logs") / queue_name
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -519,6 +531,7 @@ async def _run_subprocess(
     task_json = task.model_dump_json()
     log.info("Spawning subprocess for %s → %s", task.task_id, log_file)
 
+    queue_active[queue_name] = queue_active.get(queue_name, 0) + 1
     try:
         with open(log_file, "a") as fh:
             from datetime import datetime
@@ -543,6 +556,7 @@ async def _run_subprocess(
         return
     finally:
         active_procs.pop(task.task_id, None)
+        queue_active[queue_name] = max(0, queue_active.get(queue_name, 0) - 1)
 
     if proc.returncode == 0:
         try:

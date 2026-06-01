@@ -97,6 +97,7 @@ class DefaultsConfig(BaseModel):
     max_revisions: int = 3
     poll_interval_seconds: float = 1.0
     github_poll_interval_seconds: float = 60.0
+    max_concurrent_workers: int = 1
 
 
 class Config(BaseModel):
