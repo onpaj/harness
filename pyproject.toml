@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentharness"
-version = "0.10.4"
+version = "0.11.0"
 description = "Distributed agentic development pipeline powered by Claude Code"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,6 +47,7 @@ dev = [
     "pytest-asyncio>=0.21",
     "pytest-mock>=3.0",
 ]
+
 
 
 

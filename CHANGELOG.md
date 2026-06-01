@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.11.0 (2026-06-01)
+
+### Features
+
+- Limit concurrent workers per queue to max_concurrent_workers (default 1)
+  ([#117](https://github.com/onpaj/harness/pull/117),
+  [`6f61647`](https://github.com/onpaj/harness/commit/6f61647bf22fa16f4a303b6b50c1f8c09480ce87))
+
+Add queue_active counter to observer so at most max_concurrent_workers subprocesses run per queue at
+  once. Both Azure poll loop and GitHub unified poller skip claiming new tasks when the queue is
+  already at capacity. _run_subprocess increments on entry and decrements in finally.
+
+Default is 1 (serial per queue). Configurable via defaults.max_concurrent_workers in
+  .pipeline/config.json.
+
+
 ## v0.10.4 (2026-05-29)
 
 ### Bug Fixes
