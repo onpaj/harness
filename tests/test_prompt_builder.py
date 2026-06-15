@@ -1,13 +1,27 @@
 """Unit tests for prompt_builder module."""
 
 import textwrap
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from agentharness.context_files import ContextFileResult, ResolvedContextFile
-from agentharness.models import AgentDefinition, TaskMessage
+from agentharness.models import AgentDefinition
 from agentharness.prompt_builder import build_prompt, artifact_label, load_agent_definition
+
+
+@dataclass
+class TaskMessage:
+    """Minimal task data container for testing prompt_builder."""
+    feature_id: str
+    task_id: str
+    output_artifact: str
+    agent_role: str
+    input_artifacts: list[Any] = field(default_factory=list)
+    context: str | None = None
+    review_feedback: str | None = None
 
 
 def make_agent_def(**overrides) -> AgentDefinition:
