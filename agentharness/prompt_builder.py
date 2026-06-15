@@ -9,7 +9,7 @@ from typing import Optional
 import yaml
 
 from agentharness.context_files import ContextFileResult, format_context_section
-from agentharness.models import AgentDefinition, TaskMessage
+from agentharness.models import AgentDefinition
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
 
@@ -33,7 +33,7 @@ def load_agent_definition(path: Path) -> AgentDefinition:
 
 def build_prompt(
     agent_def: AgentDefinition,
-    task: TaskMessage,
+    task: object,
     artifact_contents: dict[str, str],
     context_result: Optional[ContextFileResult] = None,
 ) -> str:
