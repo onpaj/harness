@@ -24,7 +24,6 @@ def test_task_checkpoint_defaults():
 def test_next_pending_phase_skips_developing():
     cp = Checkpoint(feature_id="feat-123", issue_number=123)
     # All pipeline phases done, developing pending
-    from agentharness.models import PhaseCheckpoint
     cp = cp.model_copy(update={"phases": {
         "analyzing":    PhaseCheckpoint(status="completed"),
         "architecting": PhaseCheckpoint(status="completed"),
@@ -37,7 +36,6 @@ def test_next_pending_phase_skips_developing():
 
 def test_next_pending_phase_returns_first_pending():
     cp = Checkpoint(feature_id="feat-123", issue_number=123)
-    from agentharness.models import PhaseCheckpoint
     cp = cp.model_copy(update={"phases": {
         "analyzing":    PhaseCheckpoint(status="completed"),
         "architecting": PhaseCheckpoint(status="pending"),
@@ -53,14 +51,31 @@ def test_all_tasks_complete_false_when_empty():
 
 def test_all_tasks_complete_true():
     cp = Checkpoint(feature_id="feat-123", issue_number=123)
-    from agentharness.models import TaskCheckpoint
     cp = cp.model_copy(update={"tasks": [
         TaskCheckpoint(name="a", status="completed"),
         TaskCheckpoint(name="b", status="completed"),
     ]})
     assert cp.all_tasks_complete() is True
 
+def test_all_tasks_complete_true_when_all_failed():
+    cp = Checkpoint(feature_id="feat-123", issue_number=123)
+    cp = cp.model_copy(update={"tasks": [
+        TaskCheckpoint(name="a", status="failed"),
+        TaskCheckpoint(name="b", status="failed"),
+    ]})
+    assert cp.all_tasks_complete() is True
+
+def test_all_tasks_complete_false_when_one_pending():
+    cp = Checkpoint(feature_id="feat-123", issue_number=123)
+    cp = cp.model_copy(update={"tasks": [
+        TaskCheckpoint(name="a", status="completed"),
+        TaskCheckpoint(name="b", status="pending"),
+    ]})
+    assert cp.all_tasks_complete() is False
+
 def test_agent_definition_still_exists():
     # AgentDefinition must be kept for prompt_builder.py and brainstorm.py
     ad = AgentDefinition(id="analyst", model="claude-sonnet-4-6", phase="analyzing", system_prompt="You are an analyst.")
     assert ad.id == "analyst"
+    assert ad.context_files is None  # new field added in this task
+    assert ad.max_turns == 20

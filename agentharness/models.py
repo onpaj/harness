@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Final, Literal
 
 from pydantic import BaseModel, Field
 
 # Phases that next_pending_phase() considers — "developing" is intentionally
 # omitted so the orchestrator falls through to task-level dispatch once planning
 # is complete. "developing" is stored in the phases dict for display only.
-_PIPELINE_PHASES = ["analyzing", "architecting", "designing", "planning"]
-_ALL_PHASES = [*_PIPELINE_PHASES, "developing"]
+_PIPELINE_PHASES: Final = ("analyzing", "architecting", "designing", "planning")
+_ALL_PHASES: Final = (*_PIPELINE_PHASES, "developing")
+
+CheckpointStatus = Literal["pending", "in_progress", "completed", "failed"]
 
 
 class PhaseCheckpoint(BaseModel):
-    status: str = "pending"   # pending | in_progress | completed | failed
+    status: CheckpointStatus = "pending"
     updated_at: datetime | None = None
 
 
 class TaskCheckpoint(BaseModel):
     name: str
-    status: str = "pending"   # pending | in_progress | completed | failed
+    status: CheckpointStatus = "pending"
     revision: int = 1
     updated_at: datetime | None = None
 
