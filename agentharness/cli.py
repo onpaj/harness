@@ -13,14 +13,24 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
+import json as _json
+import os as _os
+
 from agentharness.config import load_config
-from agentharness.storage import create_state_manager
-from agentharness.github_labels import EPIC_PAUSED
-from agentharness.github_client import GitHubClient, GitHubApiError
-from agentharness.brainstorm import enqueue_planner, _convert_raw_issue
-from agentharness.github_state import slug_title
+from agentharness.checkpoint import (
+    init_checkpoint as _cp_init,
+    update_phase as _cp_phase,
+    update_task as _cp_task,
+    set_tasks as _cp_set_tasks,
+    query_next as _cp_query,
+)
 
 console = Console()
+
+
+def _base_dir() -> Path:
+    env = _os.environ.get("AGENTHARNESS_BASE_DIR")
+    return Path(env) if env else Path(".")
 
 
 def _run_cmd(cmd: list[str], cwd: Path | None = None) -> str | None:
@@ -128,6 +138,11 @@ def _print_started(feature_id: str) -> None:
 
 async def _implement_with_epic_check(feature_id: str, config) -> None:
     """Check if feature is an epic child with paused parent before enqueuing."""
+    from agentharness.storage import create_state_manager
+    from agentharness.github_labels import EPIC_PAUSED
+    from agentharness.github_client import GitHubClient, GitHubApiError
+    from agentharness.brainstorm import enqueue_planner
+
     # GitHub backend only
     if config.storage_backend != "github":
         await enqueue_planner(feature_id, config)
@@ -232,6 +247,10 @@ def convert(ctx: click.Context, issue_number: int) -> None:
     config = load_config(ctx.obj.get("config_path"))
 
     async def run() -> None:
+        from agentharness.github_client import GitHubClient, GitHubApiError
+        from agentharness.github_state import slug_title
+        from agentharness.brainstorm import _convert_raw_issue
+
         gh_client = GitHubClient.from_config(config)
         try:
             issue = await gh_client.get_issue(issue_number)
@@ -406,9 +425,22 @@ def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
                 shutil.copy2(src_file, dst_file)
                 console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
 
+    # Install Claude Code agent skills to .claude/agents/
+    claude_agents_src = data_root / "claude-agents"
+    if claude_agents_src.exists():
+        dst_claude_agents = target / ".claude" / "agents"
+        dst_claude_agents.mkdir(parents=True, exist_ok=True)
+        for src_file in claude_agents_src.iterdir():
+            dst_file = dst_claude_agents / src_file.name
+            if dst_file.exists() and not force:
+                console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)} (use --force to overwrite)")
+                continue
+            shutil.copy2(src_file, dst_file)
+            console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
+
     _write_env(target, force)
 
-    console.print("\n[bold]Done.[/bold] Run [bold]agentharness observe[/bold] to start the pipeline.")
+    console.print("\n[bold]Done.[/bold] Run [bold]/implement <issue-number>[/bold] in Claude Code to start the pipeline.")
 
 
 @main.command("list")
@@ -420,6 +452,7 @@ def list_features(ctx: click.Context) -> None:
 
 
 async def _show_status(feature_id: str, config) -> None:
+    from agentharness.storage import create_state_manager
     state_mgr = create_state_manager(config)
     try:
         state = await state_mgr.get(feature_id)
@@ -464,6 +497,7 @@ async def _show_status(feature_id: str, config) -> None:
 
 
 async def _list_features(config) -> None:
+    from agentharness.storage import create_state_manager
     state_mgr = create_state_manager(config)
     features = await state_mgr.list_features()
 
@@ -519,3 +553,52 @@ def _fmt_duration(seconds: int) -> str:
         return f"{seconds}s"
     m, s = divmod(seconds, 60)
     return f"{m}m {s}s"
+
+
+@main.group("checkpoint")
+def checkpoint_group() -> None:
+    """Manage pipeline checkpoint state."""
+
+
+@checkpoint_group.command("init")
+@click.argument("issue_number", type=int)
+def checkpoint_init(issue_number: int) -> None:
+    """Create state.json for issue (idempotent)."""
+    _cp_init(issue_number, base_dir=_base_dir())
+    console.print(f"[green]checkpoint init:[/green] feat-{issue_number}")
+
+
+@checkpoint_group.command("phase")
+@click.argument("feature_id")
+@click.argument("phase")
+@click.argument("status")
+def checkpoint_phase(feature_id: str, phase: str, status: str) -> None:
+    """Update a phase status in the checkpoint."""
+    _cp_phase(feature_id, phase, status, base_dir=_base_dir())
+
+
+@checkpoint_group.command("task")
+@click.argument("feature_id")
+@click.argument("task_name")
+@click.argument("status")
+@click.option("--revision", type=int, default=None)
+def checkpoint_task(feature_id: str, task_name: str, status: str, revision: int | None) -> None:
+    """Update a task status in the checkpoint."""
+    _cp_task(feature_id, task_name, status, revision=revision, base_dir=_base_dir())
+
+
+@checkpoint_group.command("tasks")
+@click.argument("feature_id")
+@click.argument("task_names")
+def checkpoint_tasks(feature_id: str, task_names: str) -> None:
+    """Populate task list (comma-separated names) after planning."""
+    names = [n.strip() for n in task_names.split(",") if n.strip()]
+    _cp_set_tasks(feature_id, names, base_dir=_base_dir())
+
+
+@checkpoint_group.command("status")
+@click.argument("feature_id")
+def checkpoint_status(feature_id: str) -> None:
+    """Print next pending phase or task as JSON."""
+    result = _cp_query(feature_id, base_dir=_base_dir())
+    click.echo(_json.dumps(result))
