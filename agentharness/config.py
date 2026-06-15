@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ConfigError(Exception):
@@ -61,6 +61,7 @@ class GitHubConfig(BaseModel):
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     max_revisions: int = 3
     github: GitHubConfig = GitHubConfig()
     config_dir: Path = Path(".")
@@ -78,6 +79,4 @@ def load_config(path: Path | None = None) -> Config:
             "Create .pipeline/config.json or pass --config."
         )
     raw = json.loads(config_path.read_text())
-    config = Config.model_validate(raw)
-    config.config_dir = config_path.resolve().parent
-    return config
+    return Config.model_validate({**raw, "config_dir": config_path.resolve().parent})
