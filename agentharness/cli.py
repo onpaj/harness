@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -119,29 +120,37 @@ def _write_env(target: Path, force: bool) -> None:
 
 
 @click.group()
-@click.option("--config", "config_path", default=None, type=click.Path(), help="Path to config.json")
-@click.pass_context
-def main(ctx: click.Context, config_path: str | None) -> None:
+def main() -> None:
     """AgentHarness — autonomous agentic development pipeline."""
-    ctx.ensure_object(dict)
-    ctx.obj["config_path"] = Path(config_path) if config_path else None
 
 
 @main.command()
-@click.pass_context
-def brainstorm(ctx: click.Context) -> None:
+def brainstorm() -> None:
     """Start an interactive brainstorm session to define a feature brief."""
     from agentharness.brainstorm import start_brainstorm
     start_brainstorm()
 
 
+def _copy_dir(src: Path, dst: Path, target: Path, force: bool) -> None:
+    if not src.exists():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+    for src_file in src.iterdir():
+        if not src_file.is_file():
+            continue
+        dst_file = dst / src_file.name
+        if dst_file.exists() and not force:
+            console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)}")
+            continue
+        shutil.copy2(src_file, dst_file)
+        console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
+
+
 @main.command("init")
 @click.option("--dir", "target_dir", default=".", show_default=True, type=click.Path())
 @click.option("--force", is_flag=True, help="Overwrite existing files")
-@click.pass_context
-def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
+def init_project(target_dir: str, force: bool) -> None:
     """Copy agent definitions and pipeline config into a project directory."""
-    import shutil
     data_root = Path(__file__).parent / "data"
     target = Path(target_dir).resolve()
 
@@ -149,49 +158,15 @@ def init_project(ctx: click.Context, target_dir: str, force: bool) -> None:
         console.print("[red]Data files not found in package — reinstall agentharness.[/red]")
         sys.exit(1)
 
-    flat_destinations = [
-        (data_root / "agents", target / ".agents"),
-        (data_root / "pipeline", target / ".pipeline"),
-    ]
-    for src, dst in flat_destinations:
-        if not src.exists():
-            continue
-        dst.mkdir(parents=True, exist_ok=True)
-        for src_file in src.iterdir():
-            dst_file = dst / src_file.name
-            if dst_file.exists() and not force:
-                console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)}")
-                continue
-            shutil.copy2(src_file, dst_file)
-            console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
-
-    # Install Claude Code skills to .claude/agents/
-    claude_agents_src = data_root / "claude-agents"
-    if claude_agents_src.exists():
-        dst_claude_agents = target / ".claude" / "agents"
-        dst_claude_agents.mkdir(parents=True, exist_ok=True)
-        for src_file in claude_agents_src.iterdir():
-            dst_file = dst_claude_agents / src_file.name
-            if dst_file.exists() and not force:
-                console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)}")
-                continue
-            shutil.copy2(src_file, dst_file)
-            console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
+    _copy_dir(data_root / "agents", target / ".agents", target, force)
+    _copy_dir(data_root / "pipeline", target / ".pipeline", target, force)
+    _copy_dir(data_root / "claude-agents", target / ".claude" / "agents", target, force)
 
     skills_src = data_root / "skills"
     if skills_src.exists():
         for skill_dir in skills_src.iterdir():
-            if not skill_dir.is_dir():
-                continue
-            dst_skill = target / ".claude" / "skills" / skill_dir.name
-            dst_skill.mkdir(parents=True, exist_ok=True)
-            for src_file in skill_dir.iterdir():
-                dst_file = dst_skill / src_file.name
-                if dst_file.exists() and not force:
-                    console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)}")
-                    continue
-                shutil.copy2(src_file, dst_file)
-                console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
+            if skill_dir.is_dir():
+                _copy_dir(skill_dir, target / ".claude" / "skills" / skill_dir.name, target, force)
 
     _write_env(target, force)
     console.print("\n[bold]Done.[/bold] Run [bold]/implement <issue-number>[/bold] in Claude Code to start the pipeline.")
