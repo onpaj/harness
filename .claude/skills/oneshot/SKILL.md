@@ -1,6 +1,6 @@
 ---
-name: implement
-description: Start the autonomous development pipeline for a feature that has been brainstormed and uploaded. Use when the user says "implement", "start pipeline", "run", or provides a feature ID after a brainstorm session.
+name: oneshot
+description: Start the autonomous development pipeline for a feature that has been brainstormed and uploaded. Use when the user says "oneshot", "implement", "start pipeline", "run", or provides a feature ID after a brainstorm session.
 ---
 
 You start the AgentHarness autonomous pipeline for a given feature.
@@ -27,7 +27,16 @@ Both the worktree directory and the branch it tracks **must** start with the
 agentharness status {feature_id}
 ```
 
-3. Create and enter a dedicated worktree on a `feature/`-prefixed branch:
+3. **Mark the issue as work-in-progress.** Using the `gh` CLI, add the
+   `agent-wip` label to the feature's GitHub issue and remove the `agent` label
+   if it is present:
+```bash
+gh issue edit {issue_number} --add-label agent-wip --remove-label agent
+```
+   If the issue has no `agent` label, the `--remove-label` is a harmless no-op;
+   keep `--add-label agent-wip` regardless.
+
+4. Create and enter a dedicated worktree on a `feature/`-prefixed branch:
 ```bash
 BRANCH="feature/{feature_id}"
 WORKTREE="../worktrees/feature-{feature_id}"
@@ -39,12 +48,12 @@ If the branch already exists, attach to it instead:
 git worktree add "$WORKTREE" "$BRANCH"
 ```
 
-4. Start the pipeline from inside the worktree:
+5. Start the pipeline from inside the worktree:
 ```bash
 agentharness implement {feature_id}
 ```
 
-5. Tell the user:
+6. Tell the user:
 - The pipeline is now running autonomously inside the `feature/` worktree
 - They can monitor it with `agentharness watch`
 - The sequence: planner → architect → designer → developer(s) → reviewer
@@ -79,14 +88,20 @@ git push -u origin "feature/{feature_id}"
    If the push fails due to a network error, retry up to 4 times with
    exponential backoff (2s, 4s, 8s, 16s).
 
-4. **Create a pull request** with an implementation summary. The summary must
-   clearly state:
+4. **Create a pull request** with an implementation summary, and tag it with the
+   `agent` label. The summary must clearly state:
    - **What the issue / feature was** — the problem or request being addressed.
    - **How it was fixed / handled** — the approach taken and the key changes.
 
-   Use the GitHub MCP tools to open the PR (base = the repository default
-   branch, head = `feature/{feature_id}`), with a body structured like:
-```markdown
+   Open the PR (base = the repository default branch, head =
+   `feature/{feature_id}`) and add the `agent` label to it:
+```bash
+gh pr create \
+  --base master \
+  --head "feature/{feature_id}" \
+  --label agent \
+  --title "{feature_id}: implementation" \
+  --body "$(cat <<'EOF'
 ## What the issue was
 <description of the feature/problem from the brief>
 
@@ -95,6 +110,14 @@ git push -u origin "feature/{feature_id}"
 
 ## Artifacts
 - Brief, spec, design, task plan, impl, and review markdown are committed in this branch.
+EOF
+)"
+```
+
+5. **Mark the issue completed.** Using the `gh` CLI, remove the `agent-wip`
+   label and add the `agent-completed` label to the feature's issue:
+```bash
+gh issue edit {issue_number} --remove-label agent-wip --add-label agent-completed
 ```
 
 ## If something looks wrong
