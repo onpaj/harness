@@ -1,6 +1,79 @@
 # CHANGELOG
 
 
+## v0.13.0 (2026-06-17)
+
+### Bug Fixes
+
+- Harden config.py with explicit extra=ignore and immutable config_dir construction
+  ([`947e4f3`](https://github.com/onpaj/harness/commit/947e4f3dbdb5dc92f184e0375abe41a72f14118f))
+
+- Improve model type safety with Literal status types and tuple constants
+  ([`ca96602`](https://github.com/onpaj/harness/commit/ca9660253e617d0cb9ede7d48459e99c94bdb9d3))
+
+- Use Literal["pending","in_progress","completed","failed"] for status fields in PhaseCheckpoint and
+  TaskCheckpoint instead of plain str - Extract CheckpointStatus type alias to avoid repetition -
+  Change _PIPELINE_PHASES and _ALL_PHASES to Final tuples (immutable) - Add typing.Final and
+  typing.Literal imports - Remove inline imports inside test functions (already imported at module
+  top) - Add test_all_tasks_complete_true_when_all_failed and
+  test_all_tasks_complete_false_when_one_pending edge-case tests - Update
+  test_agent_definition_still_exists to assert context_files and max_turns
+
+### Chores
+
+- Delete observer/queue/backend modules and their tests; remove unused dependencies
+  ([`0cd7aba`](https://github.com/onpaj/harness/commit/0cd7abae6819da5f217a67bb7fd38672c1e85cf4))
+
+### Features
+
+- Add checkpoint CLI subcommand group (init, phase, task, tasks, status)
+  ([`5d2064c`](https://github.com/onpaj/harness/commit/5d2064cc5f9db7a0375fa1268580a62b7703e3b9))
+
+Adds agentharness checkpoint {init,phase,task,tasks,status} subcommands to cli.py backed by
+  checkpoint.py CRUD. Also makes legacy module-level imports (storage, github_client, brainstorm)
+  lazy so the CLI can be imported without the old models still in place.
+
+- Add checkpoint.py with atomic CRUD and phase/task state management
+  ([`9f9da13`](https://github.com/onpaj/harness/commit/9f9da1377c5f6b9addb4a20f0721da6bcc22b994))
+
+- Add implement.md orchestrator skill — single Claude session drives full pipeline via Task tool
+  ([`334a77a`](https://github.com/onpaj/harness/commit/334a77a46de25e5d01e308aeb3e2a9255d7d56c8))
+
+- Agentharness init now installs implement.md to .claude/agents/
+  ([`1062f21`](https://github.com/onpaj/harness/commit/1062f21485f7b51dd68cd0fe834b13e04b61e231))
+
+Adds claude-agents installation block to init_project and tests confirming implement.md is copied,
+  skipped without --force, and overwritten with --force.
+
+- Replace models.py with checkpoint-centric Checkpoint, PhaseCheckpoint, TaskCheckpoint
+  ([`7398e5c`](https://github.com/onpaj/harness/commit/7398e5cdf337011ab177ed1e7d3c37225cf3891c))
+
+Replaced the legacy queue-based FeatureState, TaskEntry, TaskMessage, PhaseInfo, and related enum
+  models with simpler checkpoint models (Checkpoint, PhaseCheckpoint, TaskCheckpoint) that support
+  the new skills-only orchestrator approach. AgentDefinition is retained for prompt_builder.py and
+  brainstorm.py compatibility. Added tests/test_checkpoint.py with full TDD coverage of all new
+  model behaviors.
+
+### Refactoring
+
+- Extract _copy_dir helper, remove dead --config option and unused ctx params
+  ([`9c568b0`](https://github.com/onpaj/harness/commit/9c568b06322e0833675881dc19481fff44eca564))
+
+- Rewrite tui.py to read checkpoint files, remove all storage backend dependencies
+  ([`33829de`](https://github.com/onpaj/harness/commit/33829deb3239236dc4de8f761494bdb598248a78))
+
+- Simplify brainstorm.py — remove upload/queue code, keep only start_brainstorm
+  ([`44aee22`](https://github.com/onpaj/harness/commit/44aee22c365417a52c627522591f592b60965c82))
+
+- Simplify config.py — remove Azure/queue config, keep only max_revisions and GitHubConfig
+  ([`cd29866`](https://github.com/onpaj/harness/commit/cd29866121d877fc4bd4e76a756066f71ccf7db1))
+
+- Trim cli.py — remove observer/queue commands, update status/list to read checkpoints
+  ([`c817fdf`](https://github.com/onpaj/harness/commit/c817fdf243410743cc84b8c61bf4187bb78b1729))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
 ## v0.12.0 (2026-06-01)
 
 ### Features
