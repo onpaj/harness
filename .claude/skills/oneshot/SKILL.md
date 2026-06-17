@@ -12,11 +12,29 @@ primary working tree stays clean.
 ## Naming convention
 
 Both the worktree directory and the branch it tracks **must** start with the
-`feature/` prefix. Derive the suffix from the feature ID, e.g.:
+`feature/` prefix and use the form `feature/{issue_id}-{issue_name}`, where:
 
-- branch: `feature/feat-20260425-abc123`
-- worktree dir: `../worktrees/feature-feat-20260425-abc123` (or any path whose
-  basename starts with `feature-`)
+- `{issue_id}` is the GitHub issue number (e.g. `3001`)
+- `{issue_name}` is a slug of the issue **title** — lowercase, spaces and any
+  non-alphanumeric runs collapsed to single hyphens, leading/trailing hyphens
+  trimmed, truncated to ~50 chars.
+
+So for issue #3001 titled "Fix blob 409 Conflict on upload":
+
+- branch: `feature/3001-fix-blob-409-conflict`
+- worktree dir: `../worktrees/feature-3001-fix-blob-409-conflict` (basename
+  starts with `feature-`)
+
+Derive the slug once with the `gh` CLI, e.g.:
+```bash
+ISSUE_ID={issue_number}
+SLUG=$(gh issue view "$ISSUE_ID" --json title --jq '.title' \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' \
+  | cut -c1-50 | sed -E 's/-+$//')
+BRANCH="feature/${ISSUE_ID}-${SLUG}"
+WORKTREE="../worktrees/feature-${ISSUE_ID}-${SLUG}"
+```
 
 ## What you do
 
@@ -36,10 +54,9 @@ gh issue edit {issue_number} --add-label agent-wip --remove-label agent
    If the issue has no `agent` label, the `--remove-label` is a harmless no-op;
    keep `--add-label agent-wip` regardless.
 
-4. Create and enter a dedicated worktree on a `feature/`-prefixed branch:
+4. Create and enter a dedicated worktree on the `feature/{issue_id}-{issue_name}`
+   branch (compute `BRANCH` and `WORKTREE` as shown in **Naming convention**):
 ```bash
-BRANCH="feature/{feature_id}"
-WORKTREE="../worktrees/feature-{feature_id}"
 git worktree add -b "$BRANCH" "$WORKTREE"
 cd "$WORKTREE"
 ```
@@ -86,7 +103,7 @@ git commit -m "@claude implement {feature_id}"
 
 3. **Push** the branch:
 ```bash
-git push -u origin "feature/{feature_id}"
+git push -u origin "$BRANCH"
 ```
    If the push fails due to a network error, retry up to 4 times with
    exponential backoff (2s, 4s, 8s, 16s).
@@ -96,14 +113,14 @@ git push -u origin "feature/{feature_id}"
    - **What the issue / feature was** — the problem or request being addressed.
    - **How it was fixed / handled** — the approach taken and the key changes.
 
-   Open the PR (base = the repository default branch, head =
-   `feature/{feature_id}`) and add the `agent` label to it:
+   Open the PR (base = the repository default branch, head = `$BRANCH`) and add
+   the `agent` label to it:
 ```bash
 gh pr create \
   --base master \
-  --head "feature/{feature_id}" \
+  --head "$BRANCH" \
   --label agent \
-  --title "{feature_id}: implementation" \
+  --title "#{issue_id}: implementation" \
   --body "$(cat <<'EOF'
 ## What the issue was
 <description of the feature/problem from the brief>
