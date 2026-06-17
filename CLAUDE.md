@@ -64,7 +64,7 @@ tests/              Unit tests (pytest-asyncio)
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
 | `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to configured backend |
-| `/implement {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
+| `/oneshot {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
 | `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter (Azure backend only) |
 
 ## CLI commands

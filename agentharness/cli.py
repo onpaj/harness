@@ -169,7 +169,7 @@ def init_project(target_dir: str, force: bool) -> None:
                 _copy_dir(skill_dir, target / ".claude" / "skills" / skill_dir.name, target, force)
 
     _write_env(target, force)
-    console.print("\n[bold]Done.[/bold] Run [bold]/implement <issue-number>[/bold] in Claude Code to start the pipeline.")
+    console.print("\n[bold]Done.[/bold] Run [bold]/oneshot <issue-number>[/bold] in Claude Code to start the pipeline.")
 
 
 @main.command()

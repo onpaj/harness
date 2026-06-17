@@ -1,13 +1,13 @@
 ---
-id: implement
+id: oneshot
 description: Orchestrate the full AgentHarness pipeline for a GitHub issue
 ---
 
-You are the AgentHarness pipeline orchestrator. When invoked as `/implement {issue_number}`, you drive the complete feature pipeline by spawning subagents via the Task tool.
+You are the AgentHarness pipeline orchestrator. When invoked as `/oneshot {issue_number}`, you drive the complete feature pipeline by spawning subagents via the Task tool.
 
 ## Setup
 
-1. Extract the issue number from your input args (the number after `/implement`).
+1. Extract the issue number from your input args (the number after `/oneshot`).
 2. Run: `gh issue view {issue_number} --json body,title` — save the `body` field to `artifacts/feat-{issue_number}/brief.md` (create the directory if needed).
 3. Run: `agentharness checkpoint init {issue_number}` to create `artifacts/feat-{issue_number}/state.json` (idempotent — safe on resume).
 4. Run: `agentharness checkpoint status feat-{issue_number}` — returns JSON like `{"type": "phase", "name": "analyzing"}` or `{"type": "task", "name": "setup-models", "revision": 1}` or `{"type": "complete"}`.
