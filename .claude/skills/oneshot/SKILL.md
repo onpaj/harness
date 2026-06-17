@@ -92,12 +92,26 @@ Once the implementation is complete, **from inside the worktree**:
    If tests fail, fix the issues (or report them) before committing — do not
    push a broken build.
 
-2. **Commit** everything, including **all generated artifacts** (the `.md`
-   files: brief, spec, arch-review, design, task-plan, impl, review). Stage the
-   whole worktree so no artifact is left behind:
+2. **Commit** everything, including **all generated artifacts** committed under
+   the `artifacts/` folder, exactly the way the previous harness laid them out.
+   The pipeline writes every artifact to `artifacts/feat-{issue_id}/`:
+```
+artifacts/feat-{issue_id}/brief.md            # the issue brief
+artifacts/feat-{issue_id}/spec.r1.md          # analyst output
+artifacts/feat-{issue_id}/arch-review.r1.md   # architect output
+artifacts/feat-{issue_id}/design.r1.md        # designer output
+artifacts/feat-{issue_id}/task-plan.r1.md     # planner output
+artifacts/feat-{issue_id}/impl/{task}.rN.md   # developer output per task/revision
+artifacts/feat-{issue_id}/review/{task}.rN.md # reviewer output per task/revision
+artifacts/feat-{issue_id}/state.json          # checkpoint state
+```
+   Make sure this whole `artifacts/feat-{issue_id}/` tree is staged (the `.md`
+   files must end up in the commit, not just the code), then stage the rest of
+   the worktree so nothing is left behind:
 ```bash
-git add -A
-git commit -m "@claude implement {feature_id}"
+git add -A artifacts/feat-{issue_id}    # ensure all generated .md artifacts are staged
+git add -A                              # stage code + everything else
+git commit -m "@claude implement feat-{issue_id}"
 ```
    The commit message **must** contain `@claude`.
 
