@@ -72,7 +72,7 @@ tests/              Unit tests (pytest-asyncio)
 ```bash
 agentharness brainstorm                         # interactive (terminal-only, uses os.execvp)
 agentharness submit brief.md                    # upload brief, get feature ID (no pipeline)
-agentharness implement feat-20260425-abc123     # enqueue analyst task, start pipeline
+# start pipeline via Claude Code skill: /oneshot <issue-number> (no `implement` CLI command)
 agentharness observe                            # start observer (primary execution mode)
 agentharness watch                              # Textual TUI, auto-refresh 2s
 agentharness status feat-20260425-abc123        # one-shot status snapshot

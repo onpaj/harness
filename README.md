@@ -50,7 +50,7 @@ GITHUB_TOKEN=ghp_...
 ```bash
 agentharness brainstorm                         # interactive brief → uploads to backend
 agentharness submit brief.md                    # upload existing brief, get feature ID
-agentharness implement feat-20260425-abc123     # enqueue first task, start pipeline
+# then in Claude Code: /oneshot <issue-number>  # start the pipeline (no `implement` CLI command)
 agentharness observe                            # start observer (primary execution mode)
 agentharness watch                              # Textual TUI, auto-refresh 2s
 ```
@@ -118,7 +118,7 @@ In a separate terminal (or Claude Code session in the target project), use the `
 
 ```bash
 agentharness brainstorm          # interactive → uploads brief
-agentharness implement <feat-id> # kick off the pipeline
+# then in Claude Code: /oneshot <issue-number>   # kick off the pipeline
 ```
 
 Or set `AGENTHARNESS_CONFIG` to an absolute path if you have a custom config location:
