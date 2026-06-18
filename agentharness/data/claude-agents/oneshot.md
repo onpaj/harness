@@ -5,6 +5,18 @@ description: Orchestrate the full AgentHarness pipeline for a GitHub issue
 
 You are the AgentHarness pipeline orchestrator. When invoked as `/oneshot {issue_number}`, you drive the complete feature pipeline by spawning subagents via the Task tool.
 
+## Artifact persistence (do not skip)
+
+Every artifact you produce (`spec`, `arch-review`, `design`, `task-plan`, the
+per-task `impl/` and `review/` files, the task-context files, and `state.json`)
+**must be committed to the feature branch as you go** so it appears in the PR.
+Do **not** rely on the developer subagent's `git add -A` or on a single
+end-of-run commit to sweep them in — developer subagents may run inside their
+own worktrees, and the `impl/`/`review/` files are written *after* the developer
+commits, so they would otherwise never reach the branch. Commit each artifact
+right after you write it, using the exact steps below. These commits run on the
+feature branch you created in **Setup**.
+
 ## Setup
 
 1. Extract the issue number from your input args (the number after `/oneshot`).
@@ -37,6 +49,13 @@ For each phase:
 4. Spawn a Task with: system prompt + artifact contents + instruction to write output to the output artifact path
 5. After Task completes, verify the output artifact file exists
 6. Run `agentharness checkpoint phase feat-{issue_number} {phase} completed`
+7. **Commit the artifact to the feature branch** so it lands in the PR. Use a
+   plain (non-`@claude`) message — these commits happen before the developer
+   phase, so they never interfere with the skip-review check:
+```bash
+git add artifacts/feat-{issue_number}
+git commit -m "chore(feat-{issue_number}): {phase} artifact" || true   # no-op if nothing changed
+```
 
 ### Phase → Agent Mapping
 
@@ -56,6 +75,11 @@ After `task-plan.r1.md` is written:
 1. Parse `### task:` headers from the file. Each `### task: setup-models` defines one task named `setup-models`.
 2. Run: `agentharness checkpoint tasks feat-{issue_number} "task-a,task-b,task-c"` with comma-separated task names.
 3. For each task, write a context file to `artifacts/feat-{issue_number}/task-context/{task_name}.md` containing the section from `task-plan.r1.md` under that task's `### task:` header (everything from that header until the next `### task:` header or end of file).
+4. Commit the task-context files and the updated checkpoint:
+```bash
+git add artifacts/feat-{issue_number}
+git commit -m "chore(feat-{issue_number}): task context" || true
+```
 
 ## Developer/Reviewer Loop
 
@@ -72,7 +96,9 @@ Process tasks serially in the order from the checkpoint. Check `agentharness che
    - Content of `artifacts/feat-{issue_number}/task-context/{task_name}.md`
    - If revision > 1: content of `artifacts/feat-{issue_number}/review/{task_name}.r{N-1}.md` as review feedback
    - Instruction: "Write your implementation output summary to `artifacts/feat-{issue_number}/impl/{task_name}.r{N}.md`"
-6. After Task completes, verify `impl/{task_name}.r{N}.md` exists
+6. After Task completes, verify `impl/{task_name}.r{N}.md` exists. **Do not commit
+   the impl artifact yet** — the Skip-Review Check below reads `git log -1`, so
+   the developer's own commit must stay the latest commit until that check runs.
 
 ### Skip-Review Check
 
@@ -87,9 +113,15 @@ If the commit message contains `@claude`, **skip the Reviewer Task entirely** an
 treat the task as if review returned `PASS`:
 
 1. Run `agentharness checkpoint task feat-{issue_number} {task_name} completed`
-2. Note in your progress output that review was skipped because the commit was
+2. **Now commit the impl artifact** (the skip-review log check has already run, so
+   this commit no longer affects it):
+```bash
+git add artifacts/feat-{issue_number}
+git commit -m "chore(feat-{issue_number}): impl artifact for {task_name} r{N}" || true
+```
+3. Note in your progress output that review was skipped because the commit was
    marked `@claude`.
-3. Move to the next task via `agentharness checkpoint status feat-{issue_number}`.
+4. Move to the next task via `agentharness checkpoint status feat-{issue_number}`.
 
 Otherwise (no `@claude` in the commit message), run the Reviewer Task below.
 
@@ -105,6 +137,16 @@ Otherwise (no `@claude` in the commit message), run the Reviewer Task below.
 
 ### Handling Review Result
 
+Whatever the result, first **commit this round's `impl/` and `review/` artifacts**
+to the feature branch (the reviewer ran, so the skip-review log check no longer
+applies):
+```bash
+git add artifacts/feat-{issue_number}
+git commit -m "chore(feat-{issue_number}): impl+review for {task_name} r{N}" || true
+```
+
+Then act on the status:
+
 - **PASS**: Run `agentharness checkpoint task feat-{issue_number} {task_name} completed`. Move to next task via `agentharness checkpoint status feat-{issue_number}`.
 - **REVISION_NEEDED**: Check current revision N against `max_revisions` (default 3, from checkpoint JSON).
   - If N < max_revisions: Run `agentharness checkpoint task feat-{issue_number} {task_name} in_progress --revision {N+1}`. Repeat Developer Task with the new revision.
@@ -114,7 +156,16 @@ Otherwise (no `@claude` in the commit message), run the Reviewer Task below.
 
 After all tasks are `completed`:
 1. Run `agentharness checkpoint phase feat-{issue_number} developing completed`
-2. Print: `Pipeline complete for feat-{issue_number}. All tasks passed review.`
+2. **Final artifact commit (safety net).** Stage and commit anything under the
+   feature's artifact tree that has not been committed yet — most importantly the
+   final `state.json`, but also any artifact a per-step commit above may have
+   missed. This guarantees the complete `artifacts/feat-{issue_number}/` tree is
+   in the branch and therefore in the PR:
+```bash
+git add artifacts/feat-{issue_number}
+git commit -m "chore(feat-{issue_number}): finalize pipeline artifacts" || true
+```
+3. Print: `Pipeline complete for feat-{issue_number}. All tasks passed review.`
 
 ## Resume
 
