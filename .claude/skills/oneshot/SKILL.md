@@ -66,8 +66,8 @@ git worktree add "$WORKTREE" "$BRANCH"
 ```
 
 5. Start the pipeline from inside the worktree. There is **no** `agentharness
-   implement` command — the pipeline is driven by the `oneshot` orchestrator
-   agent (`.claude/agents/oneshot.md`, installed by `agentharness init`). Follow
+   implement` command — the pipeline is driven by the `orchestrator`
+   agent (`.claude/agents/orchestrator.md`, installed by `agentharness init`). Follow
    that orchestrator end to end: it runs `agentharness checkpoint init
    {issue_number}` and then drives analyst → architect → designer → planner →
    developer(s) → reviewer via the Task tool, using `agentharness checkpoint`

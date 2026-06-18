@@ -1,5 +1,5 @@
 ---
-id: oneshot
+id: orchestrator
 description: Orchestrate the full AgentHarness pipeline for a GitHub issue
 ---
 

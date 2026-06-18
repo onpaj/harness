@@ -5,13 +5,13 @@ from click.testing import CliRunner
 from agentharness.cli import main
 
 
-def test_init_installs_oneshot_skill(tmp_path):
+def test_init_installs_orchestrator_agent(tmp_path):
     runner = CliRunner()
     with patch("agentharness.cli._write_env"):
         result = runner.invoke(main, ["init", "--dir", str(tmp_path)], catch_exceptions=False)
     assert result.exit_code == 0
-    skill_file = tmp_path / ".claude" / "agents" / "oneshot.md"
-    assert skill_file.exists(), f"oneshot.md not installed. Output: {result.output}"
+    agent_file = tmp_path / ".claude" / "agents" / "orchestrator.md"
+    assert agent_file.exists(), f"orchestrator.md not installed. Output: {result.output}"
 
 
 def test_init_skips_existing_without_force(tmp_path):
@@ -19,7 +19,7 @@ def test_init_skips_existing_without_force(tmp_path):
     with patch("agentharness.cli._write_env"):
         # First run
         runner.invoke(main, ["init", "--dir", str(tmp_path)])
-        skill_file = tmp_path / ".claude" / "agents" / "oneshot.md"
+        skill_file = tmp_path / ".claude" / "agents" / "orchestrator.md"
         original_mtime = skill_file.stat().st_mtime
         # Second run without --force
         runner.invoke(main, ["init", "--dir", str(tmp_path)])
@@ -30,7 +30,7 @@ def test_init_overwrites_with_force(tmp_path):
     runner = CliRunner()
     with patch("agentharness.cli._write_env"):
         runner.invoke(main, ["init", "--dir", str(tmp_path)])
-        skill_file = tmp_path / ".claude" / "agents" / "oneshot.md"
+        skill_file = tmp_path / ".claude" / "agents" / "orchestrator.md"
         # Modify it
         skill_file.write_text("modified")
         # Re-run with --force
