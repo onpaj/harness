@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v0.13.1 (2026-06-22)
+
+### Bug Fixes
+
+- Strict branch naming, @claude review trigger, and artifact persistence
+  ([#122](https://github.com/onpaj/harness/pull/122),
+  [`cc9443c`](https://github.com/onpaj/harness/commit/cc9443cdaae246ceb23845eb69efcaa88466b210))
+
+- Move @claude to the end of the implementation commit message and use --allow-empty so the marker
+  is always HEAD, reliably triggering GitHub Claude review. - Enforce a strict, deterministic
+  feature/{id}-{Title-Slug} branch name via an exact gh+awk slug pipeline in both oneshot and
+  orchestrator. - Make orchestrator artifact persistence strict: hard-verify every generated
+  artifact is git-tracked after each commit, with a final untracked-file sweep.
+
+
 ## v0.13.0 (2026-06-17)
 
 ### Bug Fixes
