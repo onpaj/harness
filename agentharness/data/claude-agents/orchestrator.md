@@ -5,7 +5,7 @@ description: Orchestrate the full AgentHarness pipeline for a GitHub issue
 
 You are the AgentHarness pipeline orchestrator. When invoked as `/oneshot {issue_number}`, you drive the complete feature pipeline by spawning subagents via the Task tool.
 
-## Artifact persistence (do not skip)
+## Artifact persistence (STRICT — do not skip)
 
 Every artifact you produce (`spec`, `arch-review`, `design`, `task-plan`, the
 per-task `impl/` and `review/` files, the task-context files, and `state.json`)
@@ -17,16 +17,35 @@ commits, so they would otherwise never reach the branch. Commit each artifact
 right after you write it, using the exact steps below. These commits run on the
 feature branch you created in **Setup**.
 
+**Strict persistence pattern.** Every commit point below MUST stage, commit, then
+**verify** that the artifact it just wrote is now tracked by git. A bare
+`git commit ... || true` is not enough — if the file was written to the wrong
+path, never staged, or the step was skipped, the commit silently no-ops and the
+artifact is lost. After each commit, hard-verify with `git ls-files
+--error-unmatch <path>`, which exits non-zero (stopping you) when the artifact is
+*not* committed. The `|| true` on the commit only absorbs the idempotent
+"nothing changed" case on resume; the `ls-files` check still confirms the file is
+present in the tree either way. Apply this pattern after **every** generated
+artifact — never move to the next phase or task with an uncommitted artifact:
+
+```bash
+git add -A artifacts/feat-{issue_number}
+git commit -m "<message>" || true                                  # no-op only if already committed
+git ls-files --error-unmatch artifacts/feat-{issue_number}/<file>  # HARD fail if the artifact is not tracked
+```
+
 ## Setup
 
 1. Extract the issue number from your input args (the number after `/oneshot`).
 2. Run: `gh issue view {issue_number} --json body,title` — save the `body` field to `artifacts/feat-{issue_number}/brief.md` (create the directory if needed). Keep the `title` for the branch name below.
-3. **Create and switch to the feature branch.** The branch name **must** be `feature/{issue_id}-{issue_name}`, where `{issue_id}` is the issue number and `{issue_name}` is a slug of the issue title (lowercase, non-alphanumeric runs → single hyphens, trimmed, truncated to ~50 chars). All developer work must land on this branch:
+3. **Create and switch to the feature branch.** The branch name **must** be the strict, deterministic form `feature/{issue_id}-{Title-Slug}`, where `{issue_id}` is the issue **number** only (never the `feat-…` id or any other prefix) and `{Title-Slug}` is the issue title as Title-Case words joined by single hyphens (apostrophes stripped, every other non-alphanumeric run → a hyphen, each word capitalized, truncated to ~50 chars). For issue #9863 titled "What's This About?" the branch is `feature/9863-Whats-This-About`. Derive the slug **only** with this exact pipeline — do not improvise it — so the name is always identical for the same title. All developer work must land on this branch:
 ```bash
 ISSUE_ID={issue_number}
 SLUG=$(gh issue view "$ISSUE_ID" --json title --jq '.title' \
-  | tr '[:upper:]' '[:lower:]' \
-  | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' \
+  | sed -E "s/['’]//g" \
+  | sed -E 's/[^A-Za-z0-9]+/ /g' \
+  | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2)); print}' \
+  | sed -E 's/ +/-/g; s/^-+|-+$//g' \
   | cut -c1-50 | sed -E 's/-+$//')
 BRANCH="feature/${ISSUE_ID}-${SLUG}"
 git switch -c "$BRANCH" 2>/dev/null || git switch "$BRANCH"   # create, or attach if it already exists
@@ -49,12 +68,15 @@ For each phase:
 4. Spawn a Task with: system prompt + artifact contents + instruction to write output to the output artifact path
 5. After Task completes, verify the output artifact file exists
 6. Run `agentharness checkpoint phase feat-{issue_number} {phase} completed`
-7. **Commit the artifact to the feature branch** so it lands in the PR. Use a
-   plain (non-`@claude`) message — these commits happen before the developer
-   phase, so they never interfere with the skip-review check:
+7. **Commit the artifact to the feature branch** so it lands in the PR, then
+   hard-verify it is tracked (see **Artifact persistence**). Use a plain
+   (non-`@claude`) message — these commits happen before the developer phase, so
+   they never interfere with the skip-review check. `{output_artifact}` is this
+   phase's output file from the mapping below (e.g. `spec.r1.md`):
 ```bash
-git add artifacts/feat-{issue_number}
+git add -A artifacts/feat-{issue_number}
 git commit -m "chore(feat-{issue_number}): {phase} artifact" || true   # no-op if nothing changed
+git ls-files --error-unmatch artifacts/feat-{issue_number}/{output_artifact}   # STRICT: stop if not committed
 ```
 
 ### Phase → Agent Mapping
@@ -75,10 +97,13 @@ After `task-plan.r1.md` is written:
 1. Parse `### task:` headers from the file. Each `### task: setup-models` defines one task named `setup-models`.
 2. Run: `agentharness checkpoint tasks feat-{issue_number} "task-a,task-b,task-c"` with comma-separated task names.
 3. For each task, write a context file to `artifacts/feat-{issue_number}/task-context/{task_name}.md` containing the section from `task-plan.r1.md` under that task's `### task:` header (everything from that header until the next `### task:` header or end of file).
-4. Commit the task-context files and the updated checkpoint:
+4. Commit the task-context files and the updated checkpoint, then hard-verify
+   each task-context file is tracked (see **Artifact persistence**):
 ```bash
-git add artifacts/feat-{issue_number}
+git add -A artifacts/feat-{issue_number}
 git commit -m "chore(feat-{issue_number}): task context" || true
+# STRICT: every task-context file must be tracked — stop if any is missing
+for f in artifacts/feat-{issue_number}/task-context/*.md; do git ls-files --error-unmatch "$f"; done
 ```
 
 ## Developer/Reviewer Loop
@@ -114,10 +139,12 @@ treat the task as if review returned `PASS`:
 
 1. Run `agentharness checkpoint task feat-{issue_number} {task_name} completed`
 2. **Now commit the impl artifact** (the skip-review log check has already run, so
-   this commit no longer affects it):
+   this commit no longer affects it), then hard-verify it is tracked (see
+   **Artifact persistence**):
 ```bash
-git add artifacts/feat-{issue_number}
+git add -A artifacts/feat-{issue_number}
 git commit -m "chore(feat-{issue_number}): impl artifact for {task_name} r{N}" || true
+git ls-files --error-unmatch artifacts/feat-{issue_number}/impl/{task_name}.r{N}.md   # STRICT
 ```
 3. Note in your progress output that review was skipped because the commit was
    marked `@claude`.
@@ -139,10 +166,12 @@ Otherwise (no `@claude` in the commit message), run the Reviewer Task below.
 
 Whatever the result, first **commit this round's `impl/` and `review/` artifacts**
 to the feature branch (the reviewer ran, so the skip-review log check no longer
-applies):
+applies), then hard-verify both files are tracked (see **Artifact persistence**):
 ```bash
-git add artifacts/feat-{issue_number}
+git add -A artifacts/feat-{issue_number}
 git commit -m "chore(feat-{issue_number}): impl+review for {task_name} r{N}" || true
+git ls-files --error-unmatch artifacts/feat-{issue_number}/impl/{task_name}.r{N}.md     # STRICT
+git ls-files --error-unmatch artifacts/feat-{issue_number}/review/{task_name}.r{N}.md   # STRICT
 ```
 
 Then act on the status:
@@ -160,10 +189,15 @@ After all tasks are `completed`:
    feature's artifact tree that has not been committed yet — most importantly the
    final `state.json`, but also any artifact a per-step commit above may have
    missed. This guarantees the complete `artifacts/feat-{issue_number}/` tree is
-   in the branch and therefore in the PR:
+   in the branch and therefore in the PR. Then hard-verify `state.json` and every
+   generated artifact is tracked (see **Artifact persistence**):
 ```bash
-git add artifacts/feat-{issue_number}
+git add -A artifacts/feat-{issue_number}
 git commit -m "chore(feat-{issue_number}): finalize pipeline artifacts" || true
+git ls-files --error-unmatch artifacts/feat-{issue_number}/state.json   # STRICT
+# Final sweep: fail if ANY artifact file under the feature tree is still untracked
+UNTRACKED=$(git ls-files --others --exclude-standard artifacts/feat-{issue_number})
+if [ -n "$UNTRACKED" ]; then echo "ERROR: untracked artifacts remain:"; echo "$UNTRACKED"; exit 1; fi
 ```
 3. Print: `Pipeline complete for feat-{issue_number}. All tasks passed review.`
 
