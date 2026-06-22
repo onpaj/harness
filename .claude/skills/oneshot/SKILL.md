@@ -140,10 +140,12 @@ git push -u origin "$BRANCH"
    it is what makes GitHub auto-close the issue when the PR merges. Never open a
    feature PR without it.
 
-   Open the PR (base = the repository default branch, head = `$BRANCH`) and add
-   the `agent` label to it:
+   Open the PR (base = the repository default branch, head = `$BRANCH`). Capture
+   the PR URL and attach the `agent` label in a **separate, explicit step** — do
+   not rely on `--label` on `gh pr create` alone, as it is sometimes silently
+   dropped. The `gh pr edit --add-label` call is the guarantee:
 ```bash
-gh pr create \
+PR_URL=$(gh pr create \
   --base master \
   --head "$BRANCH" \
   --label agent \
@@ -160,7 +162,12 @@ Closes #{issue_id}
 ## Artifacts
 - Brief, spec, design, task plan, impl, and review markdown are committed in this branch.
 EOF
-)"
+)")
+
+# MANDATORY: guarantee the label is attached. Verify it actually landed.
+gh pr edit "$PR_URL" --add-label agent
+gh pr view "$PR_URL" --json labels --jq '.labels[].name' | grep -qx agent \
+  || { echo "ERROR: agent label missing on $PR_URL" >&2; exit 1; }
 ```
    Substitute the real GitHub issue number for `{issue_id}` in both the title
    and the `Closes #{issue_id}` line (same number used for `ISSUE_ID` above).
