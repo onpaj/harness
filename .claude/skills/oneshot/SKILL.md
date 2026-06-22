@@ -135,6 +135,11 @@ git push -u origin "$BRANCH"
    - **What the issue / feature was** — the problem or request being addressed.
    - **How it was fixed / handled** — the approach taken and the key changes.
 
+   **The PR body MUST link the tracking issue with a `Closes #{issue_id}`
+   line** (using the GitHub issue number from `ISSUE_ID`). This is mandatory —
+   it is what makes GitHub auto-close the issue when the PR merges. Never open a
+   feature PR without it.
+
    Open the PR (base = the repository default branch, head = `$BRANCH`) and add
    the `agent` label to it:
 ```bash
@@ -144,6 +149,8 @@ gh pr create \
   --label agent \
   --title "#{issue_id}: implementation" \
   --body "$(cat <<'EOF'
+Closes #{issue_id}
+
 ## What the issue was
 <description of the feature/problem from the brief>
 
@@ -155,6 +162,8 @@ gh pr create \
 EOF
 )"
 ```
+   Substitute the real GitHub issue number for `{issue_id}` in both the title
+   and the `Closes #{issue_id}` line (same number used for `ISSUE_ID` above).
 
 5. **Mark the issue completed.** Using the `gh` CLI, remove the `agent-wip`
    label and add the `agent-completed` label to the feature's issue:
