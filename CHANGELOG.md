@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v0.14.1 (2026-06-22)
+
+### Bug Fixes
+
+- Remove --symlink mode from agentharness init
+  ([`393fd26`](https://github.com/onpaj/harness/commit/393fd26b7a731602fdb1398df09682b5c79de44c))
+
+The --symlink mode (PR #123, v0.14.0) linked shipped agents/skills/pipeline from the installed
+  package into the consumer repo and gitignored them. This does not work in the Claude cloud
+  environment — symlinked skill directories aren't reliably discovered and links dangle after
+  package upgrades.
+
+Scrap symlink mode entirely. Harness skills and agents are now always copied into the target repo's
+  standard locations (.claude/skills, .claude/agents, .agents, .pipeline) and committed to the
+  consumer repo's source control.
+
+- Remove --symlink option, _symlink_item, _write_gitignore_block, _copy_item, and the
+  GITIGNORE_MARKER constant from cli.py - Drop the six symlink-mode tests; keep the four copy-mode
+  tests - Delete the now-obsolete symlink handoff doc
+
+
 ## v0.14.0 (2026-06-22)
 
 ### Features
