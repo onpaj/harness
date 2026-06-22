@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v0.14.2 (2026-06-22)
+
+### Bug Fixes
+
+- Guarantee agent label on harness-opened PRs ([#125](https://github.com/onpaj/harness/pull/125),
+  [`ce4dd8c`](https://github.com/onpaj/harness/commit/ce4dd8c8d309e56756efb3f108c7e3c10b2e6451))
+
+The oneshot skill relied on --label agent on gh pr create alone, which the agent sometimes dropped,
+  with no check that the label landed. Make label application a separate, explicit gh pr edit
+  --add-label step and verify it actually attached, hard-failing the skill if it is missing.
+
+### Documentation
+
+- Require Closes #issue link in pipeline-created PRs
+  ([#124](https://github.com/onpaj/harness/pull/124),
+  [`fb2e46f`](https://github.com/onpaj/harness/commit/fb2e46f2c71e2e1995ec1bed657e318023898075))
+
+The oneshot skill's gh pr create template had no issue link, so merged feature PRs never auto-closed
+  their tracking issue. Make the Closes #{issue_id} line mandatory and add it to the PR body
+  template.
+
+
 ## v0.14.1 (2026-06-22)
 
 ### Bug Fixes
