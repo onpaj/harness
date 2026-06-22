@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.14.0 (2026-06-22)
+
+### Features
+
+- Add --symlink mode to agentharness init ([#123](https://github.com/onpaj/harness/pull/123),
+  [`6b40ecd`](https://github.com/onpaj/harness/commit/6b40ecd2dc9406ae176854350c4c488b396666c4))
+
+Symlink shipped agents/skills/pipeline from the installed package into the consumer repo (per-item,
+  gitignored via a managed block) instead of copying git-tracked files that go stale. Copy stays the
+  default; --symlink is opt-in, with --force converting committed copies and a copy fallback on
+  OSError. Adds a handoff doc for migrating Anela.Heblo to symlinked skills.
+
+
 ## v0.13.1 (2026-06-22)
 
 ### Bug Fixes
