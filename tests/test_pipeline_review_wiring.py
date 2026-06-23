@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 ORCHESTRATOR = Path("agentharness/data/claude-agents/orchestrator.md")
@@ -31,3 +32,16 @@ def test_oneshot_skill_attaches_code_review_to_pr_body():
     body = ONESHOT.read_text(encoding="utf-8")
     assert "code-review.r" in body
     assert "Code review" in body or "Code Review" in body
+
+
+ENSURE_PR_LINKED = Path("scripts/ensure_pr_linked.sh")
+
+
+def test_oneshot_skill_invokes_ensure_pr_linked():
+    body = ONESHOT.read_text(encoding="utf-8")
+    assert "scripts/ensure_pr_linked.sh" in body
+
+
+def test_ensure_pr_linked_script_exists_and_is_executable():
+    assert ENSURE_PR_LINKED.exists()
+    assert os.access(ENSURE_PR_LINKED, os.X_OK)
