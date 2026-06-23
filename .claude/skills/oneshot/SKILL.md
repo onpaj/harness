@@ -140,9 +140,12 @@ git push -u origin "$BRANCH"
    feature PR without it.
 
    Open the PR (base = the repository default branch, head = `$BRANCH`). Capture
-   the PR URL and attach the `agent` label in a **separate, explicit step** — do
-   not rely on `--label` on `gh pr create` alone, as it is sometimes silently
-   dropped. The `gh pr edit --add-label` call is the guarantee.
+   the PR URL, then run `scripts/ensure_pr_linked.sh "$PR_URL" "{issue_id}"` — this
+   is the guarantee for **both** requirements above. Do not rely on `--label` or the
+   `Closes` template line on `gh pr create` alone; the LLM-filled body and the
+   `--label` flag are both sometimes dropped. The script adds the `agent` label,
+   injects `Closes #{issue_id}` if missing, then hard-fails if it cannot confirm
+   either.
 
    First capture the pipeline's final code review so it can be surfaced on the PR.
    The `## Code review` section carries the whole-branch review run inside the
@@ -175,10 +178,9 @@ ${REVIEW_SECTION}
 EOF
 )")
 
-# MANDATORY: guarantee the label is attached. Verify it actually landed.
-gh pr edit "$PR_URL" --add-label agent
-gh pr view "$PR_URL" --json labels --jq '.labels[].name' | grep -qx agent \
-  || { echo "ERROR: agent label missing on $PR_URL" >&2; exit 1; }
+# MANDATORY: guarantee the `agent` label AND the `Closes #{issue_id}` link.
+# Auto-repairs both if the agent dropped them, then hard-fails if it cannot.
+scripts/ensure_pr_linked.sh "$PR_URL" "{issue_id}"
 ```
    Substitute the real GitHub issue number for `{issue_id}` in both the title
    and the `Closes #{issue_id}` line (same number used for `ISSUE_ID` above).
