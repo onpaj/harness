@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.16.1 (2026-06-23)
+
+### Bug Fixes
+
+- Bundle ensure_pr_linked.sh inside the oneshot skill
+  ([#128](https://github.com/onpaj/harness/pull/128),
+  [`ae55ef9`](https://github.com/onpaj/harness/commit/ae55ef95e55ea4a9d8b5075a464db41935f69c38))
+
+The script lived at scripts/ which agentharness init never copies into target repos, so the oneshot
+  skill's mandatory PR-linking step failed when installed. Move it into .claude/skills/oneshot/ so
+  init copies it with the rest of the skill directory, and update the skill invocation and test
+  paths accordingly.
+
+
 ## v0.16.0 (2026-06-23)
 
 ### Features
