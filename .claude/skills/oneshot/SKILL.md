@@ -115,13 +115,12 @@ artifacts/feat-{issue_id}/state.json          # checkpoint state
 ```bash
 git add -A artifacts/feat-{issue_id}    # ensure all generated .md artifacts are staged
 git add -A                              # stage code + everything else
-git commit --allow-empty -m "implement feat-{issue_id} @claude"
+git commit --allow-empty -m "implement feat-{issue_id}"
 ```
-   The commit message **must end with** `@claude` (the trigger phrase goes at the
-   very end of the message, not the start). Use `--allow-empty` so this marker
-   commit always becomes `HEAD` — even when the orchestrator already committed
-   every artifact — otherwise the `@claude` trigger never reaches the tip of the
-   branch and the GitHub Claude review is not invoked.
+   Use `--allow-empty` so this commit always becomes `HEAD`, capturing any
+   remaining artifacts. The whole-branch code review already ran inside the
+   pipeline (see the orchestrator's Code Review phase), so no external review
+   trigger is needed.
 
 3. **Push** the branch:
 ```bash
@@ -143,14 +142,25 @@ git push -u origin "$BRANCH"
    Open the PR (base = the repository default branch, head = `$BRANCH`). Capture
    the PR URL and attach the `agent` label in a **separate, explicit step** — do
    not rely on `--label` on `gh pr create` alone, as it is sometimes silently
-   dropped. The `gh pr edit --add-label` call is the guarantee:
+   dropped. The `gh pr edit --add-label` call is the guarantee.
+
+   First capture the pipeline's final code review so it can be surfaced on the PR.
+   The `## Code review` section carries the whole-branch review run inside the
+   pipeline — advisory cleanups and any unresolved correctness findings:
 ```bash
+# Most recent code-review artifact (highest revision), if any.
+REVIEW_FILE=$(ls -1 artifacts/feat-{issue_id}/code-review.r*.md 2>/dev/null | sort -V | tail -n1)
+REVIEW_SECTION=""
+if [ -n "$REVIEW_FILE" ]; then
+  REVIEW_SECTION=$(printf '\n## Code review\n\n%s\n' "$(cat "$REVIEW_FILE")")
+fi
+
 PR_URL=$(gh pr create \
   --base master \
   --head "$BRANCH" \
   --label agent \
   --title "#{issue_id}: implementation" \
-  --body "$(cat <<'EOF'
+  --body "$(cat <<EOF
 Closes #{issue_id}
 
 ## What the issue was
@@ -161,6 +171,7 @@ Closes #{issue_id}
 
 ## Artifacts
 - Brief, spec, design, task plan, impl, and review markdown are committed in this branch.
+${REVIEW_SECTION}
 EOF
 )")
 

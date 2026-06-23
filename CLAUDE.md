@@ -21,7 +21,8 @@ A distributed, event-driven pipeline that autonomously processes development tas
   designer.md       Design document generator
   planner.md        Task planning from spec (fan-out)
   developer.md      Code implementation (serial, per-task review)
-  reviewer.md       Per-task review with PASS/REVISION_NEEDED
+  reviewer.md       Per-task review of the developer's summary (PASS/REVISION_NEEDED)
+  code-reviewer.md  Final whole-branch diff review (allowed_tools: bash,read,grep,glob)
   brainstorm.md     Interactive brief discovery (CLI skill)
 .claude/agents/     Claude Code skills (brainstorm, implement, azure-storage)
 .pipeline/          Runtime config (queue → agent mapping, timeouts)
@@ -93,7 +94,7 @@ agentharness _run_task                          # single-task runner (reads JSON
 ## State machine
 
 ```
-brainstorming → analyzing → architecting → designing → planning → developing → reviewing → done
+brainstorming → analyzing → architecting → designing → planning → developing → reviewing → code-review → done
                                                                        ↑              |
                                                                   dev_revision ←------+
                                                                        |
@@ -101,6 +102,13 @@ brainstorming → analyzing → architecting → designing → planning → deve
 ```
 
 `failed` is reachable from any state after `dead_letter_threshold` retries or `max_revisions` revision rounds.
+
+After all developer tasks pass per-task review (`reviewing`), the orchestrator runs a
+final **`code-review`** phase: it diffs the whole feature branch against its merge-base
+with `master` and hands the diff to the `code-reviewer` agent. Correctness findings
+trigger a developer fix round (bounded by `max_revisions`); reuse/simplification/
+efficiency cleanups are advisory. The final review is attached to the PR body. This
+replaces the previous external `@claude` GitHub Action review.
 
 ### Task status values (`TaskStatus`)
 
@@ -198,6 +206,7 @@ artifacts/{feature_id}/design.r1.md            # designer output
 artifacts/{feature_id}/task-plan.r1.md         # planner output
 artifacts/{feature_id}/impl/{task}.r1.md       # r{N} = revision number
 artifacts/{feature_id}/review/{task}.r1.md
+artifacts/{feature_id}/code-review.r1.md       # final whole-branch review per round
 artifacts/{feature_id}/state.json
 ```
 
