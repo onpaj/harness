@@ -1,6 +1,24 @@
 # CHANGELOG
 
 
+## v0.16.2 (2026-06-23)
+
+### Bug Fixes
+
+- Ship init skills as real files instead of a symlink
+  ([#129](https://github.com/onpaj/harness/pull/129),
+  [`59d7ab6`](https://github.com/onpaj/harness/commit/59d7ab685554ec935f1eff722d70dc42deb845ae))
+
+agentharness/data/skills was a symlink to ../../.claude/skills. In a pip-installed wheel that
+  symlink dangles, so 'agentharness init' copied no skills at all into consumer repos. Replace it
+  with a real directory mirroring .claude/skills, so every skill — including oneshot and its bundled
+  ensure_pr_linked.sh pr-linking script (#128) — is packaged and installed into the consumer's
+  .claude/skills/. Add regression tests guarding the packaged set, the no-symlink invariant, and
+  source/package parity.
+
+@claude
+
+
 ## v0.16.1 (2026-06-23)
 
 ### Bug Fixes
