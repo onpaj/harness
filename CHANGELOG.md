@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.15.0 (2026-06-23)
+
+### Features
+
+- In-pipeline whole-branch code review (replaces @claude action)
+  ([#126](https://github.com/onpaj/harness/pull/126),
+  [`ba8cb8a`](https://github.com/onpaj/harness/commit/ba8cb8a7704248e5e788a7c71614d5064ab8de73))
+
+* feat: add code-reviewer agent for whole-branch diff review
+
+* feat: add code-review phase to orchestrator, drop @claude skip-review
+
+* feat: surface in-pipeline code review on PR, remove @claude trigger
+
+* docs: document in-pipeline code-review phase and code-reviewer agent
+
+* docs: add design spec and implementation plan for in-pipeline code review
+
+
 ## v0.14.2 (2026-06-22)
 
 ### Bug Fixes
