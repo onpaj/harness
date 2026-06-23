@@ -140,8 +140,9 @@ git push -u origin "$BRANCH"
    feature PR without it.
 
    Open the PR (base = the repository default branch, head = `$BRANCH`). Capture
-   the PR URL, then run `scripts/ensure_pr_linked.sh "$PR_URL" "{issue_id}"` — this
-   is the guarantee for **both** requirements above. Do not rely on `--label` or the
+   the PR URL, then run `.claude/skills/oneshot/ensure_pr_linked.sh "$PR_URL" "{issue_id}"`
+   — this script ships beside this skill, so it is always present wherever the skill
+   is installed. It is the guarantee for **both** requirements above. Do not rely on `--label` or the
    `Closes` template line on `gh pr create` alone; the LLM-filled body and the
    `--label` flag are both sometimes dropped. The script adds the `agent` label,
    injects `Closes #{issue_id}` if missing, then hard-fails if it cannot confirm
@@ -180,7 +181,7 @@ EOF
 
 # MANDATORY: guarantee the `agent` label AND the `Closes #{issue_id}` link.
 # Auto-repairs both if the agent dropped them, then hard-fails if it cannot.
-scripts/ensure_pr_linked.sh "$PR_URL" "{issue_id}"
+.claude/skills/oneshot/ensure_pr_linked.sh "$PR_URL" "{issue_id}"
 ```
    Substitute the real GitHub issue number for `{issue_id}` in both the title
    and the `Closes #{issue_id}` line (same number used for `ISSUE_ID` above).

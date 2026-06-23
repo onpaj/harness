@@ -1,4 +1,4 @@
-"""Tests for scripts/ensure_pr_linked.sh.
+"""Tests for .claude/skills/oneshot/ensure_pr_linked.sh.
 
 The real bash script is driven through a fake `gh` placed on PATH. The stub keeps
 PR state (labels + body) in a JSON file across the multiple `gh` calls a single
@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ensure_pr_linked.sh"
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / ".claude" / "skills" / "oneshot" / "ensure_pr_linked.sh"
+)
 
 # A fake `gh` that mutates/reads a JSON state file given via $GH_FAKE_STATE.
 FAKE_GH = '''#!/usr/bin/env python3
@@ -142,4 +145,4 @@ def test_hard_fails_when_label_cannot_land(run_script):
 
 def test_script_exists_and_is_executable():
     assert SCRIPT.exists()
-    assert os.access(SCRIPT, os.X_OK), "scripts/ensure_pr_linked.sh must be executable"
+    assert os.access(SCRIPT, os.X_OK), f"{SCRIPT.name} must be executable"
