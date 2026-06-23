@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v0.16.0 (2026-06-23)
+
+### Features
+
+- Enforce agent label and Closes link on harness PRs
+  ([#127](https://github.com/onpaj/harness/pull/127),
+  [`5497de1`](https://github.com/onpaj/harness/commit/5497de1e46fe8724b8f6b558c333943d0186869e))
+
+Add scripts/ensure_pr_linked.sh, a deterministic post-PR step that adds the agent label and injects
+  a Closes #<n> link (auto-repair then verify, hard-fail if it can't). Wire it into the oneshot
+  skill, replacing the label-only inline check that left the issue link unverified, and into
+  finishfeature (guarded so it stays a no-op outside harness repos). Covered by unit tests driving
+  the script through a fake gh, plus skill-wiring assertions.
+
+
 ## v0.15.0 (2026-06-23)
 
 ### Features
