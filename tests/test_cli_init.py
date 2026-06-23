@@ -45,3 +45,14 @@ def test_init_prints_updated_message(tmp_path):
     with patch("agentharness.cli._write_env"):
         result = runner.invoke(main, ["init", "--dir", str(tmp_path)], catch_exceptions=False)
     assert "/oneshot" in result.output
+
+
+def test_init_installs_skills_as_real_files_with_pr_script(tmp_path):
+    runner = CliRunner()
+    with patch("agentharness.cli._write_env"):
+        runner.invoke(main, ["init", "--dir", str(tmp_path)], catch_exceptions=False)
+    skills = tmp_path / ".claude" / "skills"
+    brainstorm = skills / "brainstorm" / "SKILL.md"
+    assert brainstorm.is_file() and not brainstorm.is_symlink()
+    # oneshot ships with its pr-linking script so the step works in consumer repos.
+    assert (skills / "oneshot" / "ensure_pr_linked.sh").is_file()
