@@ -38,6 +38,8 @@ if args[:2] == ["pr", "edit"]:
             state["labels"].append(label)
     if "--body" in args:
         state["body"] = args[args.index("--body") + 1]
+    if "--title" in args:
+        state["title"] = args[args.index("--title") + 1]
     save()
     sys.exit(0)
 
@@ -47,6 +49,8 @@ if args[:2] == ["pr", "view"]:
         print("\\n".join(state["labels"]))
     elif "body" in args:
         print(state["body"])
+    elif "title" in args:
+        print(state.get("title", ""))
     sys.exit(0)
 
 save()
@@ -65,10 +69,11 @@ def run_script(tmp_path):
 
     state_path = tmp_path / "state.json"
 
-    def _run(pr, issue, *, labels=None, body="", label_wont_land=False):
+    def _run(pr, issue, *, labels=None, body="", title="", label_wont_land=False):
         state = {
             "labels": list(labels or []),
             "body": body,
+            "title": title,
             "label_wont_land": label_wont_land,
             "calls": [],
         }
@@ -141,6 +146,53 @@ def test_hard_fails_when_label_cannot_land(run_script):
 
     assert proc.returncode == 1
     assert "agent label missing" in proc.stderr
+
+
+def test_repairs_bare_implementation_title(run_script):
+    # The known failure mode: the "#<n>: " prefix was dropped, leaving "implementation".
+    proc, state = run_script("42", "7", labels=["agent"], body="Closes #7", title="implementation")
+
+    assert proc.returncode == 0, proc.stderr
+    assert state["title"] == "#7: implementation"
+
+
+def test_repairs_unsubstituted_placeholder_title(run_script):
+    # The LLM never substituted the "{issue_id}" placeholder.
+    proc, state = run_script(
+        "42", "7", labels=["agent"], body="Closes #7", title="#{issue_id}: implementation"
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert state["title"] == "#7: implementation"
+
+
+def test_leaves_correct_title_untouched(run_script):
+    proc, state = run_script("42", "7", labels=["agent"], body="Closes #7", title="#7: implementation")
+
+    assert proc.returncode == 0, proc.stderr
+    assert state["title"] == "#7: implementation"
+
+
+def test_preserves_meaningful_summary(run_script):
+    proc, state = run_script("42", "7", labels=["agent"], body="Closes #7", title="#7: add rate limiter")
+
+    assert proc.returncode == 0, proc.stderr
+    assert state["title"] == "#7: add rate limiter"
+
+
+def test_defaults_summary_when_title_empty(run_script):
+    proc, state = run_script("42", "7", labels=["agent"], body="Closes #7", title="")
+
+    assert proc.returncode == 0, proc.stderr
+    assert state["title"] == "#7: implementation"
+
+
+def test_does_not_treat_superset_issue_number_in_title_as_match(run_script):
+    # Title references #70, but the tracking issue is #7 — must be renormalized.
+    proc, state = run_script("42", "7", labels=["agent"], body="Closes #7", title="#70: implementation")
+
+    assert proc.returncode == 0, proc.stderr
+    assert state["title"] == "#7: implementation"
 
 
 def test_script_exists_and_is_executable():
