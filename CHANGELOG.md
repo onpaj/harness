@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.16.3 (2026-07-13)
+
+### Bug Fixes
+
+- Always enforce the defined PR title format in oneshot
+  ([#130](https://github.com/onpaj/harness/pull/130),
+  [`7f48a54`](https://github.com/onpaj/harness/commit/7f48a54c5e1ed2a19f2bd7b23229a146d8302d9d))
+
+Harness PRs sometimes ended up titled just "implementation" because the title used a "#{issue_id}:"
+  brace placeholder the agent had to hand-substitute; when it dropped the prefix only the hardcoded
+  suffix survived.
+
+- ensure_pr_linked.sh now guarantees the title format "#<issue>: <summary>" the same way it already
+  guarantees the agent label and Closes link (read -> repair -> re-verify -> hard-fail), defaulting
+  the summary to "implementation" and preserving a meaningful one if present. - oneshot SKILL.md
+  uses the real $ISSUE_ID shell variable in the title, Closes line, and script call so the first
+  attempt is correct. - Added title-repair tests and regression guards; kept both packaged and live
+  skill copies byte-identical.
+
+
 ## v0.16.2 (2026-06-23)
 
 ### Bug Fixes
