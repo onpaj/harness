@@ -47,3 +47,18 @@ def test_oneshot_skill_invokes_ensure_pr_linked():
 def test_ensure_pr_linked_script_exists_and_is_executable():
     assert ENSURE_PR_LINKED.exists()
     assert os.access(ENSURE_PR_LINKED, os.X_OK)
+
+
+def test_oneshot_skill_uses_issue_id_variable_in_pr_title():
+    # The title must use the real $ISSUE_ID shell var, not the brittle
+    # "{issue_id}" placeholder the LLM had to hand-substitute (which sometimes
+    # collapsed the title to a bare "implementation").
+    body = ONESHOT.read_text(encoding="utf-8")
+    assert '--title "#${ISSUE_ID}: implementation"' in body
+    assert '--title "#{issue_id}: implementation"' not in body
+
+
+def test_ensure_pr_linked_enforces_title_format():
+    script = ENSURE_PR_LINKED.read_text(encoding="utf-8")
+    assert 'gh pr edit "$PR" --title' in script
+    assert 'TITLE_RE="^#${ISSUE}: .+"' in script
