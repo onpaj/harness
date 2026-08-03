@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.17.0 (2026-08-03)
+
+### Features
+
+- Add applicationinsightsscan skill for telemetry-anomaly scanning
+  ([`a6b4bd3`](https://github.com/onpaj/harness/commit/a6b4bd33897d4b27cb63b2b44704a346c7cc6e45))
+
+Wraps a daily production-telemetry routine (Azure Application Insights + GitHub correlation,
+  rigorous dedup by telemetry-signal fingerprint) as a portable Claude Code skill. The target GitHub
+  repo is auto-detected from the git origin remote (override via GH_REPO) so the skill works
+  unmodified in any repo it's installed into via `agentharness init`. Read-only against code: never
+  changes code, opens a PR, or commits.
+
+
 ## v0.16.3 (2026-07-13)
 
 ### Bug Fixes
