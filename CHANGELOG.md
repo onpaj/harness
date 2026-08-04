@@ -1,6 +1,66 @@
 # CHANGELOG
 
 
+## v0.19.0 (2026-08-04)
+
+### Bug Fixes
+
+- Address final-review Critical and Important findings for /automerge
+  ([`3db1fbd`](https://github.com/onpaj/harness/commit/3db1fbd1798746cef543ccd9a45addbfdcca104a))
+
+Fixes 7 findings from the whole-branch final review: pycache pollution of the packaged-skills
+  mirror, shell interpolation of subagent output in SKILL.md, a labelling failure that masked a
+  successful merge as a failure, a dead --issue pipeline (candidates.sh now resolves linkedIssue via
+  jq), an overstated sandboxing claim in the design spec, drifted threshold prose outside
+  parse_verdict.py, and rejected PRs being re-reviewed on every run.
+
+- Escape JSON safely in apply_verdict.sh and cover the skipped-status path
+  ([`c912a12`](https://github.com/onpaj/harness/commit/c912a1291cbd27f4a267141e265b031f410e1c31))
+
+- Match gh-api.sh repo-detection convention in candidates.sh
+  ([`7faa020`](https://github.com/onpaj/harness/commit/7faa020932bec4cc96093fc339b5af4e4cbfc931))
+
+- Stop restating threshold values in SKILL.md's Constants table
+  ([`1d786d7`](https://github.com/onpaj/harness/commit/1d786d7f8a3cf9d95921f713c177a423ac9d5c02))
+
+### Documentation
+
+- Design spec for /automerge autonomous PR merge skill
+  ([`4b51cb3`](https://github.com/onpaj/harness/commit/4b51cb3eac8eea92ba4006830494c2e43b580d47))
+
+- Document the automerge skill
+  ([`e8eae5c`](https://github.com/onpaj/harness/commit/e8eae5c91d4cc09c233c0a036a31a14a75d904ef))
+
+- Drop restated threshold values from plan's Constants table
+  ([`4b32e3f`](https://github.com/onpaj/harness/commit/4b32e3fc2aa0e78fd4979cfdbc9b8b2ff9b2d408))
+
+- Fix apply_verdict.sh JSON escaping and add skip-path test coverage in plan
+  ([`79b9b64`](https://github.com/onpaj/harness/commit/79b9b643042e49d20e5fce13d40562e24aa751a9))
+
+- Fix plan's repo-detection template to match gh-api.sh convention
+  ([`5fd1734`](https://github.com/onpaj/harness/commit/5fd1734072dfb689548b92a13e243062c107e1e5))
+
+- Implementation plan for /automerge skill
+  ([`8855b3d`](https://github.com/onpaj/harness/commit/8855b3dc5d21cf2dceacdaadf73632ea7661abd6))
+
+### Features
+
+- Add automerge candidate selection script
+  ([`83ba625`](https://github.com/onpaj/harness/commit/83ba625d84139e442d34a3306a81692c78cc9a3d))
+
+- Add automerge skill orchestration and reviewer prompt
+  ([`54aeb1f`](https://github.com/onpaj/harness/commit/54aeb1f9f116f17d52a06b971329167e0ce22eb9))
+
+- Add automerge verdict execution script
+  ([`3565055`](https://github.com/onpaj/harness/commit/35650558cb855b0709d23da78597b39a6270c0f6))
+
+- Add automerge verdict parser with band decision
+  ([`c7c91fa`](https://github.com/onpaj/harness/commit/c7c91fadcb464ef5f8b88b527e2837577960373e))
+
+- Package automerge skill for agentharness init
+  ([`d9d54bd`](https://github.com/onpaj/harness/commit/d9d54bd32fbe86cbbe5cb06981413234636e8ab1))
+
+
 ## v0.18.0 (2026-08-04)
 
 ### Bug Fixes
