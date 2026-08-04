@@ -127,8 +127,8 @@ Do not restate these values elsewhere; each lives in exactly one file.
 
 | Constant | Where it lives |
 |----------|----------------|
-| `MERGE_THRESHOLD` (80), `NEEDS_WORK_THRESHOLD` (40) | `parse_verdict.py` |
-| `MAX_CANDIDATES` (20), `AGENT_LABEL` | `candidates.sh` |
+| `MERGE_THRESHOLD`, `NEEDS_WORK_THRESHOLD` | `parse_verdict.py` |
+| `MAX_CANDIDATES`, `AGENT_LABEL` | `candidates.sh` |
 | `MERGED_ISSUE_LABEL`, `NEEDS_WORK_LABEL` | `apply_verdict.sh` |
 
 ## Limits worth knowing
