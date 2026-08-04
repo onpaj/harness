@@ -67,6 +67,7 @@ tests/              Unit tests (pytest-asyncio)
 | `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to configured backend |
 | `/oneshot {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
 | `/automerge` | PR backlog | Reviews every open `agent` PR with a fresh subagent each, squash-merges those scoring above its configured threshold, comments on the rest |
+| `/rework` | after an `/automerge` rejection | Picks the oldest `needs-work` PR under the revision-attempt cap, revises it using the review that rejected it, and pushes the fix |
 | `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter (Azure backend only) |
 
 ## CLI commands
