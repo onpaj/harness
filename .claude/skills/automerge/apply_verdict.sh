@@ -25,8 +25,12 @@ while [ $# -gt 0 ]; do
 done
 
 report() {  # status, detail
-  printf '{"pr":%s,"action":"%s","status":"%s","detail":"%s"}\n' \
-    "${PR:-null}" "$ACTION" "$1" "$2"
+  # jq -n handles escaping (quotes, newlines, backslashes) correctly for any
+  # $2 content — a hand-built printf JSON string breaks on multi-line `gh`
+  # stderr, which is exactly what this function exists to report safely.
+  jq -n --argjson pr "${PR:-null}" --arg action "$ACTION" \
+    --arg status "$1" --arg detail "$2" \
+    '{pr: $pr, action: $action, status: $status, detail: $detail}'
 }
 
 fail() { report "failed" "$1"; exit 1; }
@@ -81,7 +85,9 @@ case "$ACTION" in
         *not\ mergeable*|*Merge\ conflict*|*conflict*)
           report "skipped" "became unmergeable before merge"; exit 1 ;;
         *)
-          fail "merge failed: ${merge_err//\"/\'}" ;;
+          # jq -n in report() escapes this correctly now, so the raw
+          # message can be passed through unmodified.
+          fail "merge failed: ${merge_err}" ;;
       esac
     fi
     if [ -n "$ISSUE" ]; then

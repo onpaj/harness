@@ -228,10 +228,10 @@ def test_truncates_at_twenty_and_reports_the_remainder(gh_stub):
 
 GH_RECORDER = """\
 #!/usr/bin/env bash
-# Fake `gh` that records its argv and optionally fails.
+# Fake `gh` that records its argv and optionally fails with a chosen message.
 echo "$*" >> "$GH_LOG"
 if [ -n "${GH_FAIL_ON:-}" ] && [[ "$*" == *"$GH_FAIL_ON"* ]]; then
-  echo "simulated gh failure" >&2
+  echo "${GH_FAIL_MESSAGE:-simulated gh failure}" >&2
   exit 1
 fi
 exit 0
@@ -251,7 +251,7 @@ def apply_runner(tmp_path):
     review = tmp_path / "review.md"
     review.write_text("score: 94\nLooks good.\n")
 
-    def run(action, pr=129, issue=None, fail_on=None):
+    def run(action, pr=129, issue=None, fail_on=None, fail_message=None):
         env = {
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "GH_LOG": str(log),
@@ -259,6 +259,8 @@ def apply_runner(tmp_path):
         }
         if fail_on:
             env["GH_FAIL_ON"] = fail_on
+        if fail_message:
+            env["GH_FAIL_MESSAGE"] = fail_message
         cmd = [
             str(SKILL_DIR / "apply_verdict.sh"),
             "--pr", str(pr), "--action", action,
@@ -319,6 +321,25 @@ def test_failed_merge_reports_json_and_exits_nonzero(apply_runner):
     payload = json.loads(proc.stdout)
     assert payload["status"] == "failed"
     assert payload["pr"] == 129
+
+
+def test_merge_conflict_reports_skipped_not_failed(apply_runner):
+    # A PR that went unmergeable between listing and merging is not an error
+    # in this run — master simply moved underneath it. Distinct from a
+    # generic gh failure, which reports "failed" (tested above).
+    proc, calls = apply_runner(
+        "merge", issue=118, fail_on="pr merge",
+        fail_message="GraphQL: Pull Request is not mergeable (mergePullRequest)",
+    )
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "skipped"
+    assert payload["pr"] == 129
+    # The review comment must still have posted; the issue must NOT be labelled.
+    joined = "\n".join(calls)
+    assert "pr comment 129" in joined
+    assert "issue edit" not in joined
 
 
 def test_unknown_action_is_rejected(apply_runner):
