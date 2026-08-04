@@ -222,3 +222,107 @@ def test_truncates_at_twenty_and_reports_the_remainder(gh_stub):
 
     assert len(result["candidates"]) == 20
     assert result["truncated"] == 5
+
+
+# === apply_verdict tests ===
+
+GH_RECORDER = """\
+#!/usr/bin/env bash
+# Fake `gh` that records its argv and optionally fails.
+echo "$*" >> "$GH_LOG"
+if [ -n "${GH_FAIL_ON:-}" ] && [[ "$*" == *"$GH_FAIL_ON"* ]]; then
+  echo "simulated gh failure" >&2
+  exit 1
+fi
+exit 0
+"""
+
+
+@pytest.fixture
+def apply_runner(tmp_path):
+    """Run apply_verdict.sh against a recording `gh` stub."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(GH_RECORDER)
+    stub.chmod(0o755)
+
+    log = tmp_path / "gh.log"
+    review = tmp_path / "review.md"
+    review.write_text("score: 94\nLooks good.\n")
+
+    def run(action, pr=129, issue=None, fail_on=None):
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "GH_LOG": str(log),
+            "GH_REPO": "onpaj/harness",
+        }
+        if fail_on:
+            env["GH_FAIL_ON"] = fail_on
+        cmd = [
+            str(SKILL_DIR / "apply_verdict.sh"),
+            "--pr", str(pr), "--action", action,
+            "--review-file", str(review),
+        ]
+        if issue:
+            cmd += ["--issue", str(issue)]
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        calls = log.read_text().splitlines() if log.exists() else []
+        log.write_text("")
+        return proc, calls
+
+    return run
+
+
+def test_merge_action_comments_then_merges_then_labels_issue(apply_runner):
+    proc, calls = apply_runner("merge", pr=129, issue=118)
+
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["status"] == "ok"
+    # Order matters: the audit comment must land before the merge.
+    assert "pr comment 129" in calls[0]
+    assert "pr merge 129" in calls[1]
+    assert "--squash" in calls[1] and "--delete-branch" in calls[1]
+    assert "issue edit 118" in calls[2]
+    assert "agent-merged" in calls[2]
+
+
+def test_comment_action_only_comments(apply_runner):
+    proc, calls = apply_runner("comment")
+
+    assert proc.returncode == 0
+    assert len(calls) == 1
+    assert "pr comment 129" in calls[0]
+
+
+def test_needs_work_action_comments_and_labels_the_pr(apply_runner):
+    proc, calls = apply_runner("needs-work")
+
+    assert proc.returncode == 0
+    joined = "\n".join(calls)
+    assert "pr comment 129" in joined
+    assert "pr edit 129" in joined and "needs-work" in joined
+
+
+def test_merge_without_issue_still_merges(apply_runner):
+    proc, calls = apply_runner("merge", issue=None)
+
+    assert proc.returncode == 0
+    assert "pr merge 129" in "\n".join(calls)
+    assert json.loads(proc.stdout)["detail"] != ""
+
+
+def test_failed_merge_reports_json_and_exits_nonzero(apply_runner):
+    proc, _ = apply_runner("merge", fail_on="pr merge")
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "failed"
+    assert payload["pr"] == 129
+
+
+def test_unknown_action_is_rejected(apply_runner):
+    proc, calls = apply_runner("delete-everything")
+
+    assert proc.returncode == 1
+    assert calls == []          # nothing was touched
