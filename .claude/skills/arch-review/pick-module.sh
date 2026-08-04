@@ -59,7 +59,9 @@ discover_map() {
   fi
   if [ "$count" -gt 1 ]; then
     echo "pick-module: several module maps found, pass one explicitly:" >&2
-    printf '  %s\n' $found >&2
+    while IFS= read -r map_path; do
+      printf '  %s\n' "$map_path" >&2
+    done <<<"$found"
     return 1
   fi
   echo "pick-module: no module map found under $root" >&2
