@@ -132,7 +132,7 @@ the one this skill was invoked from — they are different whenever a map is pas
 outside. Resolve it once and pass it explicitly to every `gh` call:
 
 ```bash
-REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner -R "$(git -C "<map-dir>" rev-parse --show-toplevel)" 2>/dev/null \
+REPO="$(cd "<map-dir>" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null \
         || git -C "<map-dir>" remote get-url origin)"
 ```
 
