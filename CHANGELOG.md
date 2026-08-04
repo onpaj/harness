@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v0.17.1 (2026-08-04)
+
+### Bug Fixes
+
+- Applicationinsightsscan scripts auto-load repo-root .env for local runs
+  ([`5abfd1a`](https://github.com/onpaj/harness/commit/5abfd1a960279bca81c50e81ed7bfb29cf9ad801))
+
+Local/dev sessions with secrets stored in a repo's gitignored .env had to manually `source .env`
+  before every invocation because appinsights-query.sh, gh-api.sh, and telemetry-digest.sh only read
+  from the process environment. Each script now falls back to a repo-root .env (resolved 3 levels up
+  from the skill's install path at .claude/skills/applicationinsightsscan/) for any of its required
+  vars not already set. Real env vars — e.g. an automation that injects secrets directly — always
+  win over the .env file.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+
 ## v0.17.0 (2026-08-03)
 
 ### Features
