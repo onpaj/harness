@@ -12,7 +12,20 @@ MAX_CANDIDATES=20
 
 REPO="${GH_REPO:-}"
 if [ -z "$REPO" ]; then
-  REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+  # Same convention as .claude/skills/applicationinsightsscan/gh-api.sh's
+  # detect_repo(): parse `origin` directly rather than relying on gh's own
+  # remote-resolution heuristics.
+  url=$(git remote get-url origin 2>/dev/null) || { echo "cannot detect repo: no origin remote" >&2; exit 1; }
+  case "$url" in
+    *github.com*) ;;
+    *) echo "cannot detect repo: origin is not a github.com remote" >&2; exit 1 ;;
+  esac
+  REPO="${url#*github.com[:/]}"
+  REPO="${REPO%.git}"
+  REPO="${REPO%/}"
+  if [ -z "$REPO" ] || [[ "$REPO" != */* ]]; then
+    echo "cannot detect repo: could not parse origin URL" >&2; exit 1
+  fi
 fi
 
 gh pr list \
