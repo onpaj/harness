@@ -166,3 +166,101 @@ def test_candidate_reports_null_linked_issue_when_absent(candidate_runner):
     )
 
     assert result["candidate"]["linkedIssue"] is None
+
+
+# === finish_revision.sh tests ===
+
+GH_RECORDER = """\
+#!/usr/bin/env bash
+echo "$*" >> "$GH_LOG"
+if [ -n "${GH_FAIL_ON:-}" ] && [[ "$*" == *"$GH_FAIL_ON"* ]]; then
+  echo "${GH_FAIL_MESSAGE:-simulated gh failure}" >&2
+  exit 1
+fi
+exit 0
+"""
+
+
+@pytest.fixture
+def finish_runner(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(GH_RECORDER)
+    stub.chmod(0o755)
+
+    log = tmp_path / "gh.log"
+    summary = tmp_path / "summary.md"
+    summary.write_text("Fixed the missing test and clarified the retry loop.\n")
+
+    def run(pr=129, fail_on=None, fail_message=None):
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "GH_LOG": str(log),
+            "GH_REPO": "onpaj/harness",
+        }
+        if fail_on:
+            env["GH_FAIL_ON"] = fail_on
+        if fail_message:
+            env["GH_FAIL_MESSAGE"] = fail_message
+        cmd = [
+            str(SKILL_DIR / "finish_revision.sh"),
+            "--pr", str(pr), "--summary-file", str(summary),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        calls = log.read_text().splitlines() if log.exists() else []
+        log.write_text("")
+        return proc, calls
+
+    return run
+
+
+def test_success_comments_then_removes_label(finish_runner):
+    proc, calls = finish_runner()
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["pr"] == 129
+    # Order matters: the audit comment must land before the label edit.
+    assert "pr comment 129" in calls[0]
+    assert "pr edit 129" in calls[1] and "needs-work" in calls[1]
+
+
+def test_label_removal_failure_reports_failed_but_comment_still_posted(finish_runner):
+    proc, calls = finish_runner(fail_on="pr edit")
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "failed"
+    assert payload["pr"] == 129
+    assert "could not remove" in payload["detail"]
+    assert "pr comment 129" in "\n".join(calls)
+
+
+def test_comment_failure_reports_failed_and_label_is_never_touched(finish_runner):
+    proc, calls = finish_runner(fail_on="pr comment")
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "failed"
+    assert len(calls) == 1
+    assert "pr comment 129" in calls[0]
+    assert "pr edit" not in "\n".join(calls)
+
+
+def test_missing_pr_argument_is_rejected():
+    proc = subprocess.run(
+        [str(SKILL_DIR / "finish_revision.sh"), "--summary-file", "/dev/null"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 1
+
+
+def test_missing_summary_file_is_rejected(tmp_path):
+    proc = subprocess.run(
+        [str(SKILL_DIR / "finish_revision.sh"), "--pr", "129",
+         "--summary-file", str(tmp_path / "does-not-exist.md")],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 1
