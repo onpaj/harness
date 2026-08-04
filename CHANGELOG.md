@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.18.0 (2026-08-04)
+
+### Bug Fixes
+
+- Address review - quote ambiguous-map listing in pick-module.sh
+  ([`4ed139d`](https://github.com/onpaj/harness/commit/4ed139dd1b1da3722f353528c2d928311b8d95d2))
+
+Unquoted $found word-split newline-joined paths on whitespace, so the "several module maps found"
+  diagnostic printed garbled output for any repo path containing a space. Iterate with a quoted read
+  loop instead.
+
+- Address review - repair broken gh repo view invocation in arch-review
+  ([`91bf1bd`](https://github.com/onpaj/harness/commit/91bf1bd7288b5b097987ff6fd66d1ca2ba157635))
+
+gh repo view does not accept -R with a filesystem path, so this call failed silently on every run
+  (stderr redirected to /dev/null) and the git-remote fallback ran unconditionally instead of only
+  on failure. cd into the map's repo first so gh resolves it correctly.
+
+### Features
+
+- Add arch-map and arch-review skills for rolling architecture audits
+  ([`c24f301`](https://github.com/onpaj/harness/commit/c24f30135537b99bd637f94b2ed29daafb52cbde))
+
+Adds arch-map (module map generation/refresh) and arch-review (scoped read-only architecture review
+  that files GitHub issues per finding), plus the arch-review agent definition and module map for
+  this repo.
+
+
 ## v0.17.1 (2026-08-04)
 
 ### Bug Fixes
