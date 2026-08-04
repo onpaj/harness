@@ -132,3 +132,93 @@ def test_cli_exits_zero_on_garbage():
 
     assert proc.returncode == 0
     assert json.loads(proc.stdout)["valid"] is False
+
+
+# === Candidate selection tests ===
+
+GH_STUB = """\
+#!/usr/bin/env bash
+# Fake `gh` for tests: echoes the canned JSON in $GH_STUB_JSON.
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  cat "$GH_STUB_JSON"
+  exit 0
+fi
+exit 1
+"""
+
+
+@pytest.fixture
+def gh_stub(tmp_path):
+    """Put a fake `gh` on PATH; returns a function to set its canned output."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+
+    def run(pr_list):
+        payload = tmp_path / "prs.json"
+        payload.write_text(json.dumps(pr_list))
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "GH_STUB_JSON": str(payload),
+            "GH_REPO": "onpaj/harness",
+        }
+        proc = subprocess.run(
+            [str(SKILL_DIR / "candidates.sh")],
+            capture_output=True, text=True, env=env,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    return run
+
+
+def _pr(number, **overrides):
+    base = {
+        "number": number, "title": f"PR {number}", "isDraft": False,
+        "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
+        "headRefName": f"feature/{number}-Thing", "additions": 10,
+        "deletions": 2, "changedFiles": 2,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_clean_pr_is_a_candidate(gh_stub):
+    result = gh_stub([_pr(129)])
+
+    assert [c["number"] for c in result["candidates"]] == [129]
+    assert result["skipped"] == []
+    assert result["truncated"] == 0
+
+
+@pytest.mark.parametrize(
+    "overrides,reason",
+    [
+        ({"isDraft": True}, "draft"),
+        ({"mergeable": "CONFLICTING"}, "CONFLICTING"),
+        ({"mergeable": "UNKNOWN"}, "UNKNOWN"),
+        ({"reviewDecision": "CHANGES_REQUESTED"}, "CHANGES_REQUESTED"),
+    ],
+)
+def test_ineligible_prs_are_skipped_with_a_reason(gh_stub, overrides, reason):
+    result = gh_stub([_pr(112, **overrides)])
+
+    assert result["candidates"] == []
+    assert result["skipped"][0]["number"] == 112
+    assert reason in result["skipped"][0]["reason"]
+
+
+def test_empty_pr_list_yields_empty_candidates(gh_stub):
+    result = gh_stub([])
+
+    assert result["candidates"] == []
+    assert result["skipped"] == []
+
+
+def test_truncates_at_twenty_and_reports_the_remainder(gh_stub):
+    result = gh_stub([_pr(n) for n in range(1, 26)])
+
+    assert len(result["candidates"]) == 20
+    assert result["truncated"] == 5
