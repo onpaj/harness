@@ -33,21 +33,34 @@ gh pr list \
   --state open \
   --label "$AGENT_LABEL" \
   --limit 100 \
-  --json number,title,isDraft,mergeable,reviewDecision,headRefName,additions,deletions,changedFiles \
+  --json number,title,isDraft,mergeable,reviewDecision,headRefName,additions,deletions,changedFiles,body,labels \
 | jq --argjson max "$MAX_CANDIDATES" '
+    # Must match NEEDS_WORK_LABEL in apply_verdict.sh — the value is
+    # duplicated here (bash has no shared-constant mechanism across these
+    # standalone scripts, the same tradeoff already made for repo-detection
+    # logic), so keep both in sync if the label name ever changes.
+    def needs_work_label: "needs-work";
+
+    def has_label($name): (.labels // [] | map(.name) | any(. == $name));
+
     def reason:
       if .isDraft then "draft"
       elif .mergeable == "CONFLICTING" then "CONFLICTING (merge conflicts)"
       elif .mergeable == "UNKNOWN" then "UNKNOWN (mergeability not computed, retry)"
       elif .mergeable != "MERGEABLE" then "not mergeable: \(.mergeable)"
       elif .reviewDecision == "CHANGES_REQUESTED" then "CHANGES_REQUESTED"
+      elif has_label(needs_work_label) then "needs-work (rejected by a previous run)"
       else null end;
+
+    def linked_issue:
+      ([(.body // "") | scan("[Cc]loses #([0-9]+)")]) as $matches
+      | if ($matches | length) == 0 then null else ($matches[0][0] | tonumber) end;
 
     (map(select(reason == null))          | sort_by(.number)) as $ok
   | (map(select(reason != null))
       | map({number, reason: reason})     | sort_by(.number)) as $skipped
   | {
-      candidates: ($ok[:$max] | map({number, title, additions, changedFiles})),
+      candidates: ($ok[:$max] | map({number, title, additions, changedFiles, linkedIssue: linked_issue})),
       skipped: $skipped,
       truncated: (($ok | length) - $max | if . < 0 then 0 else . end)
     }

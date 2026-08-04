@@ -68,10 +68,16 @@ an `action` field, and `apply_verdict.sh` executes the action it is handed
 without knowing what a score is. Duplicating the boundary across a script and a
 prompt is how the two drift apart.
 
-The split matters: the subagent produces a **judgement**, the parent holds
-**authority**. No subagent can merge anything, so a prompt-injected or confused
-reviewer cannot write to `master` — the worst it can do is return a wrong score
-that the parent then acts on.
+The split separates judgement from authority in the design's intended flow: the
+parent never trusts a subagent's actions, only its final score text, and merge
+commands appear only in the parent's own scripts. This does **not** fully
+sandbox the subagent, however — `code-reviewer` subagents currently run with
+Bash access and the same `gh` credentials as the parent, so a subagent that
+follows an instruction injected into a PR's diff or title could execute `gh pr
+merge` (or any other command) itself, independent of the score it reports. A
+Bash-less reviewer, or passing the diff as inert text instead of granting the
+subagent its own `gh` access, would close this gap — until then, this is an
+accepted, stated risk, not a closed one.
 
 ### Why one subagent per PR
 

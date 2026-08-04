@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,12 @@ def _load_parser():
         "parse_verdict", SKILL_DIR / "parse_verdict.py"
     )
     module = importlib.util.module_from_spec(spec)
+    # Never write a __pycache__/*.pyc under the skill directory: that dir is
+    # byte-for-byte compared against agentharness/data/skills/automerge/ by
+    # test_packaged_skills.py, and a stray .pyc (untracked, not synced
+    # between the two copies) would fail that comparison on any fresh
+    # checkout or CI run.
+    sys.dont_write_bytecode = True
     spec.loader.exec_module(module)
     return module
 
@@ -179,7 +186,7 @@ def _pr(number, **overrides):
         "number": number, "title": f"PR {number}", "isDraft": False,
         "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
         "headRefName": f"feature/{number}-Thing", "additions": 10,
-        "deletions": 2, "changedFiles": 2,
+        "deletions": 2, "changedFiles": 2, "body": "", "labels": [],
     }
     base.update(overrides)
     return base
@@ -200,6 +207,7 @@ def test_clean_pr_is_a_candidate(gh_stub):
         ({"mergeable": "CONFLICTING"}, "CONFLICTING"),
         ({"mergeable": "UNKNOWN"}, "UNKNOWN"),
         ({"reviewDecision": "CHANGES_REQUESTED"}, "CHANGES_REQUESTED"),
+        ({"labels": [{"name": "needs-work"}]}, "needs-work"),
     ],
 )
 def test_ineligible_prs_are_skipped_with_a_reason(gh_stub, overrides, reason):
@@ -215,6 +223,18 @@ def test_empty_pr_list_yields_empty_candidates(gh_stub):
 
     assert result["candidates"] == []
     assert result["skipped"] == []
+
+
+def test_pr_with_closes_link_in_body_yields_linked_issue(gh_stub):
+    result = gh_stub([_pr(129, body="Fixes some stuff.\n\nCloses #118\n")])
+
+    assert result["candidates"][0]["linkedIssue"] == 118
+
+
+def test_pr_with_no_closes_link_yields_null_linked_issue(gh_stub):
+    result = gh_stub([_pr(129, body="No issue reference here.")])
+
+    assert result["candidates"][0]["linkedIssue"] is None
 
 
 def test_truncates_at_twenty_and_reports_the_remainder(gh_stub):
@@ -285,8 +305,29 @@ def test_merge_action_comments_then_merges_then_labels_issue(apply_runner):
     assert "pr comment 129" in calls[0]
     assert "pr merge 129" in calls[1]
     assert "--squash" in calls[1] and "--delete-branch" in calls[1]
-    assert "issue edit 118" in calls[2]
-    assert "agent-merged" in calls[2]
+    # The label is created defensively (best-effort, like needs-work's label)
+    # before it is applied to the issue.
+    joined = "\n".join(calls[2:])
+    assert "label create agent-merged" in joined
+    assert "issue edit 118" in joined
+    assert "agent-merged" in joined
+
+
+def test_merge_succeeds_even_when_issue_labelling_fails(apply_runner):
+    # The merge and branch deletion already happened by the time labelling
+    # runs — a labelling failure must be reported as "ok" with a caveat, not
+    # as a failed PR, or the orchestrator would tell the user a merge failed
+    # after master already moved.
+    proc, calls = apply_runner("merge", pr=129, issue=118, fail_on="issue edit")
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["pr"] == 129
+    assert "could not label issue #118" in payload["detail"]
+    joined = "\n".join(calls)
+    assert "pr merge 129" in joined
+    assert "issue edit 118" in joined
 
 
 def test_comment_action_only_comments(apply_runner):
@@ -347,3 +388,21 @@ def test_unknown_action_is_rejected(apply_runner):
 
     assert proc.returncode == 1
     assert calls == []          # nothing was touched
+
+
+# === SKILL.md / parser threshold drift guard ===
+
+
+def test_skill_md_prompt_thresholds_match_parser_constants():
+    # SKILL.md's reviewer-subagent prompt restates the thresholds in natural
+    # language (the subagent can't read a Python constant at runtime). That
+    # restatement must stay in sync with parse_verdict.py's actual constants,
+    # or the prompt and the parser silently disagree about the merge bar.
+    skill_md = (SKILL_DIR / "SKILL.md").read_text()
+
+    assert f"score >= {parser.MERGE_THRESHOLD}" in skill_md
+    assert (
+        f"COMMENT if {parser.NEEDS_WORK_THRESHOLD}-{parser.MERGE_THRESHOLD - 1}"
+        in skill_md
+    )
+    assert f"REJECT if < {parser.NEEDS_WORK_THRESHOLD}" in skill_md

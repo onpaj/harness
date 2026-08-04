@@ -91,9 +91,19 @@ case "$ACTION" in
       esac
     fi
     if [ -n "$ISSUE" ]; then
-      gh issue edit "$ISSUE" --repo "$REPO" --add-label "$MERGED_ISSUE_LABEL" \
-        || fail "merged, but could not label issue #$ISSUE"
-      report "ok" "squash-merged, branch deleted, issue #$ISSUE labelled"
+      # Label may not exist yet; creating it is best-effort and idempotent —
+      # mirrors the needs-work path so a missing label can't turn a
+      # successful merge into a reported failure.
+      gh label create "$MERGED_ISSUE_LABEL" --repo "$REPO" --color 0e8a16 \
+        --description "Auto-merged by /automerge" >/dev/null 2>&1 || true
+      if gh issue edit "$ISSUE" --repo "$REPO" --add-label "$MERGED_ISSUE_LABEL"; then
+        report "ok" "squash-merged, branch deleted, issue #$ISSUE labelled"
+      else
+        # The merge already succeeded — a labelling failure must not be
+        # reported as a failed PR, or the orchestrator would tell the user
+        # a merge failed after master already moved.
+        report "ok" "squash-merged, branch deleted, but could not label issue #$ISSUE"
+      fi
     else
       report "ok" "squash-merged, branch deleted, no linked issue to label"
     fi
