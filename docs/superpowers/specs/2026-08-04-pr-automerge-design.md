@@ -292,25 +292,30 @@ After the batch, print a table: PR, score, verdict, action taken. Plus the
 `skipped` and `errors` lists. This is the only output the user reads, so it must
 be complete — including what was *not* done and why.
 
-## Component 5: `oneshot` label fix
+## Component 5: `oneshot` label — already guaranteed, no change needed
 
-The merge skill keys entirely off the `agent` label, and **no PR in this repo
-currently carries any label**, including PRs merged after the
-`feature/pr-agent-label` work landed. Without this fix `/automerge` finds zero
-candidates forever.
+**Superseded during planning.** The original spec called for patching `oneshot`
+to apply the `agent` label. On inspection that work already exists:
+`.claude/skills/oneshot/ensure_pr_linked.sh` runs `gh pr edit --add-label
+agent`, verifies the label landed, and hard-fails if it did not. `oneshot`
+step 4 makes running it mandatory, and `tests/test_ensure_pr_linked.py` covers
+it.
 
-Patch `.claude/skills/oneshot/SKILL.md` so the PR-creation step applies the label
-at creation time and verifies it stuck:
+The unlabelled PRs observed in the repo (#112, #132, and the rest of recent
+history) were opened by hand, not by the pipeline — which is exactly the
+distinction the `agent` label is supposed to draw. The label filter is therefore
+already trustworthy, and this component is dropped from the work.
 
-```bash
-gh pr create --label agent ...
-gh pr edit {N} --add-label agent    # idempotent belt-and-braces if create dropped it
-```
+## Component 6: Packaging
 
-The label must exist in the repo first (`gh label create agent` — ignore error if
-present).
+`agentharness init` installs skills into a consumer repo by copying
+`agentharness/data/skills/`, and `tests/test_packaged_skills.py` asserts that
+this directory **mirrors `.claude/skills/` exactly, byte for byte**, with no
+symlinks.
 
-This is a prerequisite, not an optional extra: it ships in the same change.
+So the new skill must be copied to `agentharness/data/skills/automerge/` as
+real files in the same change. Skipping this does not degrade gracefully — it
+turns the existing packaging test red.
 
 ## Constants
 
@@ -381,5 +386,7 @@ Coverage target 80% per the repo standard, measured on `parse_verdict.py`.
 2. `.claude/skills/automerge/candidates.sh`
 3. `.claude/skills/automerge/parse_verdict.py`
 4. `.claude/skills/automerge/apply_verdict.sh`
-5. `.claude/skills/oneshot/SKILL.md` — patched to apply the `agent` label.
+5. `agentharness/data/skills/automerge/` — byte-identical copy of the above.
 6. `tests/test_automerge.py` — per the section above.
+
+No change to `oneshot` — see Component 5.
