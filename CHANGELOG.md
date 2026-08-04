@@ -1,6 +1,62 @@
 # CHANGELOG
 
 
+## v0.20.0 (2026-08-04)
+
+### Bug Fixes
+
+- Address final-review findings on /rework's candidate selection and SKILL.md
+  ([`8b74c4c`](https://github.com/onpaj/harness/commit/8b74c4cc99adc6a71957345fd6bc71b10d33ad4d))
+
+Whole-branch review fix wave for the /rework skill (tasks 1-4 already merged on this branch):
+
+- find_candidate.sh: filter out draft and CONFLICTING/UNKNOWN-mergeable PRs (mirroring
+  automerge/candidates.sh's own filter), so a needs-work PR that goes conflicted doesn't get picked,
+  revised, and pushed forever with /automerge silently skipping it every time. - find_candidate.sh:
+  require both the needs-work and agent labels, matching /automerge's own scope ("PRs /automerge
+  itself rejected") instead of any needs-work-labelled PR from any source, including forks. -
+  find_candidate.sh: paginate the issue-comments lookup so the revision- attempt cap doesn't
+  undercount on PRs with more than 30 comments. - SKILL.md: stop interpolating the PR's headRefName
+  directly into a shell assignment; capture find_candidate.sh's output to a file and read fields out
+  of it with jq instead. - SKILL.md: re-check the PR is still OPEN before checking out its branch,
+  so a PR merged/closed between find_candidate.sh and the push is reported as skipped rather than
+  pushed to. - tests/test_rework.py: extend the gh stub to record its full argv (like
+  finish_revision.sh's GH_RECORDER), add coverage for the new draft/ CONFLICTING/UNKNOWN/agent-label
+  filtering and the --paginate flag, and add the previously-missing "skip an ineligible PR, continue
+  to the next" test.
+
+Re-copied find_candidate.sh and SKILL.md into agentharness/data/skills/rework/ to keep the packaged
+  copy byte-identical (enforced by tests/test_packaged_skills.py). finish_revision.sh is unchanged.
+
+pytest tests/test_rework.py -v: 21 passed pytest tests/ -v: 241 passed, 2 skipped (pre-existing,
+  unrelated)
+
+### Documentation
+
+- Add /rework SKILL.md orchestration
+  ([`052e91f`](https://github.com/onpaj/harness/commit/052e91f867defd7732dbcef55072b5ce7f2fa021))
+
+- Add implementation plan for /rework needs-work PR revision skill
+  ([`6b0170a`](https://github.com/onpaj/harness/commit/6b0170aa31a2bb9507bca8b7aeb22c48c4d7f7fd))
+
+Records the design doc used to build the /rework skill (find_candidate.sh, finish_revision.sh,
+  SKILL.md) already merged in prior commits on this branch.
+
+- Design spec for /rework autonomous needs-work PR revision skill
+  ([`46fabbc`](https://github.com/onpaj/harness/commit/46fabbcf6396f357a4cf5e4ab083c38215c90351))
+
+### Features
+
+- Add /rework candidate selection script
+  ([`6a8b3c4`](https://github.com/onpaj/harness/commit/6a8b3c4dd5f230b7a8fde078e08f715f1ac80f9e))
+
+- Add /rework revision-finishing script
+  ([`48673a3`](https://github.com/onpaj/harness/commit/48673a35620bc1cfef92c007ca39f9349c6d0a4e))
+
+- Package /rework skill and document it in CLAUDE.md
+  ([`4170b51`](https://github.com/onpaj/harness/commit/4170b51a883769c5bf06cb23e93cd0658817a9bf))
+
+
 ## v0.19.0 (2026-08-04)
 
 ### Bug Fixes
