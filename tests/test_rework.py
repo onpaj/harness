@@ -14,13 +14,16 @@ SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "rework"
 GH_STUB = """\
 #!/usr/bin/env bash
 # Fake `gh` for tests: serves `pr list` from a canned file, and
-# `api repos/.../issues/N/comments` from per-PR canned comment files.
+# `api repos/.../issues/N/comments` from per-PR canned comment files. Also
+# records every invocation's full argv so tests can assert on the exact
+# flags find_candidate.sh passes.
+echo "$*" >> "$GH_STUB_LOG"
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
   cat "$GH_STUB_PR_LIST_JSON"
   exit 0
 fi
 if [ "$1" = "api" ]; then
-  n=$(echo "$2" | grep -oE 'issues/[0-9]+/comments' | grep -oE '[0-9]+')
+  n=$(echo "$*" | grep -oE 'issues/[0-9]+/comments' | grep -oE '[0-9]+')
   file="$GH_STUB_COMMENTS_DIR/$n.json"
   if [ -f "$file" ]; then cat "$file"; else echo "[]"; fi
   exit 0
@@ -41,6 +44,7 @@ def candidate_runner(tmp_path):
 
     comments_dir = tmp_path / "comments"
     comments_dir.mkdir()
+    log = tmp_path / "gh.log"
 
     def run(pr_list, comments_by_number=None):
         payload = tmp_path / "prs.json"
@@ -52,6 +56,7 @@ def candidate_runner(tmp_path):
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "GH_STUB_PR_LIST_JSON": str(payload),
             "GH_STUB_COMMENTS_DIR": str(comments_dir),
+            "GH_STUB_LOG": str(log),
             "GH_REPO": "onpaj/harness",
         }
         proc = subprocess.run(
@@ -59,7 +64,9 @@ def candidate_runner(tmp_path):
             capture_output=True, text=True, env=env,
         )
         assert proc.returncode == 0, proc.stderr
-        return json.loads(proc.stdout)
+        result = json.loads(proc.stdout)
+        result["_gh_calls"] = log.read_text().splitlines() if log.exists() else []
+        return result
 
     return run
 
@@ -68,6 +75,7 @@ def _needs_work_pr(number, created_at, **overrides):
     base = {
         "number": number, "title": f"PR {number}", "createdAt": created_at,
         "headRefName": f"feature/{number}-Thing", "body": "",
+        "isDraft": False, "mergeable": "MERGEABLE",
     }
     base.update(overrides)
     return base
@@ -166,6 +174,100 @@ def test_candidate_reports_null_linked_issue_when_absent(candidate_runner):
     )
 
     assert result["candidate"]["linkedIssue"] is None
+
+
+@pytest.mark.parametrize(
+    "overrides,reason",
+    [
+        ({"isDraft": True}, "draft"),
+        ({"mergeable": "CONFLICTING"}, "CONFLICTING"),
+        ({"mergeable": "UNKNOWN"}, "UNKNOWN"),
+    ],
+)
+def test_draft_or_unmergeable_prs_are_skipped_with_a_reason(
+    candidate_runner, overrides, reason
+):
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z", **overrides)],
+        {129: []},
+    )
+
+    assert result["candidate"] is None
+    assert result["skipped"][0]["number"] == 129
+    assert reason in result["skipped"][0]["reason"]
+
+
+def test_draft_pr_is_skipped_without_ever_fetching_its_comments(candidate_runner):
+    # A skip decided from isDraft/mergeable alone should not cost an extra
+    # `gh api .../comments` call for that PR.
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z", isDraft=True)],
+        {129: []},
+    )
+
+    assert result["candidate"] is None
+    assert not any("issues/129/comments" in call for call in result["_gh_calls"])
+
+
+def test_older_draft_pr_is_skipped_younger_eligible_pr_becomes_candidate(
+    candidate_runner,
+):
+    result = candidate_runner(
+        [
+            _needs_work_pr(129, "2026-08-01T00:00:00Z", isDraft=True),
+            _needs_work_pr(200, "2026-08-02T00:00:00Z"),
+        ],
+        {200: []},
+    )
+
+    assert result["candidate"]["number"] == 200
+    assert result["skipped"] == [{"number": 129, "reason": "draft"}]
+
+
+def test_older_at_cap_pr_is_skipped_younger_eligible_pr_becomes_candidate(
+    candidate_runner,
+):
+    # The promoted regression test: the for-loop's `continue` path (skip an
+    # ineligible PR, keep looking at the next one) must actually advance to
+    # the next candidate rather than stopping the walk.
+    result = candidate_runner(
+        [
+            _needs_work_pr(129, "2026-08-01T00:00:00Z"),
+            _needs_work_pr(200, "2026-08-02T00:00:00Z"),
+        ],
+        {129: [REJECT_COMMENT] * 3, 200: []},
+    )
+
+    assert result["candidate"]["number"] == 200
+    assert result["skipped"] == [
+        {"number": 129, "reason": "revision cap reached (3 attempts)"}
+    ]
+
+
+def test_pr_list_is_filtered_by_both_needs_work_and_agent_labels(candidate_runner):
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z")],
+        {129: []},
+    )
+
+    pr_list_calls = [c for c in result["_gh_calls"] if c.startswith("pr list")]
+    assert len(pr_list_calls) == 1
+    call = pr_list_calls[0]
+    assert "--label needs-work" in call
+    assert "--label agent" in call
+    assert "isDraft" in call and "mergeable" in call
+
+
+def test_comments_lookup_uses_paginate(candidate_runner):
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z")],
+        {129: []},
+    )
+
+    api_calls = [c for c in result["_gh_calls"] if c.startswith("api")]
+    assert len(api_calls) == 1
+    assert "--paginate" in api_calls[0]
+    assert "issues/129/comments" in api_calls[0]
 
 
 # === finish_revision.sh tests ===

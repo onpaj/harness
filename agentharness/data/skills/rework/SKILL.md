@@ -17,16 +17,20 @@ One PR per invocation. Run this skill again for the next one.
 ## 1. Find the candidate
 
 ```bash
-.claude/skills/rework/find_candidate.sh
+.claude/skills/rework/find_candidate.sh > /tmp/rework-candidate.json
 ```
 
-Returns `{"candidate": {...}|null, "skipped": [...]}`. `candidate` is the
-oldest open `needs-work` PR that has not hit the revision-attempt cap;
-`skipped` lists PRs that have and will never be picked. Do not second-guess
-the cap or try to rescue a skipped PR.
+Writes `{"candidate": {...}|null, "skipped": [...]}` to
+`/tmp/rework-candidate.json`. `candidate` is the oldest open `needs-work` PR
+that has not hit the revision-attempt cap; `skipped` lists PRs that have and
+will never be picked. Do not second-guess the cap or try to rescue a skipped
+PR. Read fields out of this file with `jq` in the steps below — never
+interpolate PR-derived text (like `headRefName`) directly into a shell
+string.
 
-If `candidate` is `null`, print `No needs-work PRs ready to revise.`, list
-`skipped` with reasons, and stop.
+If `candidate` is `null` (`jq -e '.candidate == null' /tmp/rework-candidate.json`),
+print `No needs-work PRs ready to revise.`, list `skipped` with reasons, and
+stop.
 
 ## 2. Check out the PR's branch
 
@@ -34,9 +38,23 @@ The PR's branch already exists — it was created by `oneshot`. Reuse its
 worktree convention rather than creating a new branch:
 
 ```bash
-HEAD_REF="{candidate.headRefName}"
+HEAD_REF=$(jq -r '.candidate.headRefName' /tmp/rework-candidate.json)
 WORKTREE="../worktrees/$(echo "$HEAD_REF" | sed 's#/#-#')"
+```
 
+Before touching the branch, confirm the PR is still open — it may have been
+merged or closed by a human between step 1 and now:
+
+```bash
+gh pr view {N} --json state --jq .state
+```
+
+If the result is not `OPEN`, report this PR as skipped (not pushed to) and
+**stop** — do not proceed to step 3 or beyond.
+
+Otherwise, check out the branch:
+
+```bash
 if [ -d "$WORKTREE" ]; then
   git -C "$WORKTREE" fetch origin "$HEAD_REF"
   git -C "$WORKTREE" reset --hard "origin/$HEAD_REF"

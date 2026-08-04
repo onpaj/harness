@@ -7,6 +7,11 @@ set -euo pipefail
 
 NEEDS_WORK_LABEL="needs-work"
 MAX_REVISION_ATTEMPTS=3
+# /automerge only ever labels PRs that already carry `agent` (see
+# automerge/candidates.sh's own `--label agent` filter), so this keeps
+# eligibility here to "PRs /automerge itself rejected" rather than any
+# needs-work-labelled PR from any source (human-labelled, a fork PR, etc.).
+AGENT_LABEL="agent"
 
 REPO="${GH_REPO:-}"
 if [ -z "$REPO" ]; then
@@ -29,8 +34,9 @@ prs_json=$(gh pr list \
   --repo "$REPO" \
   --state open \
   --label "$NEEDS_WORK_LABEL" \
+  --label "$AGENT_LABEL" \
   --limit 100 \
-  --json number,title,createdAt,headRefName,body)
+  --json number,title,createdAt,headRefName,body,isDraft,mergeable)
 
 sorted_numbers=$(echo "$prs_json" | jq -r 'sort_by(.createdAt) | .[].number')
 
@@ -38,7 +44,34 @@ candidate="null"
 skipped="[]"
 
 for n in $sorted_numbers; do
-  comments_json=$(gh api "repos/$REPO/issues/$n/comments")
+  pr_obj=$(echo "$prs_json" | jq --argjson n "$n" '.[] | select(.number == $n)')
+  is_draft=$(echo "$pr_obj" | jq -r '.isDraft')
+  mergeable=$(echo "$pr_obj" | jq -r '.mergeable')
+
+  # Draft/conflicted/unresolved-mergeability PRs are out of scope (see the
+  # design spec's Scope section), mirroring automerge/candidates.sh's own
+  # draft/CONFLICTING/UNKNOWN filter.
+  if [ "$is_draft" = "true" ]; then
+    skipped=$(echo "$skipped" | jq --argjson n "$n" \
+      '. + [{number: $n, reason: "draft"}]')
+    continue
+  fi
+  if [ "$mergeable" = "CONFLICTING" ]; then
+    skipped=$(echo "$skipped" | jq --argjson n "$n" \
+      '. + [{number: $n, reason: "CONFLICTING (merge conflicts)"}]')
+    continue
+  fi
+  if [ "$mergeable" = "UNKNOWN" ]; then
+    skipped=$(echo "$skipped" | jq --argjson n "$n" \
+      '. + [{number: $n, reason: "UNKNOWN (mergeability not computed, retry)"}]')
+    continue
+  fi
+
+  # --paginate: GitHub defaults to 30 comments/page, oldest first, so on any
+  # PR with more than 30 comments the most recent `verdict: REJECT` blocks
+  # would otherwise sit on pages that are never fetched, undercounting
+  # attempts and letting the cap never trip.
+  comments_json=$(gh api --paginate "repos/$REPO/issues/$n/comments")
   attempts=$(echo "$comments_json" \
     | jq '[.[].body // "" | select(test("verdict:\\s*REJECT"))] | length')
 
@@ -48,7 +81,6 @@ for n in $sorted_numbers; do
     continue
   fi
 
-  pr_obj=$(echo "$prs_json" | jq --argjson n "$n" '.[] | select(.number == $n)')
   candidate=$(echo "$pr_obj" | jq --argjson a "$attempts" '
     def linked_issue:
       ([(.body // "") | scan("[Cc]loses #([0-9]+)")]) as $matches
