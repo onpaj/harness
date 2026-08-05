@@ -1,4 +1,4 @@
-"""Tests for the /rework skill scripts."""
+"""Tests for the /rework-pr skill scripts."""
 import json
 import subprocess
 from pathlib import Path
