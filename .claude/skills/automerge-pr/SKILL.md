@@ -16,7 +16,15 @@ itself.
 ## 1. Resolve the target PR
 
 If a PR number was given in your invocation, use it as `{N}`. Otherwise,
-find the oldest (lowest-numbered) open `agent` PR:
+check whether the branch you're currently on already has an open PR — if
+so, treat it as the target, the same as an explicit number:
+
+```bash
+gh pr view --json number,state -q 'select(.state == "OPEN") | .number' 2>/dev/null
+```
+
+If that prints a number, use it as `{N}` and skip the candidate search
+below. Otherwise, find the oldest (lowest-numbered) open `agent` PR:
 
 ```bash
 .claude/skills/automerge-pr/candidates.sh
