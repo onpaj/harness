@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.24.1 (2026-08-05)
+
+### Bug Fixes
+
+- Don't dock score for tests CI already verified
+  ([`9847e30`](https://github.com/onpaj/harness/commit/9847e30b8227d78f678a1299100ce88d0f7b487f))
+
+The reviewer subagent can't execute container/integration tests itself, but was docking -25 "cannot
+  verify correctness" for behavior those tests exercise anyway. CI is already confirmed green before
+  review starts (step 2) — a red run would have flagged the PR needs-work already, so a green one is
+  the proof, regardless of what kind of test produced it.
+
+
 ## v0.24.0 (2026-08-05)
 
 ### Features
