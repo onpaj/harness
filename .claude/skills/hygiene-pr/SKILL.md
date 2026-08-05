@@ -1,6 +1,6 @@
 ---
 name: hygiene-pr
-description: Bring one PR's branch current with its base branch, confirm CI passes, and flag it needs-work with a comment if it can't be — without ever reviewing or merging it. Use when the user says "hygiene-pr", "update this PR's branch", "check if PR N is current and green", or asks to fix one PR's staleness/CI without a full review.
+description: Bring one PR's branch current with its base branch, confirm CI passes, and flag it needs-work with a comment if it can't be — without ever reviewing or merging it. Backmerges only if the PR actually needs it unless told to force it regardless. Use when the user says "hygiene-pr", "update this PR's branch", "check if PR N is current and green", "backmerge PR N" (optionally "force"/"no matter what"), or asks to fix one PR's staleness/CI without a full review.
 ---
 
 You bring one PR up to date with its base branch and confirm CI is green.
@@ -35,22 +35,31 @@ print `No agent PRs to check.` and stop.
 
 ## 2. Run the check
 
+By default, the backmerge (`gh pr update-branch`) only happens if this PR
+actually needs one — behind its base or conflicting. If the invocation
+explicitly asked to force it (e.g. "force", "no matter what", `--force`),
+add `--force`:
+
 ```bash
-.claude/skills/hygiene-pr/update_and_wait.sh --pr {N}
+.claude/skills/hygiene-pr/update_and_wait.sh --pr {N} [--force]
 ```
 
 This single call does everything: reads the PR's current mergeable/behind/
 CI state; if CI is already running from some earlier push, reports that
 and stops immediately with no side effects at all (not even a branch
-update — forcing one would cancel the run in progress); otherwise updates
-the branch if it's actually behind or conflicting, polls the CI it just
-triggered to resolution if needed, and — if it ends up `still-failing` or
-`conflict` — labels the PR `needs-work` and posts a comment explaining why,
-via the same `apply_verdict.sh --action needs-work` mechanism
-`/automerge-pr` uses for a code-review rejection. Every other status
-(`already-clean`, `fixed`, `ci-running`, `pending-timeout`, `error`) has no
-side effects beyond, at most, the `gh pr update-branch` call. Parse its
-JSON output.
+update — forcing one would cancel the run in progress) — **unless**
+`--force` was passed, which skips that bailout and proceeds anyway,
+accepting that it cancels the in-flight run. Otherwise it updates the
+branch if it's actually behind or conflicting (never happens under
+`--force` alone — `--force` only overrides the CI-running bailout, it
+never triggers an update-branch call on a PR that's already current, since
+there'd be nothing to merge), polls the CI it's now responsible for to
+resolution, and — if it ends up `still-failing` or `conflict` — labels the
+PR `needs-work` and posts a comment explaining why, via the same
+`apply_verdict.sh --action needs-work` mechanism `/automerge-pr` uses for a
+code-review rejection. Every other status (`already-clean`, `fixed`,
+`ci-running`, `pending-timeout`, `error`) has no side effects beyond, at
+most, the `gh pr update-branch` call. Parse its JSON output.
 
 Staleness is decided from two independent signals: GitHub's
 `mergeStateStatus == "BEHIND"`, **and** `behind_by` from the compare API.
@@ -92,7 +101,12 @@ The poll window is bounded — a PR whose CI genuinely takes longer than
 `pending-timeout`, not failure. Run this skill again later to re-check.
 That poll loop only ever runs for CI this run itself triggered (via
 `gh pr update-branch`) — CI already running when this run started reports
-`ci-running` and returns immediately, no polling at all.
+`ci-running` and returns immediately, no polling at all, *unless* `--force`
+was passed, in which case it cancels that run and proceeds anyway. Default
+(no `--force`) is the right mode for a scheduled sweep — it only ever
+touches a PR that actually needs it and never fights a build already in
+flight. `--force` is for an explicit, on-demand "do it anyway" request; it
+still never invokes `gh pr update-branch` on a PR with nothing to merge.
 
 `conflict` means `gh pr update-branch` could not resolve a real merge
 conflict — that needs judgement. This skill does not attempt one; it just
