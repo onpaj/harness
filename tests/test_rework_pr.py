@@ -330,6 +330,100 @@ def test_live_labels_confirmed_pr_is_still_a_candidate(candidate_runner):
     assert result["candidate"]["number"] == 129
 
 
+# === list_candidates.sh tests ===
+
+
+@pytest.fixture
+def list_candidate_runner(tmp_path):
+    """Same fake `gh` as candidate_runner, but drives list_candidates.sh."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+
+    comments_dir = tmp_path / "comments"
+    comments_dir.mkdir()
+
+    def run(pr_list, comments_by_number=None):
+        payload = tmp_path / "prs.json"
+        payload.write_text(json.dumps(pr_list))
+        for number, bodies in (comments_by_number or {}).items():
+            comment_objs = [{"body": b} for b in bodies]
+            (comments_dir / f"{number}.json").write_text(json.dumps(comment_objs))
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "GH_STUB_PR_LIST_JSON": str(payload),
+            "GH_STUB_COMMENTS_DIR": str(comments_dir),
+            "GH_STUB_LOG": str(tmp_path / "gh.log"),
+            "GH_REPO": "onpaj/harness",
+        }
+        proc = subprocess.run(
+            [str(SKILL_DIR / "list_candidates.sh")],
+            capture_output=True, text=True, env=env,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    return run
+
+
+def test_all_eligible_prs_are_returned_oldest_first(list_candidate_runner):
+    result = list_candidate_runner(
+        [
+            _needs_work_pr(200, "2026-08-05T00:00:00Z"),
+            _needs_work_pr(129, "2026-08-01T00:00:00Z"),
+        ],
+        {129: [], 200: []},
+    )
+
+    assert [c["number"] for c in result["candidates"]] == [129, 200]
+    assert result["skipped"] == []
+
+
+def test_list_still_excludes_agent_wip_and_stale_and_cap(list_candidate_runner):
+    result = list_candidate_runner(
+        [
+            _needs_work_pr(1, "2026-08-01T00:00:00Z",
+                            labels=[{"name": "needs-work"}, {"name": "agent"}, {"name": "agent-wip"}]),
+            _needs_work_pr(2, "2026-08-02T00:00:00Z", labels=[{"name": "agent"}]),
+            _needs_work_pr(3, "2026-08-03T00:00:00Z"),
+            _needs_work_pr(4, "2026-08-04T00:00:00Z"),
+        ],
+        {2: [], 3: [REJECT_COMMENT] * 3, 4: []},
+    )
+
+    assert [c["number"] for c in result["candidates"]] == [4]
+    reasons = {s["number"]: s["reason"] for s in result["skipped"]}
+    assert reasons[1] == "claimed by an in-progress rework-pr run"
+    assert "stale search match" in reasons[2]
+    assert "revision cap reached" in reasons[3]
+
+
+def test_list_includes_conflicting_prs(list_candidate_runner):
+    result = list_candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z", mergeable="CONFLICTING")],
+        {129: []},
+    )
+
+    assert [c["number"] for c in result["candidates"]] == [129]
+
+
+def test_empty_needs_work_list_yields_empty_candidates(list_candidate_runner):
+    result = list_candidate_runner([])
+
+    assert result["candidates"] == []
+    assert result["skipped"] == []
+
+
+def test_truncates_at_twenty_and_reports_the_remainder(list_candidate_runner):
+    prs = [_needs_work_pr(n, f"2026-08-01T00:00:{n:02d}Z") for n in range(1, 26)]
+    result = list_candidate_runner(prs, {n: [] for n in range(1, 26)})
+
+    assert len(result["candidates"]) == 20
+    assert result["truncated"] == 5
+
+
 # === finish_revision.sh tests ===
 
 GH_RECORDER = """\
