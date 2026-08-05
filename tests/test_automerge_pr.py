@@ -209,6 +209,7 @@ def test_clean_pr_is_a_candidate(gh_stub):
         ({"mergeable": "UNKNOWN"}, "UNKNOWN"),
         ({"reviewDecision": "CHANGES_REQUESTED"}, "CHANGES_REQUESTED"),
         ({"labels": [{"name": "needs-work"}]}, "needs-work"),
+        ({"labels": [{"name": "human-required"}]}, "human-required"),
     ],
 )
 def test_ineligible_prs_are_skipped_with_a_reason(gh_stub, overrides, reason):
@@ -355,12 +356,27 @@ def test_merge_succeeds_even_when_issue_labelling_fails(apply_runner):
     assert "issue edit 118" in joined
 
 
-def test_comment_action_only_comments(apply_runner):
+def test_comment_action_comments_and_flags_human_required(apply_runner):
     proc, calls = apply_runner("comment")
 
     assert proc.returncode == 0
-    assert len(calls) == 1
+    joined = "\n".join(calls)
     assert "pr comment 129" in calls[0]
+    assert "label create human-required" in joined
+    assert "pr edit 129" in joined and "human-required" in joined
+
+
+def test_comment_action_still_ok_when_labelling_fails(apply_runner):
+    # The comment is the audit trail and already landed by the time labelling
+    # runs — a labelling failure must not turn a successful comment into a
+    # reported failure, same rule as the merge/issue-labelling path.
+    proc, calls = apply_runner("comment", fail_on="pr edit")
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert "could not add human-required label" in payload["detail"]
+    assert "pr comment 129" in "\n".join(calls)
 
 
 def test_needs_work_action_comments_and_labels_the_pr(apply_runner):
