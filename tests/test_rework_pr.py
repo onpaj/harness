@@ -426,3 +426,26 @@ def test_missing_summary_file_is_rejected(tmp_path):
         capture_output=True, text=True,
     )
     assert proc.returncode == 1
+
+
+def test_success_removes_both_needs_work_and_agent_wip_labels(finish_runner):
+    proc, calls = finish_runner()
+
+    assert proc.returncode == 0
+    joined = "\n".join(calls)
+    assert "pr edit 129" in joined and "needs-work" in joined
+    assert "agent-wip" in joined
+
+
+def test_agent_wip_removal_failure_reports_failed(finish_runner):
+    proc, calls = finish_runner(fail_on="agent-wip")
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "failed"
+    assert "agent-wip" in payload["detail"]
+    # The comment and the needs-work removal already happened by the time
+    # the agent-wip removal runs — those must not be undone or hidden.
+    joined = "\n".join(calls)
+    assert "pr comment 129" in joined
+    assert "needs-work" in joined

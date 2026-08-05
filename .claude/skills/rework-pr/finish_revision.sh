@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Remove needs-work and post the audit comment for one revised PR.
+# Remove needs-work and agent-wip, and post the audit comment, for one
+# revised PR.
 #
 #   finish_revision.sh --pr N --summary-file PATH
 #
@@ -8,6 +9,7 @@
 set -uo pipefail
 
 NEEDS_WORK_LABEL="needs-work"
+AGENT_WIP_LABEL="agent-wip"
 
 PR=""; SUMMARY_FILE=""
 
@@ -42,12 +44,15 @@ if [ -z "$REPO" ]; then
   [ -n "$REPO" ] && [[ "$REPO" == */* ]] || fail "cannot detect repo: could not parse origin URL"
 fi
 
-# Post the audit comment before touching the label, so the trail exists even
-# if the label edit below fails.
+# Post the audit comment before touching either label, so the trail exists
+# even if a label edit below fails.
 gh pr comment "$PR" --repo "$REPO" --body-file "$SUMMARY_FILE" \
   || fail "could not post revision summary comment"
 
 gh pr edit "$PR" --repo "$REPO" --remove-label "$NEEDS_WORK_LABEL" \
   || fail "revision summary posted, but could not remove $NEEDS_WORK_LABEL label"
 
-report "ok" "revision summary posted, $NEEDS_WORK_LABEL removed"
+gh pr edit "$PR" --repo "$REPO" --remove-label "$AGENT_WIP_LABEL" \
+  || fail "revision summary posted and $NEEDS_WORK_LABEL removed, but could not remove $AGENT_WIP_LABEL label"
+
+report "ok" "revision summary posted, $NEEDS_WORK_LABEL and $AGENT_WIP_LABEL removed"
