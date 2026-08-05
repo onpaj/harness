@@ -71,8 +71,18 @@ regardless** — one failure never aborts the batch.
 
 ## 5. Report
 
-Print a table of every PR: number, hygiene outcome, score (if reviewed),
-verdict, action taken. Then list:
+Print a table of every PR, one row each, with these columns:
+
+| PR | created | hygiene outcome | score | verdict | action |
+|----|---------|-----------------|-------|---------|--------|
+
+`created` is the `createdAt` field from step 1's candidate object — how long
+a PR has been sitting is what tells a human whether the backlog is draining
+or just churning. (Ordering stays ascending PR number, matching step 4's
+serial-apply order; `createdAt` is reported, not sorted on.) `score` is
+blank for a PR that never reached review.
+
+Then list:
 
 - `skipped` from step 1, with reasons
 - every `HYGIENE_REJECTED` and `SKIPPED` PR from step 3
