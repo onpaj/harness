@@ -81,16 +81,12 @@ def _read_env_file(env_file: Path) -> dict[str, str]:
     return existing
 
 
-def _write_env(target: Path, force: bool) -> None:
+def _write_env(target: Path) -> None:
     env_file = target / ".env"
     existing = _read_env_file(env_file)
     detected = _detect_github_env(target)
     KEYS = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_RUNS_REPO"]
-    missing = [k for k in KEYS if k not in existing]
-    if not missing and not force:
-        console.print("[dim]skip[/dim] .env (all values already present)")
-        return
-    keys_to_set = KEYS if force else missing
+    keys_to_set = KEYS
     console.print(f"\n[bold]Environment setup[/bold] ({'updating' if existing else 'creating'} .env)")
     new_values: dict[str, str] = {}
     for key in keys_to_set:
@@ -131,7 +127,7 @@ def brainstorm() -> None:
     start_brainstorm()
 
 
-def _copy_dir(src: Path, dst: Path, target: Path, force: bool) -> None:
+def _copy_dir(src: Path, dst: Path, target: Path) -> None:
     if not src.exists():
         return
     dst.mkdir(parents=True, exist_ok=True)
@@ -139,21 +135,24 @@ def _copy_dir(src: Path, dst: Path, target: Path, force: bool) -> None:
         if not src_file.is_file():
             continue
         dst_file = dst / src_file.name
-        if dst_file.exists() and not force:
-            console.print(f"[dim]skip[/dim] {dst_file.relative_to(target)}")
-            continue
         shutil.copy2(src_file, dst_file)
         console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
 
 
 @main.command("init")
 @click.option("--dir", "target_dir", default=".", show_default=True, type=click.Path())
-@click.option("--force", is_flag=True, help="Overwrite existing files")
+@click.option(
+    "--force",
+    is_flag=True,
+    hidden=True,
+    help="No-op, kept for backward compatibility — init always overwrites now.",
+)
 def init_project(target_dir: str, force: bool) -> None:
     """Install agent definitions, skills, and pipeline config into a project directory.
 
     Files are copied into the target repo's standard locations and are meant to be
-    committed to the consumer repo's source control.
+    committed to the consumer repo's source control. Always overwrites existing files
+    with the installed package's version — commit or stash local customizations first.
     """
     data_root = Path(__file__).parent / "data"
     target = Path(target_dir).resolve()
@@ -175,11 +174,11 @@ def init_project(target_dir: str, force: bool) -> None:
             if src_dir.exists():
                 for entry in src_dir.iterdir():
                     if entry.is_dir():
-                        _copy_dir(entry, dst_dir / entry.name, target, force)
+                        _copy_dir(entry, dst_dir / entry.name, target)
         else:
-            _copy_dir(src_dir, dst_dir, target, force)
+            _copy_dir(src_dir, dst_dir, target)
 
-    _write_env(target, force)
+    _write_env(target)
     console.print("\n[bold]Done.[/bold] Run [bold]/oneshot <issue-number>[/bold] in Claude Code to start the pipeline.")
 
 

@@ -15,29 +15,28 @@ def test_init_installs_orchestrator_agent(tmp_path):
     assert agent_file.exists(), f"orchestrator.md not installed. Output: {result.output}"
 
 
-def test_init_skips_existing_without_force(tmp_path):
-    runner = CliRunner()
-    with patch("agentharness.cli._write_env"):
-        # First run
-        runner.invoke(main, ["init", "--dir", str(tmp_path)])
-        skill_file = tmp_path / ".claude" / "agents" / "orchestrator.md"
-        original_mtime = skill_file.stat().st_mtime
-        # Second run without --force
-        runner.invoke(main, ["init", "--dir", str(tmp_path)])
-    assert skill_file.stat().st_mtime == original_mtime  # not overwritten
-
-
-def test_init_overwrites_with_force(tmp_path):
+def test_init_overwrites_existing_by_default(tmp_path):
     runner = CliRunner()
     with patch("agentharness.cli._write_env"):
         runner.invoke(main, ["init", "--dir", str(tmp_path)])
         skill_file = tmp_path / ".claude" / "agents" / "orchestrator.md"
         # Modify it
         skill_file.write_text("modified")
-        # Re-run with --force
-        runner.invoke(main, ["init", "--dir", str(tmp_path), "--force"])
-    # Should be restored to original
+        # Re-run init
+        runner.invoke(main, ["init", "--dir", str(tmp_path)])
+    # Should be restored to the packaged version
     assert skill_file.read_text() != "modified"
+
+
+def test_init_accepts_legacy_force_flag_as_noop(tmp_path):
+    runner = CliRunner()
+    with patch("agentharness.cli._write_env"):
+        result = runner.invoke(
+            main, ["init", "--dir", str(tmp_path), "--force"], catch_exceptions=False
+        )
+    assert result.exit_code == 0
+    agent_file = tmp_path / ".claude" / "agents" / "orchestrator.md"
+    assert agent_file.exists()
 
 
 def test_init_prints_updated_message(tmp_path):
