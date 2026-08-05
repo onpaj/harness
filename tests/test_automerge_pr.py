@@ -18,7 +18,7 @@ def _load_parser():
     )
     module = importlib.util.module_from_spec(spec)
     # Never write a __pycache__/*.pyc under the skill directory: that dir is
-    # byte-for-byte compared against agentharness/data/skills/automerge/ by
+    # byte-for-byte compared against agentharness/data/skills/automerge-pr/ by
     # test_packaged_skills.py, and a stray .pyc (untracked, not synced
     # between the two copies) would fail that comparison on any fresh
     # checkout or CI run.
