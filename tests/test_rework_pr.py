@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "rework"
+SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "rework-pr"
 
 
 # === find_candidate.sh tests ===
