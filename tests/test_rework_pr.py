@@ -76,6 +76,7 @@ def _needs_work_pr(number, created_at, **overrides):
         "number": number, "title": f"PR {number}", "createdAt": created_at,
         "headRefName": f"feature/{number}-Thing", "body": "",
         "isDraft": False, "mergeable": "MERGEABLE",
+        "labels": [{"name": "needs-work"}, {"name": "agent"}],
     }
     base.update(overrides)
     return base
@@ -180,7 +181,6 @@ def test_candidate_reports_null_linked_issue_when_absent(candidate_runner):
     "overrides,reason",
     [
         ({"isDraft": True}, "draft"),
-        ({"mergeable": "CONFLICTING"}, "CONFLICTING"),
         ({"mergeable": "UNKNOWN"}, "UNKNOWN"),
     ],
 )
@@ -268,6 +268,66 @@ def test_comments_lookup_uses_paginate(candidate_runner):
     assert len(api_calls) == 1
     assert "--paginate" in api_calls[0]
     assert "issues/129/comments" in api_calls[0]
+
+
+def test_conflicting_pr_is_no_longer_skipped(candidate_runner):
+    # rework-pr now resolves real conflicts itself (via merge, see SKILL.md
+    # step 5) — CONFLICTING is eligible, not a permanent skip.
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z", mergeable="CONFLICTING")],
+        {129: []},
+    )
+
+    assert result["candidate"]["number"] == 129
+    assert result["skipped"] == []
+
+
+def test_pr_claimed_by_agent_wip_is_skipped_without_fetching_comments(candidate_runner):
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z",
+                         labels=[{"name": "needs-work"}, {"name": "agent"}, {"name": "agent-wip"}])],
+        {129: []},
+    )
+
+    assert result["candidate"] is None
+    assert result["skipped"] == [
+        {"number": 129, "reason": "claimed by an in-progress rework-pr run"}
+    ]
+    assert not any("issues/129/comments" in call for call in result["_gh_calls"])
+
+
+def test_stale_search_match_missing_needs_work_label_live_is_skipped(candidate_runner):
+    # gh pr list --label filters via a search index that can lag; the live
+    # .labels field is the source of truth.
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z", labels=[{"name": "agent"}])],
+        {129: []},
+    )
+
+    assert result["candidate"] is None
+    assert result["skipped"] == [
+        {"number": 129, "reason": "stale search match (no longer carries needs-work+agent live)"}
+    ]
+
+
+def test_stale_search_match_missing_agent_label_live_is_skipped(candidate_runner):
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z", labels=[{"name": "needs-work"}])],
+        {129: []},
+    )
+
+    assert result["candidate"] is None
+    assert result["skipped"][0]["reason"] == "stale search match (no longer carries needs-work+agent live)"
+
+
+def test_live_labels_confirmed_pr_is_still_a_candidate(candidate_runner):
+    result = candidate_runner(
+        [_needs_work_pr(129, "2026-08-01T00:00:00Z",
+                         labels=[{"name": "needs-work"}, {"name": "agent"}])],
+        {129: []},
+    )
+
+    assert result["candidate"]["number"] == 129
 
 
 # === finish_revision.sh tests ===
