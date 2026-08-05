@@ -1,6 +1,7 @@
-"""Tests for the /automerge skill scripts."""
+"""Tests for the /automerge-pr skill scripts."""
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -413,3 +414,24 @@ def test_skill_md_prompt_thresholds_match_parser_constants():
         in skill_md
     )
     assert f"REJECT if < {parser.NEEDS_WORK_THRESHOLD}" in skill_md
+
+
+def test_skill_md_hygiene_auto_reject_block_emits_a_countable_verdict_line():
+    # rework-pr/find_candidate.sh and list_candidates.sh count a PR's prior
+    # rejections toward MAX_REVISION_ATTEMPTS by matching comment bodies
+    # against `verdict:\s*REJECT`. The hygiene auto-reject block SKILL.md
+    # tells the agent to post must match that same pattern, or a PR with a
+    # permanently broken build bounces between /automerge-pr and /rework-pr
+    # forever without ever hitting the cap.
+    skill_md = (SKILL_DIR / "SKILL.md").read_text()
+
+    marker = "Hygiene check failed for this PR before code review"
+    assert marker in skill_md, "hygiene auto-reject block is gone or was reworded"
+    block = skill_md[skill_md.index(marker):]
+    block = block[: block.index("```")]
+
+    # Same regex find_candidate.sh / list_candidates.sh use.
+    assert re.search(r"verdict:\s*REJECT", block), (
+        "hygiene auto-reject block no longer emits a `verdict: REJECT` line; "
+        "rework-pr's revision-attempt cap would stop counting it"
+    )
