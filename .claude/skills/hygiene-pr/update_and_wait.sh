@@ -12,10 +12,20 @@
 #   update_and_wait.sh --pr N
 #
 # Emits JSON: {"pr": N, "status": "already-clean|fixed|still-failing|
-#              conflict|pending-timeout|error", "detail": "..."}
+#              conflict|ci-running|pending-timeout|error", "detail": "..."}
 # Always exits 0 once arguments validate — this script reports, it never
 # fails the caller over a PR-hygiene outcome. (A missing/unknown argument
 # still exits 1, matching the sibling scripts' convention.)
+#
+# `ci-running` vs `pending-timeout`: if CI is already mid-flight on read —
+# from some earlier push this run didn't cause — this script does not touch
+# the PR at all (no update-branch call) and reports `ci-running` immediately;
+# forcing an update-branch here would cancel a build already in progress for
+# no reason, and there's no telling how much longer it has left to run. A
+# caller should just retry on its next sweep. `pending-timeout` is different:
+# it only happens after THIS run performed an update-branch (or found the
+# branch already current) and then polled the CI it's responsible for past
+# POLL_MAX_ATTEMPTS.
 set -uo pipefail
 
 NEEDS_WORK_SCRIPT=".claude/skills/automerge-pr/apply_verdict.sh"
@@ -141,6 +151,14 @@ behind=$(behind_count "$base_ref" "$head_ref")
 is_conflicting=false
 [ "$mergeable" = "CONFLICTING" ] && is_conflicting=true
 
+# CI already mid-flight, from a push this run had nothing to do with — skip
+# entirely, no update-branch, no polling. Checked before any other decision:
+# an update-branch on top of a running check would just cancel it.
+if [ "$ci_state" = "pending" ]; then
+  report "ci-running" "CI checks are already running from a prior push; skipping so this run doesn't cancel them — retry on the next sweep"
+  exit 0
+fi
+
 did_update=false
 
 if ! $is_behind && ! $is_conflicting; then
@@ -149,9 +167,6 @@ if ! $is_behind && ! $is_conflicting; then
       report "already-clean" "branch is current, checks are $ci_state"; exit 0 ;;
     failure)
       report_and_flag_needs_work "still-failing" "branch is current with base, but checks are failing" ;;
-    pending)
-      : # already current — fall through to the poll loop without updating
-      ;;
   esac
 else
   if ! update_err=$(gh pr update-branch "$PR" --repo "$REPO" 2>&1); then

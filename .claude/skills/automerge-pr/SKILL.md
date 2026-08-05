@@ -57,6 +57,10 @@ Branch on its `status`:
   same durable trail even when run standalone. Do not post anything
   yourself. Report this PR (number, hygiene status, action: `needs-work`)
   and stop — do not proceed to step 3 for this PR.
+- **`ci-running`** → report this PR as skipped (`CI already running from a
+  prior push, retry later`) and stop. Nothing was touched this run — no
+  branch update, no polling — precisely so a build already in flight isn't
+  cancelled by this call.
 - **`pending-timeout`** → report this PR as skipped
   (`CI checks pending, retry later`) and stop.
 - **`error`** → report this PR as skipped
@@ -163,6 +167,16 @@ State: PR number, hygiene outcome (`none` if step 2 wasn't reached because
 you took an explicit-PR-number fast path — this should not happen, step 2
 always runs — otherwise the `status` from step 2), score, verdict, action
 taken (or `deferred to caller` in orchestrated mode).
+
+`apply_verdict.sh --action merge` can itself report `"status": "needs-work"`
+instead of `"ok"` — if the merge fails because the PR became unmergeable
+between review and merge (most commonly: an earlier PR in the same
+`/automerge-all` batch just merged and moved the default branch underneath
+this one), the script flags it `needs-work` with a `verdict: REJECT`
+comment itself, the same durable trail a hygiene or code-review rejection
+leaves, so it's discoverable by `/rework-pr` and counts toward its
+revision-attempt cap. Nothing further for you to do — report it as you
+would any other `needs-work` outcome.
 
 ## Constants
 

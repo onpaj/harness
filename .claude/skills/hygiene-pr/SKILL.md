@@ -40,13 +40,17 @@ print `No agent PRs to check.` and stop.
 ```
 
 This single call does everything: reads the PR's current mergeable/behind/
-CI state, updates the branch only if it's actually behind or conflicting,
-polls CI to resolution if needed, and — if it ends up `still-failing` or
+CI state; if CI is already running from some earlier push, reports that
+and stops immediately with no side effects at all (not even a branch
+update — forcing one would cancel the run in progress); otherwise updates
+the branch if it's actually behind or conflicting, polls the CI it just
+triggered to resolution if needed, and — if it ends up `still-failing` or
 `conflict` — labels the PR `needs-work` and posts a comment explaining why,
 via the same `apply_verdict.sh --action needs-work` mechanism
 `/automerge-pr` uses for a code-review rejection. Every other status
-(`already-clean`, `fixed`, `pending-timeout`, `error`) has no side effects
-beyond the `gh pr update-branch` call. Parse its JSON output.
+(`already-clean`, `fixed`, `ci-running`, `pending-timeout`, `error`) has no
+side effects beyond, at most, the `gh pr update-branch` call. Parse its
+JSON output.
 
 Staleness is decided from two independent signals: GitHub's
 `mergeStateStatus == "BEHIND"`, **and** `behind_by` from the compare API.
@@ -58,10 +62,15 @@ that fires.
 ## 3. Report
 
 State the PR number and the `status` field verbatim
-(`already-clean` / `fixed` / `still-failing` / `conflict` /
+(`already-clean` / `fixed` / `still-failing` / `conflict` / `ci-running` /
 `pending-timeout` / `error`), plus the `detail` field. That is the entire
 output of this skill — no further action of your own; the script already
 did everything `still-failing`/`conflict` require.
+
+`ci-running` means CI was already mid-flight when this run looked, from a
+push this run had nothing to do with — it deliberately does not update the
+branch or poll in that case, since an update-branch call would cancel the
+in-progress run for no benefit. Re-run later, once that CI has settled.
 
 `error` means the GitHub API call itself failed (auth expiry, rate limit,
 network) — it is not a statement about the PR at all, and it is never
@@ -81,6 +90,9 @@ once the underlying problem is fixed.
 The poll window is bounded — a PR whose CI genuinely takes longer than
 `HYGIENE_POLL_MAX_ATTEMPTS × HYGIENE_POLL_INTERVAL_SECONDS` reports
 `pending-timeout`, not failure. Run this skill again later to re-check.
+That poll loop only ever runs for CI this run itself triggered (via
+`gh pr update-branch`) — CI already running when this run started reports
+`ci-running` and returns immediately, no polling at all.
 
 `conflict` means `gh pr update-branch` could not resolve a real merge
 conflict — that needs judgement. This skill does not attempt one; it just
