@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.24.2 (2026-08-05)
+
+### Bug Fixes
+
+- Explicitly forbid the reviewer from running tests itself
+  ([`bc0e25f`](https://github.com/onpaj/harness/commit/bc0e25f6079334d82270aefb4ce12992f984c776))
+
+Reinforces the prior fix with a direct prohibition rather than a mere "you can't" — the reviewer
+  must never attempt to run the test suite via Bash or otherwise. Confirming tests pass is CI's job,
+  already done before review starts; the reviewer's only responsibility around tests is checking
+  that behavior is covered by one, not executing it.
+
+
 ## v0.24.1 (2026-08-05)
 
 ### Bug Fixes
