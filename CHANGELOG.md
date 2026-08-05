@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v0.26.1 (2026-08-05)
+
+### Bug Fixes
+
+- Sync packaged skills, fix ci-running regression, add coverage
+  ([`29e3c6e`](https://github.com/onpaj/harness/commit/29e3c6ee6361dd59414ff09b5e713913d51babe1))
+
+agentharness/data/skills/ — the template agentharness init actually copies into consumer repos — had
+  drifted from .claude/skills/ across every skill touched this session (automerge-pr, automerge-all,
+  hygiene-pr, hygiene-all, rework-pr, plus the new update-agentharness skill entirely missing). CI's
+  own test_packaged_skills_match_their_source guard has been failing on every commit since; nobody
+  checked. Re-synced both trees to byte-identical.
+
+While syncing, found and fixed a real regression in the ci-running short-circuit: it was checked
+  before the is_behind/is_conflicting decision instead of only within the "nothing to do" branch, so
+  it fired unconditionally — a stale PR with pending CI on its old head would skip the backmerge it
+  actually needed instead of updating and polling fresh CI. Also added missing test coverage for
+  ci-running, --force, and the merge-conflict needs-work flagging, none of which had any tests
+  before today despite being genuinely new behavior — that gap is exactly how the regression above
+  went unnoticed until the full suite ran.
+
+
 ## v0.26.0 (2026-08-05)
 
 ### Features
