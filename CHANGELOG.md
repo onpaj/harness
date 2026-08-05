@@ -1,6 +1,37 @@
 # CHANGELOG
 
 
+## v0.24.0 (2026-08-05)
+
+### Features
+
+- Exempt dependency-bot PRs from the linked-issue penalty
+  ([`32415ed`](https://github.com/onpaj/harness/commit/32415ed91a85c31101f83aebb2ca5d271f7f0bb4))
+
+Dependabot/Renovate PRs are automated version bumps with no linked issue by design. automerge-pr's
+  review rubric no longer docks them for a missing issue link; it judges them on whether the diff is
+  a scoped, consistent version bump instead.
+
+- Exempt docs-only PRs from the linked-issue penalty too
+  ([`30c6327`](https://github.com/onpaj/harness/commit/30c63270dc97020d51a7aeb9f182bb902a0b7942))
+
+Alongside dependency-bot PRs, a PR that only touches documentation (docs/, *.md, README, LICENSE,
+  etc.) doesn't need a tracked issue either. automerge-pr's review rubric now skips the linked-issue
+  deductions for both cases and judges docs-only PRs on prose accuracy instead.
+
+- Skip in-flight CI and flag needs-work on batch-merge conflicts
+  ([`6fda6f4`](https://github.com/onpaj/harness/commit/6fda6f4536bf84df7b52733cf793a8123dc273a0))
+
+hygiene-pr's update_and_wait.sh now short-circuits with a new ci-running status when CI is already
+  mid-flight from a prior push, instead of polling or updating the branch (which would cancel that
+  run) — callers retry on their next sweep instead of waiting up to 10 minutes.
+
+automerge-pr's apply_verdict.sh now flags a PR needs-work (with a verdict: REJECT comment, same as
+  any other auto-rejection) when a merge fails because the PR became unmergeable between review and
+  merge — the common case being automerge-all merging an earlier PR in the same batch and moving the
+  default branch underneath a later one.
+
+
 ## v0.23.0 (2026-08-05)
 
 ### Features
