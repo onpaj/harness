@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v0.26.0 (2026-08-05)
+
+### Features
+
+- Add --force to override the backmerge-only-if-necessary default
+  ([`98f5b84`](https://github.com/onpaj/harness/commit/98f5b84b0bc6eb52f2b72e863c21b0e8d9dce1c1))
+
+hygiene-pr/update_and_wait.sh now takes --force, which skips the ci-running bailout and backmerges
+  (and cancels any in-flight CI) even when nothing forced it to. Default stays "only if actually
+  behind or conflicting" — the right mode for a scheduled sweep — and --force never invokes
+  update-branch on a PR with nothing to merge, it only overrides the CI-in-flight skip. Threaded
+  through hygiene-pr and hygiene-all so either can be told to force the backmerge on explicit,
+  on-demand request.
+
+
 ## v0.25.0 (2026-08-05)
 
 ### Features
