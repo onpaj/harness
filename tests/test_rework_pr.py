@@ -471,38 +471,46 @@ def finish_runner(tmp_path):
     return run
 
 
-def test_success_comments_then_removes_label(finish_runner):
+def test_success_releases_claim_then_comments_then_removes_needs_work(finish_runner):
     proc, calls = finish_runner()
 
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
     assert payload["status"] == "ok"
     assert payload["pr"] == 129
-    # Order matters: the audit comment must land before the label edit.
-    assert "pr comment 129" in calls[0]
-    assert "pr edit 129" in calls[1] and "needs-work" in calls[1]
+    # Order matters: the agent-wip claim must be released FIRST, so a failure
+    # in either later step can never leak the claim permanently.
+    assert "pr edit 129" in calls[0] and "agent-wip" in calls[0]
+    assert "pr comment 129" in calls[1]
+    assert "pr edit 129" in calls[2] and "needs-work" in calls[2]
 
 
-def test_label_removal_failure_reports_failed_but_comment_still_posted(finish_runner):
-    proc, calls = finish_runner(fail_on="pr edit")
+def test_needs_work_removal_failure_reports_failed_but_claim_and_comment_landed(
+    finish_runner,
+):
+    proc, calls = finish_runner(fail_on="needs-work")
 
     assert proc.returncode == 1
     payload = json.loads(proc.stdout)
     assert payload["status"] == "failed"
     assert payload["pr"] == 129
-    assert "could not remove" in payload["detail"]
-    assert "pr comment 129" in "\n".join(calls)
+    assert "could not remove needs-work" in payload["detail"]
+    joined = "\n".join(calls)
+    assert "agent-wip" in joined
+    assert "pr comment 129" in joined
 
 
-def test_comment_failure_reports_failed_and_label_is_never_touched(finish_runner):
+def test_comment_failure_reports_failed_after_claim_released(finish_runner):
     proc, calls = finish_runner(fail_on="pr comment")
 
     assert proc.returncode == 1
     payload = json.loads(proc.stdout)
     assert payload["status"] == "failed"
-    assert len(calls) == 1
-    assert "pr comment 129" in calls[0]
-    assert "pr edit" not in "\n".join(calls)
+    # The claim release already happened; needs-work is never touched.
+    assert len(calls) == 2
+    assert "pr edit 129" in calls[0] and "agent-wip" in calls[0]
+    assert "pr comment 129" in calls[1]
+    assert "needs-work" not in "\n".join(calls)
 
 
 def test_missing_pr_argument_is_rejected():
@@ -531,15 +539,19 @@ def test_success_removes_both_needs_work_and_agent_wip_labels(finish_runner):
     assert "agent-wip" in joined
 
 
-def test_agent_wip_removal_failure_reports_failed(finish_runner):
+def test_agent_wip_removal_failure_reports_failed_before_anything_else_runs(
+    finish_runner,
+):
     proc, calls = finish_runner(fail_on="agent-wip")
 
     assert proc.returncode == 1
     payload = json.loads(proc.stdout)
     assert payload["status"] == "failed"
     assert "agent-wip" in payload["detail"]
-    # The comment and the needs-work removal already happened by the time
-    # the agent-wip removal runs — those must not be undone or hidden.
-    joined = "\n".join(calls)
-    assert "pr comment 129" in joined
-    assert "needs-work" in joined
+    # Releasing the claim is now the FIRST thing that can fail: nothing else
+    # has run yet, so the audit comment and the needs-work removal are both
+    # still untouched and the PR stays visibly needs-work for the next run.
+    assert len(calls) == 1
+    assert "pr edit 129" in calls[0] and "agent-wip" in calls[0]
+    assert "pr comment" not in "\n".join(calls)
+    assert "needs-work" not in "\n".join(calls)

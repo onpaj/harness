@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Remove needs-work and agent-wip, and post the audit comment, for one
-# revised PR.
+# Release the agent-wip claim, post the audit comment, and remove
+# needs-work, for one revised PR — in that order.
 #
 #   finish_revision.sh --pr N --summary-file PATH
 #
@@ -44,15 +44,18 @@ if [ -z "$REPO" ]; then
   [ -n "$REPO" ] && [[ "$REPO" == */* ]] || fail "cannot detect repo: could not parse origin URL"
 fi
 
-# Post the audit comment before touching either label, so the trail exists
-# even if a label edit below fails.
+# Release the claim FIRST. The claim and the needs-work label are
+# independent: if a later step fails, this script exits non-zero and nothing
+# else releases $AGENT_WIP_LABEL — a PR left carrying it is invisible to
+# every future find_candidate.sh/list_candidates.sh run, permanently. Losing
+# the audit comment is recoverable; leaking the claim is not.
+gh pr edit "$PR" --repo "$REPO" --remove-label "$AGENT_WIP_LABEL" \
+  || fail "could not remove $AGENT_WIP_LABEL label"
+
 gh pr comment "$PR" --repo "$REPO" --body-file "$SUMMARY_FILE" \
-  || fail "could not post revision summary comment"
+  || fail "$AGENT_WIP_LABEL released, but could not post revision summary comment"
 
 gh pr edit "$PR" --repo "$REPO" --remove-label "$NEEDS_WORK_LABEL" \
-  || fail "revision summary posted, but could not remove $NEEDS_WORK_LABEL label"
+  || fail "$AGENT_WIP_LABEL released and revision summary posted, but could not remove $NEEDS_WORK_LABEL label"
 
-gh pr edit "$PR" --repo "$REPO" --remove-label "$AGENT_WIP_LABEL" \
-  || fail "revision summary posted and $NEEDS_WORK_LABEL removed, but could not remove $AGENT_WIP_LABEL label"
-
-report "ok" "revision summary posted, $NEEDS_WORK_LABEL and $AGENT_WIP_LABEL removed"
+report "ok" "$AGENT_WIP_LABEL released, revision summary posted, $NEEDS_WORK_LABEL removed"
