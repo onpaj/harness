@@ -1,49 +1,41 @@
 ---
-name: rework
-description: Pick up the oldest open PR labelled `needs-work` — one /automerge itself rejected — revise it using the review that rejected it, and push the fix. Use when the user says "rework", "revise needs-work PRs", "fix up the needs-work backlog", or asks to act on a rejected agent PR.
+name: rework-pr
+description: Revise one open needs-work PR — claim it, bring it current with the default branch, fix what its review or CI-failure comments describe, and push. Use when the user says "rework-pr", "revise PR N", "fix up this needs-work PR", or gives a specific PR number to rework.
 ---
 
-You autonomously revise one PR that `/automerge` already rejected. You find
-the oldest eligible `needs-work` PR, read the review that rejected it, fix
-the code it describes, and push the fix — clearing the way for `/automerge`
-to reconsider it next time it runs.
+You revise one PR that's labelled `needs-work` — whether that came from
+`/automerge-pr`'s code review or its hygiene auto-reject — read what it
+says is wrong, fix the code, and push. Called directly for one PR, or by
+`/rework-all` as part of a full-backlog sweep.
 
 **All deterministic work is done by the scripts beside this file.** Do not
 re-implement their logic or hand-write the `gh` commands they already own.
-Your only judgement call is reading the review and fixing the code.
+Your judgement calls are: reading the review/CI feedback and fixing the
+code, and resolving any real conflict when syncing with the default branch.
 
 One PR per invocation. Run this skill again for the next one.
 
-## 1. Find the candidate
+## 1. Resolve the target PR
+
+If a PR number was given in your invocation, use it as `{N}` and skip to
+step 2 (still confirm it's `OPEN` there — an explicit number bypasses
+candidate *search*, not the open-state check). Otherwise:
 
 ```bash
-.claude/skills/rework/find_candidate.sh > /tmp/rework-candidate.json
+.claude/skills/rework-pr/find_candidate.sh > /tmp/rework-candidate.json
 ```
 
 Writes `{"candidate": {...}|null, "skipped": [...]}` to
-`/tmp/rework-candidate.json`. `candidate` is the oldest open `needs-work` PR
-that has not hit the revision-attempt cap; `skipped` lists PRs that have and
-will never be picked. Do not second-guess the cap or try to rescue a skipped
-PR. Read fields out of this file with `jq` in the steps below — never
-interpolate PR-derived text (like `headRefName`) directly into a shell
-string.
+`/tmp/rework-candidate.json`. Do not second-guess the cap, the live-label
+check, or the `agent-wip` skip — read fields with `jq`, never interpolate
+PR-derived text (like `headRefName`) directly into a shell string.
 
-If `candidate` is `null` (`jq -e '.candidate == null' /tmp/rework-candidate.json`),
-print `No needs-work PRs ready to revise.`, list `skipped` with reasons, and
-stop.
+If `candidate` is `null`
+(`jq -e '.candidate == null' /tmp/rework-candidate.json`), print
+`No needs-work PRs ready to revise.`, list `skipped` with reasons, and
+stop. Otherwise set `{N}` from `.candidate.number`.
 
-## 2. Check out the PR's branch
-
-The PR's branch already exists — it was created by `oneshot`. Reuse its
-worktree convention rather than creating a new branch:
-
-```bash
-HEAD_REF=$(jq -r '.candidate.headRefName' /tmp/rework-candidate.json)
-WORKTREE="../worktrees/$(echo "$HEAD_REF" | sed 's#/#-#')"
-```
-
-Before touching the branch, confirm the PR is still open — it may have been
-merged or closed by a human between step 1 and now:
+## 2. Confirm it's open, then claim it
 
 ```bash
 gh pr view {N} --json state --jq .state
@@ -52,9 +44,40 @@ gh pr view {N} --json state --jq .state
 If the result is not `OPEN`, report this PR as skipped (not pushed to) and
 **stop** — do not proceed to step 3 or beyond.
 
-Otherwise, check out the branch:
+Otherwise, claim it immediately, before any branch work starts. The label
+may not exist in the repo yet — create it best-effort first, the same
+pattern `apply_verdict.sh` already uses for `needs-work`/`agent-merged`:
 
 ```bash
+gh label create agent-wip --color fbca04 \
+  --description "Claimed by an in-progress /rework-pr run" >/dev/null 2>&1 || true
+gh pr edit {N} --add-label agent-wip
+```
+
+**From this point on, every exit path (not-open — already handled above,
+unresolved conflict in step 4, exhausted push retries in step 6, or
+success) must release this claim**:
+
+```bash
+gh pr edit {N} --remove-label agent-wip
+```
+
+Do this even on a path that also leaves `needs-work` in place — the claim
+and the `needs-work` label are independent; releasing the claim just makes
+this PR visible to the next `find_candidate.sh`/`list_candidates.sh` run
+again.
+
+## 3. Check out the PR's branch
+
+The PR's branch already exists — it was created by `oneshot`. Reuse its
+worktree convention:
+
+```bash
+HEAD_REF=$(jq -r '.candidate.headRefName // empty' /tmp/rework-candidate.json)
+# If you took the explicit-PR-number path in step 1, HEAD_REF came from
+# `gh pr view {N} --json headRefName --jq .headRefName` instead.
+WORKTREE="../worktrees/$(echo "$HEAD_REF" | sed 's#/#-#')"
+
 if [ -d "$WORKTREE" ]; then
   git -C "$WORKTREE" fetch origin "$HEAD_REF"
   git -C "$WORKTREE" reset --hard "origin/$HEAD_REF"
@@ -66,11 +89,36 @@ fi
 All edits, commits, and the push happen inside `$WORKTREE` — never against
 the primary checkout.
 
-## 3. Read the feedback
+## 4. Sync with the default branch — merge, not rebase
 
-Gather the PR's full review history before touching any code — not just the
-latest `/automerge` block, so context from earlier rounds or a human's inline
-notes is not lost:
+```bash
+DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+git -C "$WORKTREE" fetch origin "$DEFAULT_BRANCH"
+git -C "$WORKTREE" merge "origin/$DEFAULT_BRANCH" --no-edit
+```
+
+Use `merge`, never `rebase`, here: these branches are periodically synced
+via merge commits already in their history, and replaying their original
+linear commits with `git rebase` manufactures false conflicts on history a
+plain `git merge` reconciles cleanly. `defaultBranchRefName` is **not** a
+valid `gh repo view` field — always use `defaultBranchRef.name`.
+
+If the merge reports conflicts, resolve them as a judgement call — same
+tier as reading review feedback in step 5. If a conflict's intent is
+genuinely unclear (e.g. the same line changed two incompatible ways for
+reasons you can't determine from context), abort the merge
+(`git -C "$WORKTREE" merge --abort`), release the `agent-wip` claim (step
+2's release command), report this PR as skipped with the reason, and
+**stop** — do not proceed to step 5.
+
+Because merge only adds commits and never rewrites history, the push in
+step 6 stays a plain `git push` — no `--force-with-lease` needed.
+
+## 5. Read the feedback and revise the code
+
+Gather the PR's full review history before touching any code — not just
+the latest `/automerge-pr` block, so context from earlier rounds or a
+human's inline notes is not lost:
 
 ```bash
 gh pr view {N} --json title,body,comments,reviews
@@ -78,52 +126,72 @@ gh api repos/{owner}/{repo}/pulls/{N}/comments
 gh pr diff {N}
 ```
 
-## 4. Revise the code
+This includes any hygiene auto-reject comment `/automerge-pr` posted
+(`Hygiene check failed for this PR before code review...`) — treat a CI
+failure it describes the same way you'd treat a code-review finding: read
+it, identify the concrete problem, fix it directly in `$WORKTREE`. If the
+feedback is too vague to act on directly, make a good-faith improvement
+rather than aborting.
 
-Read the feedback gathered above, identify the concrete issues it describes,
-and fix them directly in `$WORKTREE` — this is the one part of this skill
-that is not scripted, the same way `/automerge`'s scoring is not scripted:
-judging what a review means requires the model. If the feedback is too vague
-to act on directly, make a good-faith improvement (add the missing test,
-clarify the ambiguous logic) rather than aborting.
+## 6. Commit and push, with retry
 
-## 5. Commit and push
-
-Stage only the files you actually changed — never `git add -A`. Commit with
-a message summarizing what was addressed, and push to the PR's existing
-branch:
+Stage only the files you actually changed — never `git add -A`.
 
 ```bash
 git -C "$WORKTREE" add <files>
-git -C "$WORKTREE" commit -m "fix: address /automerge review feedback"
-git -C "$WORKTREE" push origin "HEAD:$HEAD_REF"
+git -C "$WORKTREE" commit -m "fix: address /automerge-pr review feedback"
 ```
 
-If the push fails, report the failure and **stop** — do not call
-`finish_revision.sh`. `needs-work` must stay on a PR whose fix did not
-actually land.
+Attempt the push, retrying on a non-fast-forward rejection (something else
+wrote to the branch mid-run — not necessarily this skill):
 
-## 6. Finish
+```bash
+attempt=1
+while [ "$attempt" -le 3 ]; do
+  if git -C "$WORKTREE" push origin "HEAD:$HEAD_REF"; then
+    break
+  fi
+  if [ "$attempt" -eq 3 ]; then
+    # Exhausted retries — stop. Do not call finish_revision.sh: needs-work
+    # must stay on a PR whose fix did not actually land.
+    gh pr edit {N} --remove-label agent-wip
+    echo "push failed after 3 attempts; report what landed on the branch that this run did not push"
+    exit 1
+  fi
+  git -C "$WORKTREE" fetch origin "$HEAD_REF"
+  # Same judgement rule as step 4: merge in what's there, resolve any real
+  # conflict, abort+stop (release the claim first) if intent is unclear.
+  git -C "$WORKTREE" merge "origin/$HEAD_REF" --no-edit
+  attempt=$((attempt + 1))
+done
+```
+
+If the push never succeeds within 3 attempts, this is not a one-off race
+anymore — stop (as the block above does), and your report must state what
+landed on the branch that this run did not push itself.
+
+## 7. Finish
 
 Write a short summary of what you changed to a file using the **Write
 tool** — never interpolate it into a shell command — then:
 
 ```bash
-.claude/skills/rework/finish_revision.sh --pr {N} --summary-file /tmp/rework-{N}-summary.md
+.claude/skills/rework-pr/finish_revision.sh --pr {N} --summary-file /tmp/rework-{N}-summary.md
 ```
 
-This posts the summary as a PR comment and removes `needs-work`. On success,
-remove the worktree:
+This posts the summary as a PR comment, removes `needs-work`, **and
+releases the `agent-wip` claim**. On success, remove the worktree:
 
 ```bash
 git worktree remove "$WORKTREE"
 ```
 
-## 7. Report
+## 8. Report
 
-State which PR you revised, what you changed, and the `skipped` list from
-step 1 with reasons — a PR sitting at the revision cap needs a human to look
-at it.
+State which PR you revised, what you changed, whether you had to resolve a
+merge conflict in step 4 or retry the push in step 6, and the `skipped`
+list from step 1 (if you took that path) with reasons — a PR sitting at
+the revision cap needs a human to look at it.
 
 ## Constants
 
@@ -131,16 +199,31 @@ Do not restate these values elsewhere; each lives in exactly one file.
 
 | Constant | Where it lives |
 |----------|----------------|
-| `MAX_REVISION_ATTEMPTS` | `find_candidate.sh` |
-| `NEEDS_WORK_LABEL` | `find_candidate.sh`, `finish_revision.sh` (must match `automerge/apply_verdict.sh`'s copy) |
+| `MAX_REVISION_ATTEMPTS` | `find_candidate.sh`, `list_candidates.sh` |
+| `NEEDS_WORK_LABEL` | `find_candidate.sh`, `list_candidates.sh`, `finish_revision.sh` (must match `automerge-pr/apply_verdict.sh`'s copy) |
+| `AGENT_WIP_LABEL` | `find_candidate.sh`, `list_candidates.sh`, `finish_revision.sh` (must match this file's own `agent-wip` literal in steps 2 and 6) |
+| push retry cap (`3`) | this file, step 6 — no script owns it |
 
 ## Limits worth knowing
 
 This skill's revision is not independently reviewed before `needs-work`
-comes off — the next signal is whatever `/automerge` says next time it runs.
-A confidently-wrong revision looks identical to a correct one until then.
-There is no confirmation prompt. Watch the first few runs.
+comes off — the next signal is whatever `/automerge-pr` says next time it
+runs. A confidently-wrong revision looks identical to a correct one until
+then. There is no confirmation prompt. Watch the first few runs.
 
-The revision-attempt cap counts prior `/automerge` rejections (`verdict:
-REJECT` comments), not `/rework` runs — a PR a human re-labelled
-`needs-work` by hand always looks like zero prior attempts to this skill.
+The revision-attempt cap counts prior `/automerge-pr` rejections (`verdict:
+REJECT` comments, whether from a code review or a hygiene auto-reject), not
+`/rework-pr` runs — a PR a human re-labelled `needs-work` by hand always
+looks like zero prior attempts to this skill.
+
+The `agent-wip` claim only protects against other `rework-pr` runs. It does
+not stop `hygiene-pr` from running `gh pr update-branch` on this PR
+concurrently, or `automerge-pr` from reactively calling `hygiene-pr` on it
+mid-revision. Running `/rework-all` at the same time as `/hygiene-all` or
+`/automerge-all` on overlapping PRs is not covered by this design; treat
+that combination as running one family at a time until a real conflict is
+observed.
+
+Push retries are capped at 3, not unbounded — a PR under sustained
+concurrent writes from something other than this skill will still end up
+`needs-work` for a human after the third rejected push.
