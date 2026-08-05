@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.28.0 (2026-08-05)
+
+### Features
+
+- Add /absorb skill for taking over an existing PR
+  ([`0d8feef`](https://github.com/onpaj/harness/commit/0d8feefd7169ba1a68e240a0d35fb2725a19da3b))
+
+Ports an external "absorb PR" skill into AgentHarness, adapted to this project's conventions: repo
+  resolution via $REPO / --repo like rework-pr, the actual default branch instead of a hardcoded
+  main, and a test-command detection step instead of hardcoded dotnet/npm commands since a consumer
+  repo's stack isn't known ahead of time. Unlike rework-pr, it isn't scoped to agent-labelled PRs or
+  a revision cap — it works on any PR, including ones opened by hand outside the pipeline.
+
+Also checks the PR's full comment/review history against the current diff for outstanding requested
+  work, lists anything still unresolved, and asks the user before acting on it — declining or
+  confirming per item, with confirmed items implemented by a general-purpose subagent and
+  tested/committed/pushed before the skill reports back.
+
+
 ## v0.27.0 (2026-08-05)
 
 ### Features
