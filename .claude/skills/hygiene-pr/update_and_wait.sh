@@ -160,16 +160,6 @@ behind=$(behind_count "$base_ref" "$head_ref")
 is_conflicting=false
 [ "$mergeable" = "CONFLICTING" ] && is_conflicting=true
 
-# CI already mid-flight, from a push this run had nothing to do with — skip
-# entirely, no update-branch, no polling. Checked before any other decision:
-# an update-branch on top of a running check would just cancel it. --force
-# skips this bailout (the whole point of --force is "no matter what"), so
-# it falls through to the behind/conflicting check below instead.
-if ! $FORCE && [ "$ci_state" = "pending" ]; then
-  report "ci-running" "CI checks are already running from a prior push; skipping so this run doesn't cancel them — retry on the next sweep"
-  exit 0
-fi
-
 did_update=false
 
 if ! $is_behind && ! $is_conflicting; then
@@ -178,6 +168,18 @@ if ! $is_behind && ! $is_conflicting; then
       report "already-clean" "branch is current, checks are $ci_state"; exit 0 ;;
     failure)
       report_and_flag_needs_work "still-failing" "branch is current with base, but checks are failing" ;;
+    pending)
+      # Nothing this run would otherwise do (not behind, not conflicting) —
+      # CI running here is mid-flight from a push this run had nothing to do
+      # with. An update-branch would just cancel it for no benefit, so skip
+      # entirely unless --force said "no matter what": then fall through to
+      # the poll loop below instead of calling update-branch on a PR with
+      # nothing to merge.
+      if ! $FORCE; then
+        report "ci-running" "CI checks are already running from a prior push; skipping so this run doesn't cancel them — retry on the next sweep"
+        exit 0
+      fi
+      ;;
   esac
 else
   if ! update_err=$(gh pr update-branch "$PR" --repo "$REPO" 2>&1); then

@@ -89,7 +89,7 @@ def hygiene_runner(tmp_path):
 
     def run(view_sequence, pr=129, update_branch_exit=0, update_branch_err=None,
              max_attempts=5, interval=0, behind_by=0, view_exit=0, view_err=None,
-             label_edit_exit=0, label_edit_err=None):
+             label_edit_exit=0, label_edit_err=None, force=False):
         for i, payload in enumerate(view_sequence, start=1):
             (view_dir / f"{i}.json").write_text(json.dumps(payload))
         env = {
@@ -112,9 +112,11 @@ def hygiene_runner(tmp_path):
             env["GH_STUB_VIEW_ERR"] = view_err
         if label_edit_err:
             env["GH_STUB_LABEL_EDIT_ERR"] = label_edit_err
+        cmd = [str(SKILL_DIR / "update_and_wait.sh"), "--pr", str(pr)]
+        if force:
+            cmd.append("--force")
         proc = subprocess.run(
-            [str(SKILL_DIR / "update_and_wait.sh"), "--pr", str(pr)],
-            capture_output=True, text=True, env=env, cwd=REPO_ROOT,
+            cmd, capture_output=True, text=True, env=env, cwd=REPO_ROOT,
         )
         assert proc.returncode == 0, proc.stderr
         result = json.loads(proc.stdout)
@@ -264,14 +266,48 @@ def test_compare_api_is_only_consulted_once_not_per_poll(hygiene_runner):
     assert len(compare_calls) == 1
 
 
-def test_already_current_but_pending_then_green_says_it_was_not_behind(hygiene_runner):
+def test_not_behind_but_ci_running_short_circuits_without_touching_branch(hygiene_runner):
+    # Not behind/conflicting, but CI is already mid-flight from some earlier
+    # push this run had nothing to do with — must not update-branch (that
+    # would cancel it for no benefit) or poll; just report and let the
+    # caller retry later.
     pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
     success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
     result = hygiene_runner([_view(checks=pending), _view(checks=success)])
 
+    assert result["status"] == "ci-running"
+    assert not any("update-branch" in c for c in result["_gh_calls"])
+    # Only the initial read — no polling happened.
+    assert len([c for c in result["_gh_calls"] if c.startswith("pr view")]) == 1
+
+
+def test_force_polls_through_ci_running_when_not_behind(hygiene_runner):
+    # --force overrides the ci-running bailout: since there's nothing to
+    # merge (not behind/conflicting), it never calls update-branch either —
+    # it just polls the already-running CI through to resolution instead of
+    # bailing out immediately.
+    pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
+    success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    result = hygiene_runner([_view(checks=pending), _view(checks=success)], force=True)
+
     assert result["status"] == "fixed"
     assert "already current" in result["detail"]
     assert not any("update-branch" in c for c in result["_gh_calls"])
+
+
+def test_force_still_updates_and_cancels_running_ci_when_behind(hygiene_runner):
+    # --force does not change the behind/conflicting path at all — it was
+    # already going to update-branch (and thus cancel whatever CI was
+    # running on the stale head) regardless of --force.
+    pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
+    success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    result = hygiene_runner(
+        [_view(merge_state="BEHIND", checks=pending), _view(checks=success)], force=True,
+    )
+
+    assert result["status"] == "fixed"
+    assert "branch updated" in result["detail"]
+    assert any("update-branch" in c for c in result["_gh_calls"])
 
 
 def test_missing_pr_argument_is_rejected():

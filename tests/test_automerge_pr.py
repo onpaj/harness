@@ -256,7 +256,21 @@ def test_truncates_at_twenty_and_reports_the_remainder(gh_stub):
 GH_RECORDER = """\
 #!/usr/bin/env bash
 # Fake `gh` that records its argv and optionally fails with a chosen message.
+# Every `--body-file` argument's content is copied, in call order, to
+# $GH_BODY_CAPTURE_DIR/1, /2, ... (before the caller can delete the tmp file
+# it points to) so tests can assert on posted comment bodies.
 echo "$*" >> "$GH_LOG"
+if [ -n "${GH_BODY_CAPTURE_DIR:-}" ]; then
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--body-file" ] && [ -f "$arg" ]; then
+      n=$(( $(cat "$GH_BODY_CAPTURE_DIR/.n" 2>/dev/null || echo 0) + 1 ))
+      echo "$n" > "$GH_BODY_CAPTURE_DIR/.n"
+      cp "$arg" "$GH_BODY_CAPTURE_DIR/$n"
+    fi
+    prev="$arg"
+  done
+fi
 if [ -n "${GH_FAIL_ON:-}" ] && [[ "$*" == *"$GH_FAIL_ON"* ]]; then
   echo "${GH_FAIL_MESSAGE:-simulated gh failure}" >&2
   exit 1
@@ -277,12 +291,15 @@ def apply_runner(tmp_path):
     log = tmp_path / "gh.log"
     review = tmp_path / "review.md"
     review.write_text("score: 94\nLooks good.\n")
+    body_capture_dir = tmp_path / "bodies"
+    body_capture_dir.mkdir()
 
     def run(action, pr=129, issue=None, fail_on=None, fail_message=None):
         env = {
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "GH_LOG": str(log),
             "GH_REPO": "onpaj/harness",
+            "GH_BODY_CAPTURE_DIR": str(body_capture_dir),
         }
         if fail_on:
             env["GH_FAIL_ON"] = fail_on
@@ -300,6 +317,7 @@ def apply_runner(tmp_path):
         log.write_text("")
         return proc, calls
 
+    run.body_dir = body_capture_dir
     return run
 
 
@@ -371,10 +389,14 @@ def test_failed_merge_reports_json_and_exits_nonzero(apply_runner):
     assert payload["pr"] == 129
 
 
-def test_merge_conflict_reports_skipped_not_failed(apply_runner):
+def test_merge_conflict_flags_needs_work_not_failed(apply_runner):
     # A PR that went unmergeable between listing and merging is not an error
-    # in this run — master simply moved underneath it. Distinct from a
-    # generic gh failure, which reports "failed" (tested above).
+    # in this run — master simply moved underneath it (most commonly: an
+    # earlier PR in the same /automerge-all batch just merged). Distinct
+    # from a generic gh failure, which reports "failed" (tested above): this
+    # gets flagged needs-work with its own REJECT-verdict comment, the same
+    # durable trail a hygiene/code-review rejection leaves, so it's
+    # discoverable by /rework-pr and counts toward its revision-attempt cap.
     proc, calls = apply_runner(
         "merge", issue=118, fail_on="pr merge",
         fail_message="GraphQL: Pull Request is not mergeable (mergePullRequest)",
@@ -382,12 +404,32 @@ def test_merge_conflict_reports_skipped_not_failed(apply_runner):
 
     assert proc.returncode == 1
     payload = json.loads(proc.stdout)
-    assert payload["status"] == "skipped"
+    assert payload["status"] == "needs-work"
     assert payload["pr"] == 129
-    # The review comment must still have posted; the issue must NOT be labelled.
     joined = "\n".join(calls)
-    assert "pr comment 129" in joined
+    # The original review comment posts first, then the label is created
+    # defensively, then the REJECT-verdict comment, then the label applied.
+    assert len([c for c in calls if c.startswith("pr comment 129")]) == 2
+    assert "label create needs-work" in joined
+    assert "pr edit 129" in joined and "--add-label needs-work" in joined
+    # The merge already failed — the linked issue must NOT be labelled.
     assert "issue edit" not in joined
+
+
+def test_merge_conflict_comment_carries_a_reject_verdict(apply_runner):
+    # rework-pr's find_candidate.sh/list_candidates.sh count comments
+    # matching `verdict:\s*REJECT` toward the revision-attempt cap — this
+    # comment must match that pattern or the PR is invisible to that cap.
+    proc, calls = apply_runner(
+        "merge", issue=118, fail_on="pr merge",
+        fail_message="GraphQL: Pull Request is not mergeable (mergePullRequest)",
+    )
+    assert proc.returncode == 1
+    # Body 1 is the original (already-MERGE-verdict) review comment; body 2
+    # is the REJECT-verdict comment this failure path posts itself.
+    captured = sorted(apply_runner.body_dir.glob("[0-9]*"), key=lambda p: int(p.name))
+    assert len(captured) == 2
+    assert "verdict: REJECT" in captured[1].read_text()
 
 
 def test_unknown_action_is_rejected(apply_runner):
