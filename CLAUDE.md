@@ -73,6 +73,7 @@ tests/              Unit tests (pytest-asyncio)
 | `/rework-pr {N}` | one `needs-work` PR | Claims it, syncs with the default branch, revises it using the review or CI-failure feedback that flagged it, and pushes the fix |
 | `/rework-all` | `needs-work` backlog | Runs `/rework-pr` against every eligible `needs-work` PR in parallel — safe because each PR's `agent-wip` claim prevents overlap |
 | `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter (Azure backend only) |
+| `/update-agentharness` | keeping the CLI current | `uv tool upgrade`s the `agentharness` CLI, then refreshes this project's `.agents`/`.pipeline`/`.claude` scaffolding via `agentharness init`, asking before an `--force` re-run that would overwrite local customizations |
 
 ## CLI commands
 
