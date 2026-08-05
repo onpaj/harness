@@ -39,6 +39,11 @@ prompt, with `{N}` replaced by the PR number:
 >
 > If step 2 reports `pending-timeout`, end your final message with exactly
 > one line: `SKIPPED: CI checks pending, retry later`.
+>
+> If step 2 reports `error`, end your final message with exactly one line:
+> `SKIPPED: hygiene check errored, retry later — {detail}`. Do NOT
+> auto-reject on `error`: it is an API/infrastructure failure, not a
+> verdict about the PR.
 
 ## 3. Collect results
 

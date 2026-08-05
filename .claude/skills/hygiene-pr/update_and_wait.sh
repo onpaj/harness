@@ -6,8 +6,10 @@
 #   update_and_wait.sh --pr N
 #
 # Emits JSON: {"pr": N, "status": "already-clean|fixed|still-failing|
-#              conflict|pending-timeout", "detail": "..."}
-# Always exits 0 — this script reports, it never fails the caller.
+#              conflict|pending-timeout|error", "detail": "..."}
+# Always exits 0 once arguments validate — this script reports, it never
+# fails the caller over a PR-hygiene outcome. (A missing/unknown argument
+# still exits 1, matching the sibling scripts' convention.)
 set -uo pipefail
 
 POLL_INTERVAL_SECONDS="${HYGIENE_POLL_INTERVAL_SECONDS:-15}"
@@ -66,18 +68,48 @@ CI_STATE_FILTER='
     end;
 '
 
+# Sets the globals mergeable/merge_state/ci_state/base_ref/head_ref, or
+# reports `error` and exits. Deliberately NOT read via `< <(read_state)`:
+# process substitution runs in a subshell, so a failed `gh pr view` there
+# is invisible to the caller and every variable silently comes back empty —
+# which used to fall through into the poll loop and mis-report a GitHub API
+# failure as a 10-minute `pending-timeout`.
 read_state() {
-  gh pr view "$PR" --repo "$REPO" \
-    --json mergeable,mergeStateStatus,statusCheckRollup \
-  | jq -r "$CI_STATE_FILTER"' [.mergeable, .mergeStateStatus, (.statusCheckRollup | ci_state)] | @tsv'
+  local raw rc line
+  raw=$(gh pr view "$PR" --repo "$REPO" \
+    --json mergeable,mergeStateStatus,statusCheckRollup,baseRefName,headRefName 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    report "error" "gh pr view failed (exit $rc): $raw"
+    exit 0
+  fi
+  line=$(printf '%s' "$raw" | jq -r "$CI_STATE_FILTER"' [.mergeable, .mergeStateStatus, (.statusCheckRollup | ci_state), .baseRefName, .headRefName] | @tsv') || {
+    report "error" "could not parse gh pr view output: $raw"
+    exit 0
+  }
+  IFS=$'\t' read -r mergeable merge_state ci_state base_ref head_ref <<< "$line"
 }
 
-IFS=$'\t' read -r mergeable merge_state ci_state < <(read_state)
+# How many commits the head branch is behind its base, straight from the
+# compare API. This is the only staleness signal that works on a repo
+# without branch protection: GitHub only ever sets mergeStateStatus=BEHIND
+# when the base branch requires branches to be up to date before merging.
+# Supplementary, so a failure here falls back to 0 (not behind) rather than
+# erroring out — read_state() above already covers the primary failure mode.
+behind_count() {  # base_ref, head_ref
+  gh api "repos/$REPO/compare/$1...$2" --jq '.behind_by // 0' 2>/dev/null || echo 0
+}
+
+read_state
 
 is_behind=false
 [ "$merge_state" = "BEHIND" ] && is_behind=true
+behind=$(behind_count "$base_ref" "$head_ref")
+[ "$behind" -gt 0 ] 2>/dev/null && is_behind=true
 is_conflicting=false
 [ "$mergeable" = "CONFLICTING" ] && is_conflicting=true
+
+did_update=false
 
 if ! $is_behind && ! $is_conflicting; then
   case "$ci_state" in
@@ -93,14 +125,21 @@ else
   if ! update_err=$(gh pr update-branch "$PR" --repo "$REPO" 2>&1); then
     report "conflict" "gh pr update-branch failed: $update_err"; exit 0
   fi
+  did_update=true
 fi
 
+# Staleness is read once, above — the poll loop only re-reads CI state.
 attempt=0
 while [ "$attempt" -lt "$POLL_MAX_ATTEMPTS" ]; do
-  IFS=$'\t' read -r mergeable merge_state ci_state < <(read_state)
+  read_state
   case "$ci_state" in
     success|none)
-      report "fixed" "branch updated/current, checks are $ci_state"; exit 0 ;;
+      if $did_update; then
+        report "fixed" "branch updated, checks are $ci_state"
+      else
+        report "fixed" "branch was already current; checks finished as $ci_state"
+      fi
+      exit 0 ;;
     failure)
       report "still-failing" "branch is current with base, but checks are failing"; exit 0 ;;
   esac

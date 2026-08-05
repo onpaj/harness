@@ -34,12 +34,25 @@ CI state, updates the branch only if it's actually behind or conflicting,
 and polls CI to resolution if needed — all with no side effects beyond that
 `gh pr update-branch` call. Parse its JSON output.
 
+Staleness is decided from two independent signals: GitHub's
+`mergeStateStatus == "BEHIND"`, **and** `behind_by` from the compare API.
+The second one matters — GitHub only ever reports `BEHIND` when the base
+branch has "require branches to be up to date before merging" enabled, so
+on a repo with no branch protection the compare check is the *only* signal
+that fires.
+
 ## 3. Report
 
 State the PR number and the `status` field verbatim
 (`already-clean` / `fixed` / `still-failing` / `conflict` /
-`pending-timeout`), plus the `detail` field. That is the entire output of
-this skill — no further action.
+`pending-timeout` / `error`), plus the `detail` field. That is the entire
+output of this skill — no further action.
+
+`error` means the GitHub API call itself failed (auth expiry, rate limit,
+network) — it is not a statement about the PR at all. The script stops
+immediately rather than polling, so an infrastructure failure never
+masquerades as a `pending-timeout`. Retry once the underlying problem is
+fixed.
 
 ## Constants
 

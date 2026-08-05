@@ -71,6 +71,13 @@ Branch on its `status`:
   way.
 - **`pending-timeout`** → report this PR as skipped
   (`CI checks pending, retry later`) and stop.
+- **`error`** → report this PR as skipped
+  (`hygiene check errored, retry later` plus the `detail` verbatim) and
+  stop. Treat it exactly like `pending-timeout`: **do not auto-reject.**
+  An `error` means the GitHub API call itself failed (auth, rate limit,
+  network) — it is an infrastructure failure, not a judgement about this
+  PR, and labelling it `needs-work` would burn a revision attempt for
+  something the PR did not do.
 
 ## 3. Review
 
