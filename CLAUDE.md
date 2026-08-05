@@ -66,8 +66,12 @@ tests/              Unit tests (pytest-asyncio)
 |-------|---------|--------------|
 | `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to configured backend |
 | `/oneshot {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
-| `/automerge` | PR backlog | Reviews every open `agent` PR with a fresh subagent each, squash-merges those scoring above its configured threshold, comments on the rest |
-| `/rework` | after an `/automerge` rejection | Picks the oldest `needs-work` PR under the revision-attempt cap, revises it using the review that rejected it, and pushes the fix |
+| `/hygiene-pr {N}` | keeping one PR current | Brings one PR's branch up to date with its base and confirms CI passes, without labeling, commenting, reviewing, or merging |
+| `/hygiene-all` | PR backlog | Runs `/hygiene-pr` against every open `agent` PR in parallel — a standalone currency/CI sweep, independent of review or merge |
+| `/automerge-pr {N}` | one PR | Brings it current via `/hygiene-pr`, reviews it with a fresh subagent, and merges/comments/flags `needs-work` based on the score |
+| `/automerge-all` | PR backlog | Runs `/automerge-pr`'s review against every open `agent` PR in parallel, applies verdicts serially so merges never race |
+| `/rework-pr {N}` | one `needs-work` PR | Claims it, syncs with the default branch, revises it using the review or CI-failure feedback that flagged it, and pushes the fix |
+| `/rework-all` | `needs-work` backlog | Runs `/rework-pr` against every eligible `needs-work` PR in parallel — safe because each PR's `agent-wip` claim prevents overlap |
 | `/azure-storage` | infra/debugging | Setup, inspect blobs, peek queues, manage dead-letter (Azure backend only) |
 
 ## CLI commands
