@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.23.0 (2026-08-05)
+
+### Features
+
+- Resolve current branch's open PR before falling back to oldest
+  ([`3376d5a`](https://github.com/onpaj/harness/commit/3376d5a2d2218c720053bf9fb8dd0aa3d1d8583e))
+
+hygiene-pr, automerge-pr, and rework-pr previously defaulted to the oldest eligible PR when no PR
+  number was given. Now, if the invoking branch already has an open PR, that PR is used as the
+  target instead.
+
+
 ## v0.22.0 (2026-08-05)
 
 ### Features
