@@ -82,7 +82,7 @@ replaced by the PR number:
 > You are READ-ONLY. You must not run `gh pr merge`, `gh pr close`,
 > `gh pr edit`, `git push`, or any other state-changing command. Gather context
 > with:
-> - `gh pr view {N} --json title,body,headRefName,additions,deletions,changedFiles,author`
+> - `gh pr view {N} --json title,body,headRefName,additions,deletions,changedFiles,author,files`
 > - `gh pr diff {N}`
 > - `gh issue view <issue> --json title,body` for the issue the PR body links
 > - `Read` and `Grep` on the repo, to check the change fits the code around it
@@ -90,20 +90,32 @@ replaced by the PR number:
 > You cannot run the test suite, and you must not assume the code works because
 > it looks plausible.
 >
-> First check `.author.login` from the `gh pr view` call above. If it's a
-> known dependency-update bot (`dependabot[bot]`, `renovate[bot]`, or
-> similar — also recognizable from a `dependabot/...` or `renovate/...`
-> head branch), this is an automated version bump, not scoped feature work:
-> it has no linked issue by design, so do **not** apply the "no linked
-> issue" or "diff does something the linked issue did not ask for"
-> deductions below. Instead judge it on whether the diff is a plausible,
-> scoped bump (dependency manifest/lockfile — or a pinned action version in
-> a workflow file — changed consistently with the version bump the title
-> describes, nothing unrelated bundled in). Every other deduction below
-> still applies as written, including the workflow-file and
+> First check `.author.login` and every entry's `path` in `.files` from the
+> `gh pr view` call above:
+>
+> - **Dependency-bot PR** — author is a known dependency-update bot
+>   (`dependabot[bot]`, `renovate[bot]`, or similar — also recognizable from
+>   a `dependabot/...` or `renovate/...` head branch). This is an automated
+>   version bump, not scoped feature work: it has no linked issue by design.
+>   Skip the "no linked issue" and "diff does something the linked issue did
+>   not ask for" deductions below, and instead judge whether the diff is a
+>   plausible, scoped bump (dependency manifest/lockfile — or a pinned
+>   action version in a workflow file — changed consistently with the
+>   version bump the title describes, nothing unrelated bundled in).
+> - **Documentation-only PR** — every changed file is non-code
+>   documentation (paths under `docs/`, `*.md`, `*.txt`, `README*`,
+>   `LICENSE*`, or similar prose — no source, config, script, or workflow
+>   file touched). A docs-only change doesn't need a tracked issue either.
+>   Skip the same two deductions, and instead judge whether the prose is
+>   accurate against the current code (`Read`/`Grep` the paths it
+>   describes) and doesn't contradict other docs.
+>
+> Both exemptions only waive those two specific deductions — every other
+> deduction below still applies as written, including the workflow-file and
 > cannot-verify-correctness ones.
 >
-> For every other PR, start from 100 and deduct:
+> For every other PR — and for every remaining deduction on an exempted
+> one — start from 100 and deduct:
 > - -40 the diff does something the linked issue did not ask for
 > - -30 no linked issue found in the PR body
 > - -25 new behaviour added with no accompanying test
