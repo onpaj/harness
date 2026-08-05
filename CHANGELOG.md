@@ -1,6 +1,153 @@
 # CHANGELOG
 
 
+## v0.21.0 (2026-08-05)
+
+### Bug Fixes
+
+- Detect gh pr view failures and branch-protection-free staleness in hygiene-pr
+  ([`a0a150e`](https://github.com/onpaj/harness/commit/a0a150e9083e87546ed073502e4b8de76d187108))
+
+- read_state() now captures gh's exit status instead of losing it to process substitution, and
+  reports a new sixth status 'error' rather than falling through into a false 10-minute
+  pending-timeout - staleness gains an independent compare-API behind_by check: GitHub only ever
+  reports mergeStateStatus=BEHIND on a base branch that requires branches to be up to date, which
+  this repo does not - 'fixed' detail now distinguishes 'was behind, updated' from 'was already
+  current, just waited on CI' - automerge-pr/automerge-all treat 'error' like 'pending-timeout'
+  (skip, never auto-reject — it is infrastructure, not a verdict)
+
+- Release agent-wip claim first in finish_revision.sh
+  ([`299a253`](https://github.com/onpaj/harness/commit/299a253feb5d0aed91a80e49a8bdc3a5740508c8))
+
+A failure posting the audit comment or removing needs-work exited before the claim was ever
+  released, leaving the PR permanently invisible to find_candidate.sh/list_candidates.sh (no
+  sweeper, no TTL). The claim is now released first, with the same hard-fail reporting as the other
+  steps.
+
+- Sync packaged mirror of automerge-pr/candidates.sh with createdAt field
+  ([`7d2cb15`](https://github.com/onpaj/harness/commit/7d2cb1580fe956a47f3d06055786e80ff55d50f8))
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- Update stale comment referencing old automerge path
+  ([`a078caf`](https://github.com/onpaj/harness/commit/a078caf8100d9c551f980ebed04fe1fc2ae2ae76))
+
+- Update test docstring to reflect rework-pr skill name
+  ([`a3a4937`](https://github.com/onpaj/harness/commit/a3a4937025d89ae8f49d7dc64d40087d4293ba62))
+
+Changed docstring from "Tests for the /rework skill scripts." to "Tests for the /rework-pr skill
+  scripts." to match the renamed skill.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+### Documentation
+
+- Design spec for PR hygiene skill + automerge/rework single-vs-all split
+  ([`e567c5f`](https://github.com/onpaj/harness/commit/e567c5f22996401dde41951ed949661932ff24c9))
+
+- Fold agent-wip claim, merge-sync, stale-search-index fix, and push-retry into rework-pr design
+  ([`92a6247`](https://github.com/onpaj/harness/commit/92a62475248deef554754726f0fd3fa566cf9929))
+
+- Harden rework-pr SKILL.md claim, repo, merge and report contracts
+  ([`06fe454`](https://github.com/onpaj/harness/commit/06fe4543110112ab3a447bd7bd0de82c34b7651f))
+
+- claim release is now a blanket rule for any exit, not four enumerated paths - resolve $REPO up
+  front and pass --repo to every inline gh call - push-retry merge now has an explicit failure
+  branch, like step 4 - step 8 enumerates the early-exit outcomes rework-all asks subagents for
+
+- Implementation plan for PR hygiene skill + automerge/rework single-vs-all split
+  ([`a159121`](https://github.com/onpaj/harness/commit/a159121a4af028de274a19772b4c41fb36a9f1e1))
+
+- Mirror new PR-hygiene skills into agentharness/data/skills, update CLAUDE.md skill table
+  ([`6e8dbb9`](https://github.com/onpaj/harness/commit/6e8dbb976ae3ab904d23c147eb1df679b64e8ca1))
+
+- Report PR creation date in automerge-all's step 5 table
+  ([`65f78a0`](https://github.com/onpaj/harness/commit/65f78a0c75e8ec11fa0482af5fac15ccc150da25))
+
+candidates.sh has emitted createdAt since an earlier task with no consumer; the report table is
+  where it belongs. Ordering is unchanged (ascending PR number, matching the serial-apply order) —
+  createdAt is reported, not sorted on.
+
+### Features
+
+- Add automerge-all SKILL.md
+  ([`924a1c0`](https://github.com/onpaj/harness/commit/924a1c0d93855ad4acad40457fa3018258e5d61d))
+
+- Add createdAt to automerge-pr candidates.sh output
+  ([`7fb1ffd`](https://github.com/onpaj/harness/commit/7fb1ffddbeb4746a4d4966cbf681d83be2f913e4))
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- Add hygiene-all SKILL.md
+  ([`8acc306`](https://github.com/onpaj/harness/commit/8acc306927b8699e34d3e895eb2799604fcbbbf2))
+
+- Add hygiene-pr SKILL.md
+  ([`3ddc00f`](https://github.com/onpaj/harness/commit/3ddc00fee4991514477c835d318bb6cf387e8325))
+
+- Add hygiene-pr/update_and_wait.sh
+  ([`a29c563`](https://github.com/onpaj/harness/commit/a29c563672b19165974c1a11b19f3181e4ba99b3))
+
+Standalone bash script that brings a PR's branch current with its base and polls CI to resolution,
+  reporting a JSON verdict (already-clean|fixed|still-failing|conflict|pending-timeout). No skill
+  orchestration yet — that's a follow-up task.
+
+Mirrors the script into agentharness/data/skills/hygiene-pr/ to keep the packaged skill set in sync
+  per test_packaged_skills.py.
+
+- Add rework-all SKILL.md
+  ([`63cd06c`](https://github.com/onpaj/harness/commit/63cd06c91f356d6e4b19a78b3669211b42afec45))
+
+Fan-out sibling of rework-pr: queries list_candidates.sh and runs one rework-pr subagent per PR
+  fully in parallel, since each PR's agent-wip claim already rules out two subagents converging on
+  the same PR.
+
+- Add rework-pr/list_candidates.sh for rework-all
+  ([`b9615dc`](https://github.com/onpaj/harness/commit/b9615dc928d48c7b24b3fe24b58171b4067155a4))
+
+- Agent-wip claim skip, live-label recheck, stop skipping CONFLICTING in find_candidate.sh
+  ([`11d0683`](https://github.com/onpaj/harness/commit/11d0683b757a996b400c002275c0997e81cb1248))
+
+- Agent-wip claim, merge-sync, push-retry, and PR-number param in rework-pr
+  ([`e454a78`](https://github.com/onpaj/harness/commit/e454a78b393ca77e703019df388f99f66327c6fd))
+
+- Release agent-wip claim in finish_revision.sh
+  ([`76fe847`](https://github.com/onpaj/harness/commit/76fe847d82cdd6006d655cc09c18a6c84cf44372))
+
+finish_revision.sh now removes both needs-work and agent-wip labels on successful revision,
+  reporting failure if either removal fails while preserving the audit comment and prior label
+  removals in the event of partial failure.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- Wire hygiene-pr into automerge-pr, add PR-number param and orchestrated mode
+  ([`ba79b89`](https://github.com/onpaj/harness/commit/ba79b898193cc526b8eb155281ee596ecffece59))
+
+### Refactoring
+
+- Rename automerge skill to automerge-pr
+  ([`9846613`](https://github.com/onpaj/harness/commit/984661344d90aa05d3529d0ef370d2bbb83b37a5))
+
+- Rename rework skill to rework-pr
+  ([`1ee41b4`](https://github.com/onpaj/harness/commit/1ee41b41853395d3ac5503ac14d9f81da8269e8e))
+
+- Rename .claude/skills/rework → .claude/skills/rework-pr - Rename agentharness/data/skills/rework →
+  agentharness/data/skills/rework-pr (maintain packaged mirror) - Rename tests/test_rework.py →
+  tests/test_rework_pr.py - Update SKILL_DIR constant to reflect new path
+
+No behavior changes in this task; later tasks will modify the renamed files.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+### Testing
+
+- Guard the hygiene auto-reject verdict contract, fix stale automerge names
+  ([`a22baa0`](https://github.com/onpaj/harness/commit/a22baa08bb307854e2a67aad1befb56f28102b89))
+
+The hygiene auto-reject block must keep emitting a literal 'verdict: REJECT' line — rework-pr's
+  revision cap counts comments matching that regex, and nothing guarded it. Also fixes the test
+  module docstring and the agent-merged label description, both still saying /automerge.
+
+
 ## v0.20.0 (2026-08-04)
 
 ### Bug Fixes
