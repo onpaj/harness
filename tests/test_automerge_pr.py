@@ -187,6 +187,7 @@ def _pr(number, **overrides):
         "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
         "headRefName": f"feature/{number}-Thing", "additions": 10,
         "deletions": 2, "changedFiles": 2, "body": "", "labels": [],
+        "createdAt": "2026-08-01T00:00:00Z",
     }
     base.update(overrides)
     return base
@@ -235,6 +236,12 @@ def test_pr_with_no_closes_link_yields_null_linked_issue(gh_stub):
     result = gh_stub([_pr(129, body="No issue reference here.")])
 
     assert result["candidates"][0]["linkedIssue"] is None
+
+
+def test_candidate_reports_created_at(gh_stub):
+    result = gh_stub([_pr(129, createdAt="2026-08-03T12:00:00Z")])
+
+    assert result["candidates"][0]["createdAt"] == "2026-08-03T12:00:00Z"
 
 
 def test_truncates_at_twenty_and_reports_the_remainder(gh_stub):
