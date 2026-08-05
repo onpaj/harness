@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.25.0 (2026-08-05)
+
+### Features
+
+- Add update-agentharness skill
+  ([`0e74ebf`](https://github.com/onpaj/harness/commit/0e74ebfd51bbd311380f45faef27930083bbefac))
+
+Upgrades the uv-tool-installed agentharness CLI, refreshes this project's .agents/.pipeline/.claude
+  scaffolding via agentharness init, and asks before a --force re-run since that silently overwrites
+  any project-specific skill/agent customizations.
+
+
 ## v0.24.2 (2026-08-05)
 
 ### Bug Fixes
