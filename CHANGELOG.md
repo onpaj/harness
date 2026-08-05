@@ -1,6 +1,24 @@
 # CHANGELOG
 
 
+## v0.22.0 (2026-08-05)
+
+### Features
+
+- Hygiene-pr flags needs-work on still-failing/conflict PRs
+  ([`170c57a`](https://github.com/onpaj/harness/commit/170c57a3edce8e88a7388172035916034f56b21c))
+
+hygiene-pr and hygiene-all were runnable independent of automerge-pr, but a standalone run that
+  found a PR still-failing or genuinely conflicted left no trace at all — invisible to rework-pr's
+  candidate search and to a human unless they were staring at that one report.
+
+Moves the needs-work flag + explanatory comment (via apply_verdict.sh, the same mechanism
+  automerge-pr used for a code-review rejection) into update_and_wait.sh itself, since automerge-pr
+  calls that script directly rather than following hygiene-pr's SKILL.md — putting the fix in
+  SKILL.md prose alone would not have covered automerge-pr's path. automerge-pr's own step 2
+  simplifies to reading the status back rather than duplicating the write.
+
+
 ## v0.21.0 (2026-08-05)
 
 ### Bug Fixes
