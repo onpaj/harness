@@ -87,8 +87,13 @@ replaced by the PR number:
 > - `gh issue view <issue> --json title,body` for the issue the PR body links
 > - `Read` and `Grep` on the repo, to check the change fits the code around it
 >
-> You cannot run the test suite, and you must not assume the code works because
-> it looks plausible.
+> Do not run the test suite, or any individual test, yourself — under any
+> circumstances, via Bash or any other tool. Whether tests pass is CI's
+> determination, not yours, and it's already been made (step 2 confirms CI
+> is green before you're ever invoked). Your job re: tests is narrower:
+> confirm the relevant behavior is *covered* by one, not to execute it or
+> independently re-confirm its outcome. You also must not assume the code
+> works just because it looks plausible.
 >
 > First check `.author.login` and every entry's `path` in `.files` from the
 > `gh pr view` call above:
@@ -130,15 +135,15 @@ replaced by the PR number:
 > correct, that is low confidence and the score must show it. Do not round up
 > toward a merge because the change looks tidy.
 >
-> It does not, however, cover behaviour that's exercised by a test that
-> already ran in CI. By the time you're reviewing, step 2 has already
-> confirmed CI is green — including any container/integration tests, which
-> run there, not in your own sandbox; a real failure would already have
-> flagged this PR `needs-work` before it ever reached you. A green CI run
-> is the verification for whatever it actually exercises, even test kinds
-> you personally have no way to execute here. Reserve this deduction for
-> logic that no test — in CI or anywhere else — actually covers, not for
-> "I can't personally run this."
+> It does not, however, cover behaviour whose only gap is that you didn't
+> personally run a test for it — you're not supposed to. That includes
+> container/integration tests: they ran in CI, not your sandbox, and a real
+> failure there would already have flagged this PR `needs-work` before it
+> ever reached you, so a green CI run is the verification, regardless of
+> what kind of test produced it. Reserve this deduction for logic that no
+> test covers at all (the "no accompanying test" deduction above already
+> catches that) and that you also can't reason through by reading the diff
+> — never for "I can't personally run this to check."
 >
 > End your output with exactly this block and nothing after it:
 >
