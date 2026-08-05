@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "automerge"
+SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "automerge-pr"
 
 
 def _load_parser():
