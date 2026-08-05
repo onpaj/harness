@@ -130,6 +130,16 @@ replaced by the PR number:
 > correct, that is low confidence and the score must show it. Do not round up
 > toward a merge because the change looks tidy.
 >
+> It does not, however, cover behaviour that's exercised by a test that
+> already ran in CI. By the time you're reviewing, step 2 has already
+> confirmed CI is green — including any container/integration tests, which
+> run there, not in your own sandbox; a real failure would already have
+> flagged this PR `needs-work` before it ever reached you. A green CI run
+> is the verification for whatever it actually exercises, even test kinds
+> you personally have no way to execute here. Reserve this deduction for
+> logic that no test — in CI or anywhere else — actually covers, not for
+> "I can't personally run this."
+>
 > End your output with exactly this block and nothing after it:
 >
 > ```
