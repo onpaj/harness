@@ -15,6 +15,22 @@ code, and resolving any real conflict when syncing with the default branch.
 
 One PR per invocation. Run this skill again for the next one.
 
+## 0. Resolve `$REPO` first
+
+Every script beside this file detects the repo explicitly and passes
+`--repo "$REPO"` to each `gh` call. The `gh` commands in *this* file must do
+the same — step 3 onward runs inside a worktree at a different path, where
+`gh`'s implicit cwd-based repo resolution is unreliable. Resolve it once,
+up front, the same way `find_candidate.sh` does:
+
+```bash
+REPO="${GH_REPO:-$(git remote get-url origin | sed -e 's#.*github\.com[:/]##' -e 's#\.git$##')}"
+```
+
+If that does not produce an `owner/name` pair, stop and say so — do not
+fall back to implicit resolution. Use `--repo "$REPO"` on every `gh`
+invocation below.
+
 ## 1. Resolve the target PR
 
 If a PR number was given in your invocation, use it as `{N}` and skip to
@@ -38,7 +54,7 @@ stop. Otherwise set `{N}` from `.candidate.number`.
 ## 2. Confirm it's open, then claim it
 
 ```bash
-gh pr view {N} --json state --jq .state
+gh pr view {N} --repo "$REPO" --json state --jq .state
 ```
 
 If the result is not `OPEN`, report this PR as skipped (not pushed to) and
@@ -49,23 +65,38 @@ may not exist in the repo yet — create it best-effort first, the same
 pattern `apply_verdict.sh` already uses for `needs-work`/`agent-merged`:
 
 ```bash
-gh label create agent-wip --color fbca04 \
+gh label create agent-wip --repo "$REPO" --color fbca04 \
   --description "Claimed by an in-progress /rework-pr run" >/dev/null 2>&1 || true
-gh pr edit {N} --add-label agent-wip
+gh pr edit {N} --repo "$REPO" --add-label agent-wip
 ```
 
-**From this point on, every exit path (not-open — already handled above,
-unresolved conflict in step 4, exhausted push retries in step 6, or
-success) must release this claim**:
+**From this point on, release this claim on ANY exit, for any reason** —
+including a script exiting non-zero, a `git` command failing, an unexpected
+error, or running out of turns mid-task:
 
 ```bash
-gh pr edit {N} --remove-label agent-wip
+gh pr edit {N} --repo "$REPO" --remove-label agent-wip
 ```
 
-Do this even on a path that also leaves `needs-work` in place — the claim
-and the `needs-work` label are independent; releasing the claim just makes
-this PR visible to the next `find_candidate.sh`/`list_candidates.sh` run
-again.
+The four paths called out below are the common cases, **not an exhaustive
+list** — the rule is general. Nothing sweeps a leaked `agent-wip` label:
+`find_candidate.sh` and `list_candidates.sh` skip a PR carrying it forever,
+with no TTL, so a claim you fail to release takes that PR out of the
+backlog permanently.
+
+Common cases, as illustrations:
+
+1. Not open — already handled above.
+2. Unresolved conflict in step 4.
+3. Exhausted push retries in step 6.
+4. Success — `finish_revision.sh` releases the claim for you (it does so
+   *first*, before its comment and `needs-work` steps, for exactly this
+   reason).
+
+Release the claim even on a path that also leaves `needs-work` in place —
+the claim and the `needs-work` label are independent; releasing the claim
+just makes this PR visible to the next
+`find_candidate.sh`/`list_candidates.sh` run again.
 
 ## 3. Check out the PR's branch
 
@@ -75,7 +106,7 @@ worktree convention:
 ```bash
 HEAD_REF=$(jq -r '.candidate.headRefName // empty' /tmp/rework-candidate.json)
 # If you took the explicit-PR-number path in step 1, HEAD_REF came from
-# `gh pr view {N} --json headRefName --jq .headRefName` instead.
+# `gh pr view {N} --repo "$REPO" --json headRefName --jq .headRefName` instead.
 WORKTREE="../worktrees/$(echo "$HEAD_REF" | sed 's#/#-#')"
 
 if [ -d "$WORKTREE" ]; then
@@ -92,7 +123,7 @@ the primary checkout.
 ## 4. Sync with the default branch — merge, not rebase
 
 ```bash
-DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name)
 git -C "$WORKTREE" fetch origin "$DEFAULT_BRANCH"
 git -C "$WORKTREE" merge "origin/$DEFAULT_BRANCH" --no-edit
 ```
@@ -121,9 +152,9 @@ the latest `/automerge-pr` block, so context from earlier rounds or a
 human's inline notes is not lost:
 
 ```bash
-gh pr view {N} --json title,body,comments,reviews
-gh api repos/{owner}/{repo}/pulls/{N}/comments
-gh pr diff {N}
+gh pr view {N} --repo "$REPO" --json title,body,comments,reviews
+gh api "repos/$REPO/pulls/{N}/comments"
+gh pr diff {N} --repo "$REPO"
 ```
 
 This includes any hygiene auto-reject comment `/automerge-pr` posted
@@ -154,14 +185,23 @@ while [ "$attempt" -le 3 ]; do
   if [ "$attempt" -eq 3 ]; then
     # Exhausted retries — stop. Do not call finish_revision.sh: needs-work
     # must stay on a PR whose fix did not actually land.
-    gh pr edit {N} --remove-label agent-wip
+    gh pr edit {N} --repo "$REPO" --remove-label agent-wip
     echo "push failed after 3 attempts; report what landed on the branch that this run did not push"
     exit 1
   fi
   git -C "$WORKTREE" fetch origin "$HEAD_REF"
-  # Same judgement rule as step 4: merge in what's there, resolve any real
-  # conflict, abort+stop (release the claim first) if intent is unclear.
-  git -C "$WORKTREE" merge "origin/$HEAD_REF" --no-edit
+  # Same judgement rule as step 4, with the same explicit conflict branch:
+  # merge in what's there; if the merge itself fails, resolve any real
+  # conflict and re-run the merge, or abort+release+stop if intent is
+  # unclear. Never let a failed merge fall through into another push.
+  if ! git -C "$WORKTREE" merge "origin/$HEAD_REF" --no-edit; then
+    # Resolve the conflicting files and `git -C "$WORKTREE" commit --no-edit`
+    # to complete the merge if the intent is clear. Otherwise:
+    git -C "$WORKTREE" merge --abort
+    gh pr edit {N} --repo "$REPO" --remove-label agent-wip
+    echo "push-retry merge conflicted and its intent was unclear; report this PR as skipped"
+    exit 1
+  fi
   attempt=$((attempt + 1))
 done
 ```
@@ -188,10 +228,26 @@ git worktree remove "$WORKTREE"
 
 ## 8. Report
 
-State which PR you revised, what you changed, whether you had to resolve a
-merge conflict in step 4 or retry the push in step 6, and the `skipped`
-list from step 1 (if you took that path) with reasons — a PR sitting at
-the revision cap needs a human to look at it.
+This step is the report contract for **every** exit path, not just the
+successful one — `/rework-all` tells its subagents to report exactly what
+this step asks for, so an early exit must still answer it.
+
+If you revised the PR: state which PR, what you changed, whether you had to
+resolve a merge conflict in step 4 or retry the push in step 6, and the
+`skipped` list from step 1 (if you took that path) with reasons — a PR
+sitting at the revision cap needs a human to look at it.
+
+If you exited early, state the PR number and exactly one of these outcomes,
+with its reason:
+
+| Outcome | Exited at |
+|---------|-----------|
+| `not-open` — the PR was merged or closed before work started | step 2 |
+| `conflict resolution declined` — a step 4 (or step 6 push-retry) merge conflict whose intent was unclear; the merge was aborted and nothing was pushed | step 4 / step 6 |
+| `push retries exhausted` — 3 rejected pushes; say what landed on the branch that this run did not push | step 6 |
+
+In every early-exit case, also confirm the `agent-wip` claim was released
+(step 2's blanket rule) and that `needs-work` was left in place.
 
 ## Constants
 
