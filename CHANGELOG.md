@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v0.27.0 (2026-08-05)
+
+### Features
+
+- Flag mid-confidence automerge-pr reviews as human-required
+  ([`7604500`](https://github.com/onpaj/harness/commit/76045003475e9ba5111fb43abd9606ab11176c96))
+
+A PR scoring in the comment band (40-79) got a fresh review comment on every
+  automerge-pr/automerge-all sweep, forever, since nothing marked it as already handled.
+  apply_verdict.sh now labels it human-required after posting the review, and candidates.sh excludes
+  that label from future candidate lists, so it's reviewed once and then left for a human to act on
+  or clear the label for another pass.
+
+- Make agentharness init overwrite scaffolding by default
+  ([`3e03d90`](https://github.com/onpaj/harness/commit/3e03d90ca3572640142f8ade6e21e7d8d88d2e50))
+
+Skipping existing files by default meant re-running init after an upgrade silently left stale
+  .agents/.pipeline/.claude scaffolding in place unless --force was remembered. Overwrite is now
+  unconditional; --force is kept as a hidden no-op for backward compatibility with existing scripts.
+  update-agentharness no longer needs to ask before a separate forced re-run — it just recommends
+  checking git status first.
+
+
 ## v0.26.1 (2026-08-05)
 
 ### Bug Fixes
