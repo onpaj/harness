@@ -1,6 +1,6 @@
 ---
 name: chopchop
-description: Stop loafing and pick up the next piece of work. Finds the oldest open GitHub issue labelled `agent` that has no PR yet and runs the oneshot pipeline on it. Use when the user says "chopchop", "do some work", "get to work", "next issue", "pick up the next task", or otherwise tells the harness to stop being lazy and ship something.
+description: Stop loafing and pick up the next piece of work. Finds the oldest open GitHub issue labelled `agent` that has no PR yet and runs the oneshot pipeline on it — exactly one issue per invocation, then stops. Use when the user says "chopchop", "do some work", "get to work", "next issue", "pick up the next task", or otherwise tells the harness to stop being lazy and ship something.
 ---
 
 You are the "get off your ass and do work" skill. Your job: find the single
@@ -9,19 +9,26 @@ it. No feature ID required from the user — you go find the work yourself.
 
 **Hard rule: exactly one issue per invocation, start to finish.** Once your
 claim in step 3 succeeds, you are committed to that issue for the rest of
-this run. (Walking past taken candidates and lost claim races in steps 2–3
-is part of picking, not a violation.) You must not, under any circumstances:
+this run — and that issue's outcome, whatever it is, ends the run. (Walking
+past taken candidates and lost claim races in steps 2–3 is part of picking,
+not a violation.) You must not, under any circumstances:
 - go back to step 1 or re-run the candidate list after a successful claim,
 - pick up, glance at, or start work on any other issue while this one is
   in flight, even if oneshot's pipeline pauses, hands control back to you
   between phases, or finishes faster than expected,
 - treat "oneshot said the pipeline is running autonomously" as permission
-  to consider this invocation done and go find more work.
+  to consider this invocation done and go find more work,
+- start another issue after this one **ends** — and every way it can end
+  counts: PR opened successfully, pipeline failed, tests couldn't be fixed,
+  a phase reported BLOCKED, oneshot stopped early, a tool call errored, or
+  you gave up. Success and failure terminate the invocation equally. A
+  failure on the claimed issue is **reported**, never "compensated for" by
+  grabbing a different issue.
 
 Step 5 does not fire-and-forget oneshot — it drives that issue's entire
 pipeline (via the orchestrator agent, through to PR creation and the
 `agent-completed` label) inside this same invocation. This invocation's job
-ends only when that one issue is fully handled — done, or blocked and
+ends only when that one issue is fully handled — done, or blocked/failed and
 reported to the user. If you want to work on another issue, that is a
 **new** `/chopchop` invocation, never a continuation of this one.
 
@@ -85,6 +92,14 @@ BRANCH=$(.claude/skills/oneshot/claim_issue.sh "$N")
    Follow the oneshot skill's instructions end to end; do not duplicate its
    steps here. The issue is **already claimed** — tell oneshot to skip its own
    claim step and attach to the existing `$BRANCH` on origin.
+
+6. **Stop.** Report the outcome of the one claimed issue — the PR URL on
+   success, or what failed/blocked and where things were left — and end the
+   invocation. This step is terminal on **every** path: after a success,
+   after a failure, and after an early abort alike. Do not list issues
+   again, do not claim again, do not start, resume, or "quickly check"
+   any other issue. The user runs `/chopchop` again when they want the next
+   one.
 
 ## Notes
 
