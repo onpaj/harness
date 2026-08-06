@@ -49,14 +49,35 @@ WORKTREE="../worktrees/feature-${ISSUE_ID}-${SLUG}"
 agentharness status {feature_id}
 ```
 
-3. **Mark the issue as work-in-progress.** Using the `gh` CLI, add the
-   `agent-wip` label to the feature's GitHub issue and remove the `agent` label
-   if it is present:
+3. **Check it isn't already claimed, then mark it work-in-progress.** This
+   is the one place a duplicate pipeline gets started on the same issue, so
+   check live labels immediately before claiming — do not rely on a
+   candidate list (e.g. `chopchop`'s) that may be stale by the time you
+   reach this step:
+```bash
+gh issue view {issue_number} --json labels --jq '[.labels[].name]'
+```
+   If the result already contains `agent-wip`, **stop** — do not add the
+   label again, do not create a worktree, and do not proceed to step 4.
+   Report to the user that this issue already has an in-progress pipeline
+   (someone else's `/oneshot`, `/chopchop`, or a concurrent invocation of
+   this same one won the race) and suggest `/absorb` if a PR already
+   exists for it, rather than starting a second, competing implementation.
+   If the result already contains `agent-completed`, stop the same way —
+   this issue is already done.
+
+   Otherwise, claim it:
 ```bash
 gh issue edit {issue_number} --add-label agent-wip --remove-label agent
 ```
    If the issue has no `agent` label, the `--remove-label` is a harmless no-op;
    keep `--add-label agent-wip` regardless.
+
+   This check-then-claim is still not a true atomic lock — GitHub's label
+   API has no compare-and-set, so two invocations reading "not yet claimed"
+   in the same instant can still both proceed. It closes the common case
+   (a stale candidate list, or a second invocation arriving any measurable
+   time after the first), not the theoretical simultaneous one.
 
 4. Create and enter a dedicated worktree on the `feature/{issue_id}-{Title-Slug}`
    branch (compute `BRANCH` and `WORKTREE` as shown in **Naming convention**):

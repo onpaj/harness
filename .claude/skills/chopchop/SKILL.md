@@ -7,6 +7,23 @@ You are the "get off your ass and do work" skill. Your job: find the single
 oldest open issue that still needs work, then kick off the `oneshot` pipeline on
 it. No feature ID required from the user — you go find the work yourself.
 
+**Hard rule: exactly one issue per invocation, start to finish.** Once you
+pick an issue in step 2, you are committed to it for the rest of this run.
+You must not, under any circumstances:
+- go back to step 1 or re-run the candidate list during this invocation,
+- pick up, glance at, or start work on any other issue while this one is
+  in flight, even if oneshot's pipeline pauses, hands control back to you
+  between phases, or finishes faster than expected,
+- treat "oneshot said the pipeline is running autonomously" as permission
+  to consider this invocation done and go find more work.
+
+Step 4 does not fire-and-forget oneshot — it drives that issue's entire
+pipeline (via the orchestrator agent, through to PR creation and the
+`agent-completed` label) inside this same invocation. This invocation's job
+ends only when that one issue is fully handled — done, or blocked and
+reported to the user. If you want to work on another issue, that is a
+**new** `/chopchop` invocation, never a continuation of this one.
+
 ## What you do
 
 1. **List candidate issues.** Get all open issues labelled `agent`, oldest
@@ -56,3 +73,10 @@ gh pr list --state all --json number,headRefName \
   `oneshot` uses (matched by the `feature/{N}-` prefix). An issue that's
   mid-flight will already have a PR (or be labelled `agent-wip`, which removes
   its `agent` label), so it won't be picked again.
+- Step 1's list can still be stale by the time step 4 reaches `oneshot`'s
+  own claim (e.g. another `/chopchop` or a direct `/oneshot` invocation
+  claimed the same issue in between) — `oneshot`'s SKILL.md step 3 does a
+  live-label recheck immediately before claiming and refuses to start a
+  second pipeline on an already-claimed issue. If that happens, report it
+  to the user and stop; do not fall back to picking a different issue in
+  this same invocation.
