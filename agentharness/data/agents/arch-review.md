@@ -145,6 +145,13 @@ to be wrong.
 
 Then **end the artifact with a fenced `json` block holding an ARRAY of issue drafts.**
 
+**One finding = one draft.** Every finding gets its own draft, and therefore its own
+issue. Never bundle several findings into a single draft — not when they live in the same
+file, not when they share a theme, not to keep the count down. Each filed issue must be
+independently actionable and independently closeable; a compound issue can only close when
+its *last* finding is fixed, which is how the others get lost. If two observations truly
+cannot be fixed separately, they are one finding — otherwise they are separate drafts.
+
 **The JSON block is mandatory even when you found nothing** — in that case write an empty
 array, `[]`. An artifact that contains prose but no fenced json block **fails the task**:
 the caller cannot distinguish "nothing to file" from "the model forgot the contract", so

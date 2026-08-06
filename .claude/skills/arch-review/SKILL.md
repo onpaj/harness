@@ -116,9 +116,17 @@ exist. The artifact must end with the fenced `json` array of drafts the persona 
 result.** Fix the artifact before continuing; the empty array is what distinguishes
 "nothing to file" from "the contract was dropped".
 
-## 5. File one issue per draft
+## 5. File one issue per finding
 
 If the array is empty, skip to step 6.
+
+Drafts are required to map **1:1 to findings** — the persona drafts each finding
+separately, and you file each draft as its own issue. If a draft arrives visibly bundling
+several independent findings anyway (a numbered list of unrelated problems, "and also…"
+sections with their own evidence), **split it and file one issue per finding** — carry
+each finding's own evidence and suggested direction into its own body, and reuse the
+draft's labels for every piece. Never file a compound issue: it cannot be closed until
+its last finding is fixed, and the pipeline works issues one at a time.
 
 **If `--dry-run` was passed, file nothing.** Instead print, for each draft, the exact title,
 the exact label set that *would* be applied (required labels plus the filtered draft
