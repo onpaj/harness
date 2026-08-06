@@ -1,6 +1,45 @@
 # CHANGELOG
 
 
+## v0.28.2 (2026-08-06)
+
+### Bug Fixes
+
+- Atomic issue claiming so parallel chopchop runs never pick the same issue
+  ([`5175456`](https://github.com/onpaj/harness/commit/5175456a0e9f5498114de2c15ba8b6e66f51213b))
+
+Concurrent /chopchop invocations raced between listing candidate issues and oneshot's label swap —
+  GitHub's label API has no compare-and-set, so both runners could read "unclaimed" and start
+  competing pipelines on one issue.
+
+The claim is now the remote feature/{N}-{slug} branch itself, created through the GitHub refs API by
+  the new claim_issue.sh: creating an already-existing ref fails, so exactly one concurrent claimer
+  wins. The agent -> agent-wip label swap remains for visibility but is advisory only.
+
+- chopchop: pre-filters candidates on remote feature/{N}-* branches (catches mid-flight pipelines
+  with no PR yet), claims atomically before invoking oneshot, and treats a lost race as "move to the
+  next candidate" - oneshot: replaces the label check-then-claim with the claim script, and attaches
+  its worktree to the claim branch fetched from origin - documents stale-claim recovery (delete
+  branch, restore agent label)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_0119kwAnDkr6iqTG1AtMTqUK
+
+- Make chopchop terminate after its single issue on every outcome
+  ([`e40786f`](https://github.com/onpaj/harness/commit/e40786fe7902114b6d4694050d23c03dbf7f2cc0))
+
+The one-issue-per-invocation rule only spelled out the in-flight cases, so a run whose issue failed
+  or aborted early could read "report and stop" as license to pick up another issue. Every terminal
+  outcome — PR opened, pipeline failed, BLOCKED, early abort — now explicitly ends the invocation,
+  via a new terminal "Stop" step and an expanded hard-rule bullet; a failure is reported, never
+  compensated for by grabbing a different issue.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_0119kwAnDkr6iqTG1AtMTqUK
+
+
 ## v0.28.1 (2026-08-06)
 
 ### Bug Fixes
