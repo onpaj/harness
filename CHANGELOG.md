@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v0.28.1 (2026-08-06)
+
+### Bug Fixes
+
+- Close claim-race gaps across oneshot/chopchop/rework-pr
+  ([`de3a0a6`](https://github.com/onpaj/harness/commit/de3a0a63adc91d2da9350e843908297e2db10576))
+
+The agent-wip "claim" used to start a pipeline or revision was a blind label set with no check
+  first. oneshot's explicit-issue-number path (the one chopchop and any direct /oneshot N call
+  takes) had no pre-check at all, so two concurrent invocations targeting the same issue would both
+  relabel and both start a competing pipeline. rework-pr had the same gap for an explicit PR number,
+  relying only on find_candidate.sh's already-possibly-stale snapshot. Both now re-fetch live labels
+  immediately before claiming and refuse to proceed if already agent-wip/agent-completed, pointing
+  at /absorb when a PR already exists. This narrows the race; it's still not a true atomic lock
+  since gh's label API has no compare-and-set — documented as such in both skills, and rework-all's
+  Limits section no longer overstates the guarantee across separate invocations.
+
+Also hardens chopchop: it previously only noted "one issue per invocation" as an aside at the
+  bottom. Made it a hard, explicit rule up front — chopchop drives its picked issue's entire
+  pipeline within the same invocation and must never glance at or start another issue in that run,
+  even if oneshot returns control early.
+
+
 ## v0.28.0 (2026-08-05)
 
 ### Features
