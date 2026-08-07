@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.30.0 (2026-08-07)
+
+### Features
+
+- Harden plan-next-issue and implement-next-task with self-heal and verify steps
+  ([`b7d100c`](https://github.com/onpaj/harness/commit/b7d100cfdde3b5f80fdbbba9f780842dd6191eb5))
+
+Ports skill improvements from anela.heblo's onpaj/eider branch: plan-next-issue now accepts an
+  explicit issue number to target and self-heal a stale claim, derives PR titles from the spec
+  instead of a placeholder, and both skills verify their GitHub-state guarantees (PR draft/labels)
+  before reporting success, retrying once on failure instead of trusting that API calls landed.
+
+
 ## v0.29.0 (2026-08-07)
 
 
