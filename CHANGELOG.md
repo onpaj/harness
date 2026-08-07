@@ -1,6 +1,9 @@
 # CHANGELOG
 
 
+## v0.29.0 (2026-08-07)
+
+
 ## v0.28.2 (2026-08-06)
 
 ### Bug Fixes
@@ -61,6 +64,34 @@ Also hardens chopchop: it previously only noted "one issue per invocation" as an
   bottom. Made it a hard, explicit rule up front — chopchop drives its picked issue's entire
   pipeline within the same invocation and must never glance at or start another issue in that run,
   even if oneshot returns control early.
+
+### Features
+
+- Split oneshot pipeline into plan-next-issue / implement-next-task skills
+  ([`1d99e1f`](https://github.com/onpaj/harness/commit/1d99e1f02bedb262a0fb6482bac689c6c658f8c1))
+
+Replaces the single monolithic /oneshot session (used by the hourly /chopchop automation) with two
+  independent, short-lived, label-driven skills so the pipeline can no longer pile up long-lived
+  sessions or lose work when a machine dies mid-run.
+
+plan-next-issue claims one `agent` issue, runs analyst through planner, opens a draft PR, and hands
+  off via a label. implement-next-task claims an issue in that hand-off label and does exactly one
+  bounded unit of work (one dev task + review, one code-review round, or finishing) per invocation,
+  pushing before it exits, so any later invocation on any machine can resume purely from GitHub/git
+  state.
+
+Root-caused from 10 issues stuck on agent-wip in Anela.Heblo: an hourly cron with no concurrency cap
+  piled up long single-session invocations, and the developer/test phase was slow enough that
+  sessions never kept up with the trigger cadence.
+
+Includes a full whole-branch review pass that caught and fixed 13 cross-file issues invisible to
+  per-task review (missing GitHub labels, a concurrency gate that counted its own process, the
+  planning stage never pushing to origin, an in-progress-issue starvation bug, and a
+  terminal-failure path that could permanently block the implementing stage), each independently
+  re-verified.
+
+See docs/superpowers/specs/2026-08-07-two-phase-labeled-pipeline-design.md and
+  docs/superpowers/plans/2026-08-07-two-phase-labeled-pipeline.md.
 
 
 ## v0.28.0 (2026-08-05)
