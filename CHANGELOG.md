@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.31.0 (2026-08-10)
+
+### Features
+
+- Add USE_GH_API to run pipeline skills without the gh CLI
+  ([`ee84275`](https://github.com/onpaj/harness/commit/ee84275f02af2f15b0577c183c5e8f5346ebbcb7))
+
+Some environments don't permit installing/authenticating the gh CLI. Adds
+  .claude/skills/_lib/gh_api.sh, a curl+REST/GraphQL client needing only GITHUB_TOKEN, and wires
+  USE_GH_API-gated branching into every skill script and SKILL.md instruction that shells out to gh
+  (oneshot, plan-next-issue, implement-next-task, hygiene-pr, automerge-pr, rework-pr, absorb,
+  arch-review, chopchop). The library normalizes GraphQL-only fields (mergeStateStatus,
+  reviewDecision, statusCheckRollup) to REST equivalents so existing jq filters need no changes, and
+  handles pr-ready (draft->ready) via GraphQL since REST has no undraft endpoint. Verified
+  field-for-field against live repo data; full test suite passes.
+
+github-storage/SKILL.md (a human-driven debugging cheatsheet, not part of the unattended pipeline)
+  intentionally stays gh-CLI-only.
+
+
 ## v0.30.0 (2026-08-07)
 
 ### Features
