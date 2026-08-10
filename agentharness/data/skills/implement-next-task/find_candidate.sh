@@ -7,7 +7,7 @@
 # combined eligible set wins, regardless of which label it carries.
 #
 # This is deliberately NOT the same strict-tiered pattern
-# plan-next-issue/find_candidate.sh uses (fresh `agent` issues always beat
+# plan-next-task/find_candidate.sh uses (fresh `agent` issues always beat
 # a stale `agent-planning` reclaim there) -- the two situations differ.
 # There, "reclaim" means "maybe still actively planning, don't wrongly
 # interrupt it." Here, an `agent-implementing` issue past the staleness
@@ -121,7 +121,7 @@ for n in $sorted_implementing_numbers; do
 done
 
 # Merge both eligible pools and pick the oldest by createdAt across the
-# combined set -- unlike plan-next-issue/find_candidate.sh, this is NOT a
+# combined set -- unlike plan-next-task/find_candidate.sh, this is NOT a
 # strict tiered preference. See the header comment for why.
 candidate=$(jq -n --argjson ready "$ready_eligible" --argjson impl "$implementing_eligible" \
   '($ready + $impl) | sort_by(.createdAt) | if length == 0 then null else .[0] end')

@@ -25,7 +25,7 @@ fi
 # literal argv string -- so this script's own process (and any wrapping
 # shell layers between the top-level `claude` process and this script, and
 # that `claude` process itself, since its own argv legitimately contains
-# something like `claude --dangerously-skip-permissions "/plan-next-issue"`)
+# something like `claude --dangerously-skip-permissions "/plan-next-task"`)
 # can all spuriously match $PATTERN just by having invoked this script.
 # Excluding only $PPID (one PID) is not enough -- walk the whole ancestry.
 SELF_LINEAGE="$$"

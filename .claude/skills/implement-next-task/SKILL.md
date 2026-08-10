@@ -25,13 +25,13 @@ as-is rather than picking one form by hand.
    Planning's:
 
 ```bash
-.claude/skills/plan-next-issue/check_concurrency.sh "${IMPLEMENT_MAX_CONCURRENT:-2}" \
+.claude/skills/plan-next-task/check_concurrency.sh "${IMPLEMENT_MAX_CONCURRENT:-2}" \
   "claude.*--dangerously-skip-permissions.*implement-next-task"
 ```
 
    Exit code `4` means at capacity -- report "implementing at capacity,
    skipping this cycle" and stop here. Do not claim anything. (This calls
-   `plan-next-issue`'s script by path rather than duplicating it -- both
+   `plan-next-task`'s script by path rather than duplicating it -- both
    skill directories always ship together via `agentharness init`, so the
    relative path always resolves.)
 
@@ -88,13 +88,13 @@ fi
    `agent-implementing` -- no label change needed.
 
 4. **Attach a worktree to the existing branch.** The branch and PR already
-   exist (created by `/plan-next-issue`) -- never create a new branch
+   exist (created by `/plan-next-task`) -- never create a new branch
    here, and never re-derive the branch name from the issue's current
    title: issue titles can be edited after the branch was created (routine
    on agent-managed issues), and re-running the slug-derivation pipeline
    against a live, possibly-edited title can produce a slug that no longer
    matches the real branch, permanently orphaning the issue. Look up the
-   actual branch on the remote instead, the same way `plan-next-issue`'s
+   actual branch on the remote instead, the same way `plan-next-task`'s
    own stale-reclaim path does:
 
 ```bash
@@ -246,7 +246,7 @@ fi
 
    (`gh pr comment` accepts a branch name as the target. `gh pr ready` accepts
    either a PR number or branch. The PR was opened against `$BRANCH` by
-   `/plan-next-issue`.)
+   `/plan-next-task`.)
 
 8. **Otherwise** (more work remains -- a dev task passed, a revision was
    requested, or a code-review round finished with more Blocking

@@ -1,4 +1,4 @@
-"""Tests for the /plan-next-issue skill scripts."""
+"""Tests for the /plan-next-task skill scripts."""
 import json
 import subprocess
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "plan-next-issue"
+SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "plan-next-task"
 
 PGREP_STUB = """\
 #!/usr/bin/env bash
@@ -59,25 +59,25 @@ def concurrency_runner(tmp_path):
 
 
 def test_under_capacity_exits_zero(concurrency_runner):
-    proc = concurrency_runner(2, "plan-next-issue", ["111"])
+    proc = concurrency_runner(2, "plan-next-task", ["111"])
     assert proc.returncode == 0, proc.stderr
     assert "under capacity: 1/2" in proc.stdout
 
 
 def test_at_capacity_exits_four(concurrency_runner):
-    proc = concurrency_runner(2, "plan-next-issue", ["111", "222"])
+    proc = concurrency_runner(2, "plan-next-task", ["111", "222"])
     assert proc.returncode == 4
     assert "at capacity: 2/2" in proc.stderr
 
 
 def test_over_capacity_exits_four(concurrency_runner):
-    proc = concurrency_runner(1, "plan-next-issue", ["111", "222", "333"])
+    proc = concurrency_runner(1, "plan-next-task", ["111", "222", "333"])
     assert proc.returncode == 4
     assert "at capacity: 3/1" in proc.stderr
 
 
 def test_zero_matches_is_under_capacity(concurrency_runner):
-    proc = concurrency_runner(2, "plan-next-issue", [])
+    proc = concurrency_runner(2, "plan-next-task", [])
     assert proc.returncode == 0
     assert "under capacity: 0/2" in proc.stdout
 
@@ -200,7 +200,7 @@ def test_multi_level_ancestry_all_excluded_true_count_reported(tmp_path):
         "PS_STUB_CLAUDE_PID": fake_claude_pid,
     }
     proc = subprocess.run(
-        [str(wrapper), "2", "claude.*plan-next-issue"],
+        [str(wrapper), "2", "claude.*plan-next-task"],
         capture_output=True, text=True, env=env,
     )
     assert proc.returncode == 0, proc.stderr
@@ -577,7 +577,7 @@ def test_plan_orchestrator_ends_with_planning_complete_message():
     assert "Planning complete for feat-{issue_number}. Ready for implementing." in content
 
 
-def test_plan_next_issue_skill_exists_and_wires_dependencies():
+def test_plan_next_task_skill_exists_and_wires_dependencies():
     content = (SKILL_DIR / "SKILL.md").read_text()
     assert "check_concurrency.sh" in content
     assert "find_candidate.sh" in content

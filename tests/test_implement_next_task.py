@@ -232,7 +232,7 @@ def test_implement_orchestrator_stops_after_one_unit():
 def test_implement_next_task_skill_exists_and_wires_dependencies():
     content = (SKILL_DIR / "SKILL.md").read_text()
     assert "check_concurrency.sh" in content
-    assert "plan-next-issue/check_concurrency.sh" in content  # cross-skill by-path call
+    assert "plan-next-task/check_concurrency.sh" in content  # cross-skill by-path call
     assert "find_candidate.sh" in content
     assert "implement-orchestrator.md" in content
     assert "agent-completed" in content

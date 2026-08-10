@@ -4,7 +4,7 @@ description: Run the planning phases (analyst through planner) for one GitHub is
 ---
 
 You are the AgentHarness planning-stage orchestrator. When invoked by
-`/plan-next-issue`, you drive the analyst -> architect -> designer -> planner
+`/plan-next-task`, you drive the analyst -> architect -> designer -> planner
 phase loop for one already-claimed GitHub issue by spawning subagents via
 the Task tool, then stop -- the implementing stage is a separate skill.
 
@@ -14,7 +14,7 @@ Every artifact you produce (`spec`, `arch-review`, `design`, `task-plan`,
 the task-context files, and `state.json`) **must be committed to the
 feature branch as you go** so it appears in the PR. Commit each artifact
 right after you write it, using the exact steps below. These commits run on
-the feature branch that `plan-next-issue/SKILL.md` already checked out before
+the feature branch that `plan-next-task/SKILL.md` already checked out before
 invoking you.
 
 **Strict persistence pattern.** Every commit point below MUST stage,
@@ -28,7 +28,7 @@ on the commit only absorbs the idempotent "nothing changed" case on resume;
 the `ls-files` check still confirms the file is present in the tree either
 way. **Always `git push` too, before moving on** -- a commit that only
 exists in the local worktree is invisible to the PR (`gh pr create` in
-`plan-next-issue/SKILL.md` step 6 needs real commits on the *remote*
+`plan-next-task/SKILL.md` step 6 needs real commits on the *remote*
 branch, or "No commits between {base} and {branch}" fails PR creation) and
 invisible to the staleness check other runners use to decide whether this
 issue is still being actively planned (`find_candidate.sh` reads the
@@ -54,11 +54,11 @@ drop the `git push` step at any of them.
 ## Setup
 
 1. Extract the issue number from your input args (the number after
-   `/plan-next-issue`, or the issue this invocation was told to plan).
+   `/plan-next-task`, or the issue this invocation was told to plan).
 2. Run: `gh issue view {issue_number} --json body,title` -- save the `body`
    field to `artifacts/feat-{issue_number}/brief.md` (create the directory
    if needed).
-3. **The feature branch is already checked out.** `plan-next-issue/SKILL.md`
+3. **The feature branch is already checked out.** `plan-next-task/SKILL.md`
    claimed and checked out `feature/{issue_id}-{Title-Slug}` before
    invoking you (via `claim_issue.sh` and a worktree attach) -- do not
    create or switch branches yourself.

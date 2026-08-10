@@ -1,5 +1,5 @@
 ---
-name: plan-next-issue
+name: plan-next-task
 description: Automated planning-stage worker for the AgentHarness pipeline. Claims one ready `agent` issue (or resumes a stale `agent-planning` claim), runs analyst through planner, opens a draft PR, and hands off to /implement-next-task. Also accepts an explicit issue number to target and self-heal a specific issue. Triggered on a schedule; not normally invoked directly by a human.
 ---
 
@@ -38,7 +38,7 @@ hand.
 
 ## Targeting a specific issue (optional)
 
-If invoked with an explicit issue number (e.g. `/plan-next-issue 3853`),
+If invoked with an explicit issue number (e.g. `/plan-next-task 3853`),
 skip `find_candidate.sh` (step 2) entirely and resolve `$ISSUE_ID`,
 `$SOURCE`, `$BRANCH`, `$SLUG` yourself so steps 3 onward run unchanged:
 
@@ -110,8 +110,8 @@ EXISTING_BRANCH=$(git ls-remote --heads origin "feature/${ISSUE_ID}-*" | head -1
    are already running on this machine:
 
 ```bash
-.claude/skills/plan-next-issue/check_concurrency.sh "${PLAN_MAX_CONCURRENT:-2}" \
-  "claude.*--dangerously-skip-permissions.*plan-next-issue"
+.claude/skills/plan-next-task/check_concurrency.sh "${PLAN_MAX_CONCURRENT:-2}" \
+  "claude.*--dangerously-skip-permissions.*plan-next-task"
 ```
 
    Exit code `4` means at capacity -- report "planning at capacity, skipping
@@ -129,7 +129,7 @@ EXISTING_BRANCH=$(git ls-remote --heads origin "feature/${ISSUE_ID}-*" | head -1
 
 ```bash
 set +e
-RESULT=$(.claude/skills/plan-next-issue/find_candidate.sh)
+RESULT=$(.claude/skills/plan-next-task/find_candidate.sh)
 FIND_EXIT=$?
 set -e
 if [ "$FIND_EXIT" -ne 0 ] || [ -z "$RESULT" ]; then
@@ -151,7 +151,7 @@ SOURCE=$(echo "$RESULT" | jq -r '.candidate.source')
 3. **Claim it, if fresh.** If `SOURCE == "fresh"`:
 
 ```bash
-BRANCH=$(.claude/skills/plan-next-issue/claim_issue.sh "$ISSUE_ID" agent-planning)
+BRANCH=$(.claude/skills/plan-next-task/claim_issue.sh "$ISSUE_ID" agent-planning)
 SLUG=${BRANCH#feature/${ISSUE_ID}-}
 ```
 

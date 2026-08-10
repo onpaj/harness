@@ -42,21 +42,21 @@ def test_pr_linking_script_ships_with_oneshot():
     )
 
 
-def test_check_concurrency_script_ships_with_plan_next_issue():
-    script = DATA_SKILLS / "plan-next-issue" / "check_concurrency.sh"
+def test_check_concurrency_script_ships_with_plan_next_task():
+    script = DATA_SKILLS / "plan-next-task" / "check_concurrency.sh"
     assert script.is_file(), (
-        "check_concurrency.sh must ship inside plan-next-issue so both "
+        "check_concurrency.sh must ship inside plan-next-task so both "
         "automated skills' concurrency gate is always present"
     )
 
 
-def test_claim_issue_script_ships_with_plan_next_issue():
-    script = DATA_SKILLS / "plan-next-issue" / "claim_issue.sh"
-    assert script.is_file(), "claim_issue.sh must ship inside plan-next-issue"
+def test_claim_issue_script_ships_with_plan_next_task():
+    script = DATA_SKILLS / "plan-next-task" / "claim_issue.sh"
+    assert script.is_file(), "claim_issue.sh must ship inside plan-next-task"
 
 
 def test_find_candidate_scripts_ship_with_both_new_skills():
-    assert (DATA_SKILLS / "plan-next-issue" / "find_candidate.sh").is_file()
+    assert (DATA_SKILLS / "plan-next-task" / "find_candidate.sh").is_file()
     assert (DATA_SKILLS / "implement-next-task" / "find_candidate.sh").is_file()
 
 

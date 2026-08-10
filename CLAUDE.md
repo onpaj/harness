@@ -265,7 +265,7 @@ cp .env.example .env
 ### `gh` CLI vs REST API in Claude Code skills
 
 The `.claude/skills/*` scripts and SKILL.md instructions (the pipeline's
-automated workers — `plan-next-issue`, `implement-next-task`, `oneshot`,
+automated workers — `plan-next-task`, `implement-next-task`, `oneshot`,
 `hygiene-pr`, `automerge-pr`, `rework-pr`, `absorb`, `arch-review`,
 `chopchop`, and friends) normally shell out to the `gh` CLI. Setting
 `USE_GH_API=1` in the environment switches every one of those calls to
