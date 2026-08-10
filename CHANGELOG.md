@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.31.1 (2026-08-10)
+
+### Refactoring
+
+- Rename plan-next-issue skill to plan-next-task
+  ([`5f5ed2b`](https://github.com/onpaj/harness/commit/5f5ed2b61eb9f79891b32916fea45ed208a08851))
+
+Consolidates naming with implement-next-task so both automated pipeline workers use consistent
+  "task" terminology instead of mixing issue/task. Renames the skill directory in both
+  .claude/skills and its packaged mirror in agentharness/data/skills, and updates every
+  cross-reference (implement-next-task's by-path calls, plan-orchestrator.md, CLAUDE.md, and tests).
+
+
 ## v0.31.0 (2026-08-10)
 
 ### Features
