@@ -262,6 +262,26 @@ cp .env.example .env
 
 `.env` is loaded automatically via `python-dotenv` in `config.py`. Never commit `.env` — it's in `.gitignore`.
 
+### `gh` CLI vs REST API in Claude Code skills
+
+The `.claude/skills/*` scripts and SKILL.md instructions (the pipeline's
+automated workers — `plan-next-issue`, `implement-next-task`, `oneshot`,
+`hygiene-pr`, `automerge-pr`, `rework-pr`, `absorb`, `arch-review`,
+`chopchop`, and friends) normally shell out to the `gh` CLI. Setting
+`USE_GH_API=1` in the environment switches every one of those calls to
+`.claude/skills/_lib/gh_api.sh` instead — a curl+REST/GraphQL client
+requiring only `GITHUB_TOKEN` (or `GIT_PAT`) and network access to
+`api.github.com`, for environments where installing/authenticating the
+`gh` CLI itself is not possible. Each script and SKILL.md bash block
+already branches on the variable internally, so setting it is the only
+thing needed; no separate installation step. `_lib/gh_api.sh` is installed
+automatically by `agentharness init` alongside the rest of `.claude/skills`.
+
+`github-storage/SKILL.md` (the human-driven GitHub-backend debugging
+cheatsheet) is the one exception — it stays `gh`-CLI-only, since it's a
+reference for interactive terminal use, not part of the unattended
+pipeline.
+
 ## Pluggable backend system
 
 The backend system is defined in `storage_protocol.py` and factored in `storage.py`:

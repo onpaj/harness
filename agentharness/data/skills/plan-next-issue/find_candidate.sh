@@ -9,6 +9,28 @@
 # (already claimed, caller attaches the worktree directly).
 set -euo pipefail
 
+# When USE_GH_API is set, every `gh` call below routes through the shared
+# curl+REST library instead — for environments where the `gh` CLI itself is
+# not permitted. See .claude/skills/_lib/gh_api.sh for the transport layer;
+# the logic here is unchanged either way.
+LIB=".claude/skills/_lib/gh_api.sh"
+
+issue_list_json() {  # state, label
+  if [[ -n "${USE_GH_API:-}" ]]; then
+    GH_REPO="$REPO" "$LIB" issue-list "$1" "$2"
+  else
+    gh issue list --repo "$REPO" --state "$1" --label "$2" --limit 100 --json number,title,createdAt
+  fi
+}
+
+commit_data_for() {  # ref
+  if [[ -n "${USE_GH_API:-}" ]]; then
+    GH_REPO="$REPO" "$LIB" GET "repos/$REPO/commits/$1" 2>/dev/null || echo ""
+  else
+    gh api "repos/$REPO/commits/$1" 2>/dev/null || echo ""
+  fi
+}
+
 AGENT_LABEL="agent"
 PLANNING_LABEL="agent-planning"
 STALE_MINUTES="${STALE_MINUTES:-10}"
@@ -29,8 +51,7 @@ if [ -z "$REPO" ]; then
   fi
 fi
 
-agent_json=$(gh issue list --repo "$REPO" --state open --label "$AGENT_LABEL" \
-  --limit 100 --json number,title,createdAt)
+agent_json=$(issue_list_json open "$AGENT_LABEL")
 
 # Walk the `agent`-labeled pool oldest-to-newest and skip any issue that
 # already has a feature/{n}-* branch on origin -- this happens when
@@ -67,8 +88,7 @@ fi
 
 # The whole `agent`-labeled pool is exhausted (all skipped or none exist)
 # -- look for a stale `agent-planning` claim to reclaim.
-planning_json=$(gh issue list --repo "$REPO" --state open --label "$PLANNING_LABEL" \
-  --limit 100 --json number,title,createdAt)
+planning_json=$(issue_list_json open "$PLANNING_LABEL")
 
 # Parse NOW_OVERRIDE or use current time. Handle both GNU date (Linux) and BSD date (macOS)
 now_time="${NOW_OVERRIDE:-now}"
@@ -87,7 +107,7 @@ for n in $sorted_numbers; do
       '. + [{number: $n, reason: "claimed but no branch found yet (in progress)"}]')
     continue
   fi
-  commit_data=$(gh api "repos/$REPO/commits/$ref" 2>/dev/null || echo "")
+  commit_data=$(commit_data_for "$ref")
   # `gh api` prints its error body to stdout even on a non-zero exit (e.g.
   # a 404 or a transient 5xx), so a failed call does NOT yield an empty
   # string here -- it yields error JSON like {"message":"Not Found"}, and

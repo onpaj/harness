@@ -20,6 +20,28 @@
 # "source" is "fresh-handoff" or "stale-reclaim".
 set -euo pipefail
 
+# When USE_GH_API is set, every `gh` call below routes through the shared
+# curl+REST library instead — for environments where the `gh` CLI itself is
+# not permitted. See .claude/skills/_lib/gh_api.sh for the transport layer;
+# the logic here is unchanged either way.
+LIB=".claude/skills/_lib/gh_api.sh"
+
+issue_list_json() {  # state, label
+  if [[ -n "${USE_GH_API:-}" ]]; then
+    GH_REPO="$REPO" "$LIB" issue-list "$1" "$2"
+  else
+    gh issue list --repo "$REPO" --state "$1" --label "$2" --limit 100 --json number,title,createdAt
+  fi
+}
+
+commit_data_for() {  # ref
+  if [[ -n "${USE_GH_API:-}" ]]; then
+    GH_REPO="$REPO" "$LIB" GET "repos/$REPO/commits/$1" 2>/dev/null || echo ""
+  else
+    gh api "repos/$REPO/commits/$1" 2>/dev/null || echo ""
+  fi
+}
+
 READY_LABEL="agent-ready-for-dev"
 IMPLEMENTING_LABEL="agent-implementing"
 STALE_MINUTES="${STALE_MINUTES:-10}"
@@ -40,10 +62,8 @@ if [ -z "$REPO" ]; then
   fi
 fi
 
-ready_json=$(gh issue list --repo "$REPO" --state open --label "$READY_LABEL" \
-  --limit 100 --json number,title,createdAt)
-implementing_json=$(gh issue list --repo "$REPO" --state open --label "$IMPLEMENTING_LABEL" \
-  --limit 100 --json number,title,createdAt)
+ready_json=$(issue_list_json open "$READY_LABEL")
+implementing_json=$(issue_list_json open "$IMPLEMENTING_LABEL")
 
 # Parse NOW_OVERRIDE or use current time. Handle both GNU date (Linux) and BSD date (macOS)
 now_time="${NOW_OVERRIDE:-now}"
@@ -69,7 +89,7 @@ for n in $sorted_implementing_numbers; do
       '. + [{number: $n, reason: "no branch found for a claimed implementing issue (unexpected)"}]')
     continue
   fi
-  commit_data=$(gh api "repos/$REPO/commits/$ref" 2>/dev/null || echo "")
+  commit_data=$(commit_data_for "$ref")
   # `gh api` prints its error body to stdout even on a non-zero exit, so a
   # failed call does NOT yield an empty string here -- it yields error
   # JSON, and `.commit.committer.date` on that is the literal string

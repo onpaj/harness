@@ -11,6 +11,12 @@ several separate invocations of this skill -- that is intentional, not a
 bug: it is what keeps any single invocation from running long enough to
 pile up under the hourly trigger.
 
+**If `USE_GH_API` is set in the environment**, every `gh` invocation shown
+below is routed through `.claude/skills/_lib/gh_api.sh` instead -- a
+curl+REST equivalent for environments where the `gh` CLI itself is not
+permitted. Each bash block below already branches on it; run the block
+as-is rather than picking one form by hand.
+
 ## What you do
 
 1. **Check concurrency.** This is the resource-heavy stage (real
@@ -67,9 +73,14 @@ SOURCE=$(echo "$RESULT" | jq -r '.candidate.source')
 
 ```bash
 if [ "$SOURCE" = "fresh-handoff" ]; then
-  gh label create agent-implementing --color 5319e7 \
-    --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-  gh issue edit "$ISSUE_ID" --remove-label agent-ready-for-dev --add-label agent-implementing
+  if [ -n "${USE_GH_API:-}" ]; then
+    .claude/skills/_lib/gh_api.sh label-create agent-implementing 5319e7 "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+    .claude/skills/_lib/gh_api.sh issue-edit "$ISSUE_ID" --remove-label agent-ready-for-dev --add-label agent-implementing
+  else
+    gh label create agent-implementing --color 5319e7 \
+      --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+    gh issue edit "$ISSUE_ID" --remove-label agent-ready-for-dev --add-label agent-implementing
+  fi
 fi
 ```
 
@@ -126,6 +137,8 @@ cd "$WORKTREE"
    directly instead:
 
 ```bash
+LIB=".claude/skills/_lib/gh_api.sh"
+
 FAILED_TASK=$(jq -r '.tasks[]? | select(.status == "failed") | .name' \
   "artifacts/feat-${ISSUE_ID}/state.json" 2>/dev/null | head -1)
 
@@ -139,14 +152,26 @@ if [ -n "$FAILED_TASK" ]; then
   # agent-implementing, it would keep winning the oldest-wins candidate
   # selection against every newer issue and starve the whole stage.
   LATEST_REVIEW=$(ls -1 "artifacts/feat-${ISSUE_ID}/review/${FAILED_TASK}.r"*.md 2>/dev/null | sort -V | tail -n1)
-  gh pr ready "$BRANCH" 2>/dev/null || true   # undraft if still draft, so it's visible
-  gh label create needs-work --color d93f0b \
-    --description "Agent review found blocking problems" >/dev/null 2>&1 || true
-  gh pr edit "$BRANCH" --add-label needs-work 2>/dev/null || true
-  gh label create agent-needs-human --color d93f0b \
-    --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-  gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-needs-human 2>/dev/null || true
-  gh pr comment "$BRANCH" --body "$(printf 'Task **%s** failed after exhausting max revisions.\n\nSee `%s` for the last review that requested changes.\n\nThis PR needs a human to look at it -- the automated pipeline cannot make further progress on this task.\n' "$FAILED_TASK" "${LATEST_REVIEW:-review file not found}")" 2>/dev/null || true
+  COMMENT_BODY=$(printf 'Task **%s** failed after exhausting max revisions.\n\nSee `%s` for the last review that requested changes.\n\nThis PR needs a human to look at it -- the automated pipeline cannot make further progress on this task.\n' "$FAILED_TASK" "${LATEST_REVIEW:-review file not found}")
+  if [ -n "${USE_GH_API:-}" ]; then
+    "$LIB" pr-ready "$BRANCH" 2>/dev/null || true   # undraft if still draft, so it's visible
+    "$LIB" label-create needs-work d93f0b "Agent review found blocking problems" >/dev/null 2>&1 || true
+    "$LIB" pr-edit "$BRANCH" --add-label needs-work 2>/dev/null || true
+    "$LIB" label-create agent-needs-human d93f0b "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+    "$LIB" issue-edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-needs-human 2>/dev/null || true
+    COMMENT_FILE=$(mktemp); printf '%s' "$COMMENT_BODY" > "$COMMENT_FILE"
+    "$LIB" pr-comment "$BRANCH" "$COMMENT_FILE" 2>/dev/null || true
+    rm -f "$COMMENT_FILE"
+  else
+    gh pr ready "$BRANCH" 2>/dev/null || true   # undraft if still draft, so it's visible
+    gh label create needs-work --color d93f0b \
+      --description "Agent review found blocking problems" >/dev/null 2>&1 || true
+    gh pr edit "$BRANCH" --add-label needs-work 2>/dev/null || true
+    gh label create agent-needs-human --color d93f0b \
+      --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+    gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-needs-human 2>/dev/null || true
+    gh pr comment "$BRANCH" --body "$COMMENT_BODY" 2>/dev/null || true
+  fi
   echo "Terminal failure: task ${FAILED_TASK} exhausted max_revisions for feat-${ISSUE_ID}. Flagged needs-work, swapped agent-implementing for agent-needs-human on the issue, and removed it from the implementing queue."
 fi
 ```
@@ -163,6 +188,8 @@ fi
    string matches but artifact state does not yet confirm completion:
 
 ```bash
+LIB=".claude/skills/_lib/gh_api.sh"
+
 TASKS_DONE=$(agentharness checkpoint status "feat-${ISSUE_ID}" 2>/dev/null | grep -q '"type": "complete"' && echo yes || echo no)
 FIX_PENDING="artifacts/feat-${ISSUE_ID}/task-context/code-review-fixes.md"
 
@@ -170,22 +197,45 @@ if [ "$TASKS_DONE" = "yes" ] && [ ! -f "$FIX_PENDING" ]; then
   # Artifact state confirms finishing -- surface code review and undraft
   REVIEW_FILE=$(ls -1 artifacts/feat-${ISSUE_ID}/code-review.r*.md 2>/dev/null | sort -V | tail -n1)
   if [ -n "$REVIEW_FILE" ]; then
-    gh pr comment "$BRANCH" --body "$(printf '## Code review\n\n%s\n' "$(cat "$REVIEW_FILE")")" 2>/dev/null || true
+    REVIEW_BODY=$(printf '## Code review\n\n%s\n' "$(cat "$REVIEW_FILE")")
+    if [ -n "${USE_GH_API:-}" ]; then
+      REVIEW_COMMENT_FILE=$(mktemp); printf '%s' "$REVIEW_BODY" > "$REVIEW_COMMENT_FILE"
+      "$LIB" pr-comment "$BRANCH" "$REVIEW_COMMENT_FILE" 2>/dev/null || true
+      rm -f "$REVIEW_COMMENT_FILE"
+    else
+      gh pr comment "$BRANCH" --body "$REVIEW_BODY" 2>/dev/null || true
+    fi
   fi
-  gh pr ready "$BRANCH"
-  gh label create agent-completed --color 5319e7 \
-    --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-  gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed
+  if [ -n "${USE_GH_API:-}" ]; then
+    "$LIB" pr-ready "$BRANCH"
+    "$LIB" label-create agent-completed 5319e7 "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+    "$LIB" issue-edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed
+  else
+    gh pr ready "$BRANCH"
+    gh label create agent-completed --color 5319e7 \
+      --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+    gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed
+  fi
 
   # Verify before reporting "complete" -- don't assume the two GitHub-state calls above
   # landed just because they didn't throw.
   FINISH_OK=true
-  gh pr view "$BRANCH" --json isDraft --jq '.isDraft == false' 2>/dev/null | grep -q true || FINISH_OK=false
-  gh issue view "$ISSUE_ID" --json labels --jq '[.labels[].name] | index("agent-completed")' 2>/dev/null | grep -qv null || FINISH_OK=false
+  if [ -n "${USE_GH_API:-}" ]; then
+    "$LIB" pr-view "$BRANCH" 2>/dev/null | jq -e '.isDraft == false' >/dev/null || FINISH_OK=false
+    "$LIB" issue-view "$ISSUE_ID" 2>/dev/null | jq -e '[.labels[].name] | index("agent-completed")' >/dev/null || FINISH_OK=false
+  else
+    gh pr view "$BRANCH" --json isDraft --jq '.isDraft == false' 2>/dev/null | grep -q true || FINISH_OK=false
+    gh issue view "$ISSUE_ID" --json labels --jq '[.labels[].name] | index("agent-completed")' 2>/dev/null | grep -qv null || FINISH_OK=false
+  fi
   if [ "$FINISH_OK" != "true" ]; then
     # One repair retry, then report exactly what's still wrong rather than "complete".
-    gh pr ready "$BRANCH" 2>/dev/null || true
-    gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
+    if [ -n "${USE_GH_API:-}" ]; then
+      "$LIB" pr-ready "$BRANCH" 2>/dev/null || true
+      "$LIB" issue-edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
+    else
+      gh pr ready "$BRANCH" 2>/dev/null || true
+      gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
+    fi
   fi
 else
   # Orchestrator said finishing but artifact state disagrees -- do not undraft.

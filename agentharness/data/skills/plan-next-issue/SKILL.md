@@ -12,6 +12,12 @@ implementing/developer/review/code-review phases -- that is
 This skill **always works inside a dedicated git worktree**, the same
 convention `/oneshot` uses -- never run against the primary checkout.
 
+**If `USE_GH_API` is set in the environment**, every `gh` invocation shown
+below is routed through `.claude/skills/_lib/gh_api.sh` instead -- a
+curl+REST equivalent for environments where the `gh` CLI itself is not
+permitted. Each bash block below already branches on it; run the block
+as-is rather than picking one form by hand.
+
 **You run unattended.** Nobody is watching this run to answer a question --
 every decision point below must resolve on its own from repo/GitHub state.
 Never use an interactive question/confirmation mechanism to defer a
@@ -63,9 +69,14 @@ EXISTING_BRANCH=$(git ls-remote --heads origin "feature/${ISSUE_ID}-*" | head -1
      other label the issue happens to carry; a label like `agent-wip` set
      by an unrelated process is not this skill's to touch:
      ```bash
-     gh label create agent-planning --color 5319e7 \
-       --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-     gh issue edit "$ISSUE_ID" --add-label agent-planning >/dev/null 2>&1 || true
+     if [ -n "${USE_GH_API:-}" ]; then
+       .claude/skills/_lib/gh_api.sh label-create agent-planning 5319e7 "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+       .claude/skills/_lib/gh_api.sh issue-edit "$ISSUE_ID" --add-label agent-planning >/dev/null 2>&1 || true
+     else
+       gh label create agent-planning --color 5319e7 \
+         --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+       gh issue edit "$ISSUE_ID" --add-label agent-planning >/dev/null 2>&1 || true
+     fi
      ```
   3. **Catch the worktree up with the default branch before doing
      anything else**, in case the claim ref (or the worktree's own base)
@@ -73,7 +84,11 @@ EXISTING_BRANCH=$(git ls-remote --heads origin "feature/${ISSUE_ID}-*" | head -1
      merged to the default branch since the branch was created, and
      pushing without catching up first fails non-fast-forward:
      ```bash
-     DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+     if [ -n "${USE_GH_API:-}" ]; then
+       DEFAULT_BRANCH=$(.claude/skills/_lib/gh_api.sh default-branch)
+     else
+       DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+     fi
      git fetch origin "$DEFAULT_BRANCH"
      git merge "origin/$DEFAULT_BRANCH" -m "chore: merge $DEFAULT_BRANCH to catch up stale claim ref" 2>&1
      ```
@@ -193,7 +208,11 @@ cd "$WORKTREE"
    already produced rather than inventing a new summary:
 
 ```bash
-DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+if [ -n "${USE_GH_API:-}" ]; then
+  DEFAULT_BRANCH=$(.claude/skills/_lib/gh_api.sh default-branch)
+else
+  DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+fi
 
 # spec.r1.md's first line is `# Specification: {descriptive title}` -- use that as the
 # PR title's summary. Fall back to the issue's own title if spec.r1.md is missing or its
@@ -201,16 +220,15 @@ DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.na
 # "implementation" -- an unhelpful title is worse than a slightly-off one).
 SPEC_TITLE=$(sed -n '1s/^# Specification: //p' "artifacts/feat-${ISSUE_ID}/spec.r1.md" 2>/dev/null)
 if [ -z "$SPEC_TITLE" ]; then
-  SPEC_TITLE=$(gh issue view "$ISSUE_ID" --json title --jq '.title')
+  if [ -n "${USE_GH_API:-}" ]; then
+    SPEC_TITLE=$(.claude/skills/_lib/gh_api.sh issue-view "$ISSUE_ID" | jq -r '.title')
+  else
+    SPEC_TITLE=$(gh issue view "$ISSUE_ID" --json title --jq '.title')
+  fi
 fi
 
-PR_URL=$(gh pr create \
-  --draft \
-  --base "$DEFAULT_BRANCH" \
-  --head "$BRANCH" \
-  --label agent \
-  --title "#${ISSUE_ID}: ${SPEC_TITLE}" \
-  --body "$(cat <<EOF
+BODY_FILE=$(mktemp)
+cat > "$BODY_FILE" <<EOF
 Closes #${ISSUE_ID}
 
 ## What the issue was
@@ -223,7 +241,20 @@ in as \`/implement-next-task\` runs.
 ## Artifacts
 - Brief, spec, arch-review, design, and task-plan markdown are committed in this branch.
 EOF
-)")
+
+if [ -n "${USE_GH_API:-}" ]; then
+  PR_URL=$(.claude/skills/_lib/gh_api.sh pr-create "$DEFAULT_BRANCH" "$BRANCH" "#${ISSUE_ID}: ${SPEC_TITLE}" "$BODY_FILE" agent)
+  # pr-create only sets `draft:true` unconditionally; nothing further needed here.
+else
+  PR_URL=$(gh pr create \
+    --draft \
+    --base "$DEFAULT_BRANCH" \
+    --head "$BRANCH" \
+    --label agent \
+    --title "#${ISSUE_ID}: ${SPEC_TITLE}" \
+    --body-file "$BODY_FILE")
+fi
+rm -f "$BODY_FILE"
 .claude/skills/oneshot/ensure_pr_linked.sh "$PR_URL" "$ISSUE_ID"
 ```
 
@@ -238,9 +269,14 @@ EOF
    label:
 
 ```bash
-gh label create agent-ready-for-dev --color 5319e7 \
-  --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-gh issue edit "$ISSUE_ID" --remove-label agent-planning --add-label agent-ready-for-dev
+if [ -n "${USE_GH_API:-}" ]; then
+  .claude/skills/_lib/gh_api.sh label-create agent-ready-for-dev 5319e7 "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+  .claude/skills/_lib/gh_api.sh issue-edit "$ISSUE_ID" --remove-label agent-planning --add-label agent-ready-for-dev
+else
+  gh label create agent-ready-for-dev --color 5319e7 \
+    --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
+  gh issue edit "$ISSUE_ID" --remove-label agent-planning --add-label agent-ready-for-dev
+fi
 ```
 
 8. **Remove the worktree before exiting**, regardless of outcome --
@@ -262,8 +298,13 @@ git worktree remove "$WORKTREE" --force 2>/dev/null || true
    8's `cd "$REPO_ROOT"`):
 
 ```bash
-PR_STATE=$(gh pr view "$BRANCH" --json isDraft,state,labels,body 2>/dev/null)
-ISSUE_LABELS=$(gh issue view "$ISSUE_ID" --json labels --jq '[.labels[].name]' 2>/dev/null)
+if [ -n "${USE_GH_API:-}" ]; then
+  PR_STATE=$(.claude/skills/_lib/gh_api.sh pr-view "$BRANCH" 2>/dev/null)
+  ISSUE_LABELS=$(.claude/skills/_lib/gh_api.sh issue-view "$ISSUE_ID" 2>/dev/null | jq -c '[.labels[].name]')
+else
+  PR_STATE=$(gh pr view "$BRANCH" --json isDraft,state,labels,body 2>/dev/null)
+  ISSUE_LABELS=$(gh issue view "$ISSUE_ID" --json labels --jq '[.labels[].name]' 2>/dev/null)
+fi
 
 PR_OK=true
 echo "$PR_STATE" | jq -e '.isDraft == true' >/dev/null || PR_OK=false
@@ -276,7 +317,11 @@ if [ "$PR_OK" != "true" ]; then
   # One repair attempt -- re-run the idempotent guarantee steps rather than
   # silently reporting success on a half-finished handoff.
   .claude/skills/oneshot/ensure_pr_linked.sh "$BRANCH" "$ISSUE_ID" || true
-  gh issue edit "$ISSUE_ID" --remove-label agent-planning --add-label agent-ready-for-dev 2>/dev/null || true
+  if [ -n "${USE_GH_API:-}" ]; then
+    .claude/skills/_lib/gh_api.sh issue-edit "$ISSUE_ID" --remove-label agent-planning --add-label agent-ready-for-dev 2>/dev/null || true
+  else
+    gh issue edit "$ISSUE_ID" --remove-label agent-planning --add-label agent-ready-for-dev 2>/dev/null || true
+  fi
   # Re-check once; if still failing, this is what gets reported in step 10 --
   # never claim "ready for implementing" while any of the above is still false.
 fi
