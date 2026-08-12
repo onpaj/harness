@@ -1,6 +1,40 @@
 # CHANGELOG
 
 
+## v0.31.2 (2026-08-12)
+
+### Bug Fixes
+
+- Stop hygiene back-merging PRs that merge fine, and waiting on CI it never saw start
+  ([`ffbf8ab`](https://github.com/onpaj/harness/commit/ffbf8abbbb5589ed381ce4e56059bf5ddecb7b83))
+
+Two defects in hygiene-pr/update_and_wait.sh combined into a feedback loop that made whole
+  /automerge-all sweeps skip every PR as `ci-running`.
+
+First, any nonzero `behind_by` from the compare API forced a `gh pr update-branch`, even on a
+  MERGEABLE/CLEAN PR. GitHub sets mergeStateStatus=BEHIND exactly when being behind blocks the merge
+  (the base requires branches to be up to date); everywhere else a behind PR merges fine, so the
+  back-merge changed nothing about mergeability and only started a CI run. Staleness alone is no
+  longer a reason to touch a PR — only BEHIND or CONFLICTING is. --force keeps the old behaviour for
+  explicit on-demand runs, and the compare API is no longer called at all without it.
+
+Second, the poll loop treated an empty statusCheckRollup as green, and its first read happens with
+  no delay after the push. GitHub reports an empty rollup for the first seconds after a new head
+  commit, so a back-merge reported `fixed` before the CI it triggered existed. That both let
+  /automerge-pr review and merge on checks that never ran (its reviewer is forbidden from running
+  tests, precisely because step 2 was supposed to have confirmed them) and left a run in flight for
+  the next sweep to find and skip. Post-update, an empty rollup now polls through a bounded grace
+  window (HYGIENE_NO_CHECKS_GRACE_ATTEMPTS, default 4) before being accepted as "this repo has no PR
+  CI".
+
+The `ci-running` short-circuit itself is unchanged, but its stated rationale was wrong and is
+  corrected in the comments and SKILL.md: it never had an in-flight build to cancel, since that
+  branch does not call update-branch — as --force polling the identical state already demonstrated.
+
+Adds 7 tests covering both defects (4 were failing before this change) and re-syncs the packaged
+  skill mirror.
+
+
 ## v0.31.1 (2026-08-10)
 
 ### Refactoring
