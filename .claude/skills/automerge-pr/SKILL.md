@@ -50,11 +50,12 @@ stop.
 .claude/skills/hygiene-pr/update_and_wait.sh --pr {N}
 ```
 
-This single call is cheap when there's nothing to do: if the branch is
-already current and checks are green, it reports `already-clean`
-immediately with no `gh pr update-branch` call and no polling. There is no
-separate "is it already fine" check to do yourself — this call *is* that
-check, plus the fix, in one step.
+This single call is cheap when there's nothing to do: if the PR is
+mergeable and its checks are green, it reports `already-clean` immediately
+with no `gh pr update-branch` call and no polling — including when the
+branch is some commits behind `master`, which blocks nothing and so is not
+back-merged. There is no separate "is it already fine" check to do
+yourself — this call *is* that check, plus the fix, in one step.
 
 Branch on its `status`:
 
@@ -69,8 +70,9 @@ Branch on its `status`:
   and stop — do not proceed to step 3 for this PR.
 - **`ci-running`** → report this PR as skipped (`CI already running from a
   prior push, retry later`) and stop. Nothing was touched this run — no
-  branch update, no polling — precisely so a build already in flight isn't
-  cancelled by this call.
+  branch update, no polling: the PR needs nothing done to it except for a
+  build someone else started to finish, and this run won't spend its poll
+  window waiting on that.
 - **`pending-timeout`** → report this PR as skipped
   (`CI checks pending, retry later`) and stop.
 - **`error`** → report this PR as skipped
@@ -241,7 +243,7 @@ Do not restate these values elsewhere; each lives in exactly one file.
 | `MERGE_THRESHOLD`, `NEEDS_WORK_THRESHOLD` | `parse_verdict.py` |
 | `MAX_CANDIDATES`, `AGENT_LABEL` | `candidates.sh` |
 | `MERGED_ISSUE_LABEL`, `NEEDS_WORK_LABEL`, `HUMAN_REQUIRED_LABEL` | `apply_verdict.sh` |
-| `HYGIENE_POLL_INTERVAL_SECONDS`, `HYGIENE_POLL_MAX_ATTEMPTS` | `hygiene-pr/update_and_wait.sh` |
+| `HYGIENE_POLL_INTERVAL_SECONDS`, `HYGIENE_POLL_MAX_ATTEMPTS`, `HYGIENE_NO_CHECKS_GRACE_ATTEMPTS` | `hygiene-pr/update_and_wait.sh` |
 
 ## Limits worth knowing
 

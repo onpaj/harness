@@ -89,7 +89,8 @@ def hygiene_runner(tmp_path):
 
     def run(view_sequence, pr=129, update_branch_exit=0, update_branch_err=None,
              max_attempts=5, interval=0, behind_by=0, view_exit=0, view_err=None,
-             label_edit_exit=0, label_edit_err=None, force=False):
+             label_edit_exit=0, label_edit_err=None, force=False,
+             no_checks_grace=4):
         for i, payload in enumerate(view_sequence, start=1):
             (view_dir / f"{i}.json").write_text(json.dumps(payload))
         env = {
@@ -105,6 +106,7 @@ def hygiene_runner(tmp_path):
             "GH_REPO": "onpaj/harness",
             "HYGIENE_POLL_INTERVAL_SECONDS": str(interval),
             "HYGIENE_POLL_MAX_ATTEMPTS": str(max_attempts),
+            "HYGIENE_NO_CHECKS_GRACE_ATTEMPTS": str(no_checks_grace),
         }
         if update_branch_err:
             env["GH_STUB_UPDATE_BRANCH_ERR"] = update_branch_err
@@ -229,17 +231,26 @@ def test_gh_pr_view_failure_reports_error_without_polling(hygiene_runner):
     assert not any("update-branch" in c for c in result["_gh_calls"])
 
 
-def test_behind_by_from_compare_api_triggers_update_even_when_state_is_clean(
-    hygiene_runner,
-):
-    # GitHub only reports mergeStateStatus=BEHIND when the base branch
-    # requires branches to be up to date. On an unprotected base branch the
-    # compare API's behind_by is the only staleness signal there is.
+def test_behind_but_mergeable_is_left_alone_without_force(hygiene_runner):
+    # Being behind only blocks a merge when the base branch requires branches
+    # to be up to date — and GitHub reports mergeStateStatus=BEHIND in exactly
+    # that case. A MERGEABLE/CLEAN PR merges fine however far behind it is, so
+    # backmerging it buys nothing and costs a CI run the next sweep then skips
+    # on as `ci-running`.
+    result = hygiene_runner([_view(merge_state="CLEAN")], behind_by=4)
+
+    assert result["status"] == "already-clean"
+    assert not any("update-branch" in c for c in result["_gh_calls"])
+    # The compare API isn't even consulted when nothing would act on it.
+    assert not any("/compare/" in c for c in result["_gh_calls"])
+
+
+def test_behind_but_mergeable_is_updated_under_force(hygiene_runner):
     pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
     success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
     result = hygiene_runner(
         [_view(merge_state="CLEAN", checks=pending), _view(checks=success)],
-        behind_by=4,
+        behind_by=4, force=True,
     )
 
     assert result["status"] == "fixed"
@@ -248,7 +259,7 @@ def test_behind_by_from_compare_api_triggers_update_even_when_state_is_clean(
 
 
 def test_both_signals_agree_branch_is_current_so_no_update_is_made(hygiene_runner):
-    result = hygiene_runner([_view(merge_state="CLEAN")], behind_by=0)
+    result = hygiene_runner([_view(merge_state="CLEAN")], behind_by=0, force=True)
 
     assert result["status"] == "already-clean"
     assert not any("update-branch" in c for c in result["_gh_calls"])
@@ -257,13 +268,89 @@ def test_both_signals_agree_branch_is_current_so_no_update_is_made(hygiene_runne
 def test_compare_api_is_only_consulted_once_not_per_poll(hygiene_runner):
     pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
     result = hygiene_runner(
-        [_view(merge_state="BEHIND", checks=pending)] + [_view(checks=pending)] * 3,
-        max_attempts=3,
+        [_view(merge_state="CLEAN", checks=pending)] + [_view(checks=pending)] * 3,
+        max_attempts=3, behind_by=4, force=True,
     )
 
     assert result["status"] == "pending-timeout"
     compare_calls = [c for c in result["_gh_calls"] if "/compare/" in c]
     assert len(compare_calls) == 1
+
+
+def test_blocking_behind_state_still_updates_without_force(hygiene_runner):
+    # mergeStateStatus=BEHIND means the merge really is blocked until the
+    # branch is current — that one still gets backmerged by default.
+    success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    result = hygiene_runner(
+        [_view(merge_state="BEHIND", checks=success), _view(checks=success)],
+    )
+
+    assert result["status"] == "fixed"
+    assert any("update-branch" in c for c in result["_gh_calls"])
+
+
+# === the post-update empty-rollup race ===
+#
+# `gh pr update-branch` pushes a new merge commit; GitHub takes a few seconds
+# to create that head's workflow runs. Until it does, statusCheckRollup is
+# empty — which this script's "no checks means nothing to wait for" rule read
+# as green, so it reported `fixed` before the CI it had just triggered even
+# existed. The caller then merged on unverified checks, and the next sweep
+# found that same run mid-flight and skipped the PR as `ci-running`.
+
+
+def test_empty_rollup_after_update_waits_for_checks_to_appear(hygiene_runner):
+    pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
+    success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    result = hygiene_runner([
+        _view(merge_state="BEHIND", checks=success),  # initial read: old head, green
+        _view(checks=[]),                             # poll 1: new head, no runs yet
+        _view(checks=pending),                        # poll 2: CI actually started
+        _view(checks=success),                        # poll 3: CI passed
+    ], max_attempts=10)
+
+    assert result["status"] == "fixed"
+    # Four reads: it kept polling instead of exiting on the empty rollup.
+    assert len([c for c in result["_gh_calls"] if c.startswith("pr view")]) == 4
+
+
+def test_empty_rollup_after_update_does_not_mask_a_failing_run(hygiene_runner):
+    failure = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    result = hygiene_runner([
+        _view(merge_state="BEHIND", checks=success),
+        _view(checks=[]),
+        _view(checks=failure),
+    ], max_attempts=10)
+
+    assert result["status"] == "still-failing"
+
+
+def test_no_checks_ever_appearing_after_update_is_still_fixed(hygiene_runner):
+    # A repo with no PR CI at all: the grace window expires and `fixed` was
+    # the right answer after all — this must not become a pending-timeout.
+    success = [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    result = hygiene_runner(
+        [_view(merge_state="BEHIND", checks=success)] + [_view(checks=[])] * 8,
+        max_attempts=10, no_checks_grace=2,
+    )
+
+    assert result["status"] == "fixed"
+    assert result["detail"] == "branch updated, checks are none"
+    # Waited out the grace window, then gave up on checks appearing.
+    assert len([c for c in result["_gh_calls"] if c.startswith("pr view")]) == 4
+
+
+def test_grace_window_does_not_apply_when_this_run_updated_nothing(hygiene_runner):
+    # --force polling an already-current PR never pushed anything, so there
+    # are no new checks to wait for — an empty rollup there is just "no CI".
+    pending = [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}]
+    result = hygiene_runner(
+        [_view(checks=pending), _view(checks=[])], force=True,
+    )
+
+    assert result["status"] == "fixed"
+    assert "already current" in result["detail"]
 
 
 def test_not_behind_but_ci_running_short_circuits_without_touching_branch(hygiene_runner):
