@@ -1,6 +1,39 @@
 # CHANGELOG
 
 
+## v0.31.3 (2026-08-12)
+
+### Bug Fixes
+
+- Uppercase CheckRun enums in gh_api.sh so USE_GH_API reads CI correctly
+  ([`c50908a`](https://github.com/onpaj/harness/commit/c50908a37a9994332a9a43e41fe5b95f763c09a9))
+
+gh_api.sh's contract is that each shaped subcommand emits the same field names AND value casing as
+  `gh ... --json`, so call-site jq filters work unchanged across both transports. The
+  statusCheckRollup CheckRun branch broke it: REST's check-runs endpoint returns status/conclusion
+  lowercase ("completed"/"success") and they were passed through untouched, while the StatusContext
+  branch right beside it already uppercased .state.
+
+update_and_wait.sh's CI_STATE_FILTER is written against gh's GraphQL enums, so `.status !=
+  "COMPLETED"` was true for every check run no matter its conclusion. Under USE_GH_API=1 that made
+  ci_state "pending" for any PR with at least one check, so hygiene-pr reported ci-running
+  unconditionally and automerge-all/hygiene-all skipped every candidate on every sweep. A failing
+  check took the same path, so a red PR was never flagged still-failing either — it just stalled as
+  ci-running forever.
+
+Verified against onpaj/Anela.Heblo#3901 (the reported repro): the rollup now matches `gh pr view
+  --json statusCheckRollup` field-for-field, and the real CI_STATE_FILTER resolves it to "success"
+  instead of "pending".
+
+Adds tests/test_gh_api.py — the library had none. Covers the casing itself, the null conclusion of
+  an in-progress run, the StatusContext branch, and three end-to-end cases through
+  update_and_wait.sh (green/red/actually running) via a stubbed curl. Four of the six failed before
+  this change.
+
+Audited the other shaped enum fields while here: issue/PR .state, mergeStateStatus, and
+  reviewDecision all normalize correctly already (REST returns review states uppercase).
+
+
 ## v0.31.2 (2026-08-12)
 
 ### Bug Fixes
