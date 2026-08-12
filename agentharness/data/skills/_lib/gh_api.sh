@@ -304,6 +304,15 @@ pr_view() {
   out=$(echo "$pr" | jq -c "$PR_SHAPE_JQ + {number: $n}")
 
   if [[ "$extra" == *statusCheckRollup* ]]; then
+    # Both branches below must uppercase their enum values: REST returns
+    # them lowercase ("completed"/"success"), gh's GraphQL-backed output
+    # returns the enums ("COMPLETED"/"SUCCESS"), and every call-site filter
+    # is written against the latter. Passing CheckRun's through unchanged
+    # made `.status != "COMPLETED"` true for every finished check, so
+    # hygiene-pr read all of them as pending and skipped every PR in the
+    # backlog as `ci-running` — including genuinely failing ones, which
+    # therefore never got flagged `still-failing` either. `conclusion` is
+    # null while a check is still running, so it can't be upcased blindly.
     sha=$(echo "$pr" | jq -r '.head.sha')
     local runs_resp status_resp rollup
     runs_resp=$(req GET "/repos/${REPO}/commits/${sha}/check-runs")
@@ -311,7 +320,9 @@ pr_view() {
     rollup=$(jq -cn \
       --argjson runs "$(emit "$runs_resp")" \
       --argjson status "$(emit "$status_resp")" \
-      '[($runs.check_runs // [])[] | {__typename:"CheckRun", status, conclusion}]
+      '[($runs.check_runs // [])[] | {__typename:"CheckRun",
+          status: (.status | ascii_upcase),
+          conclusion: (if .conclusion then (.conclusion | ascii_upcase) else null end)}]
        + [($status.statuses // [])[] | {__typename:"StatusContext", state: (.state | ascii_upcase)}]')
     out=$(echo "$out" | jq -c --argjson r "$rollup" '. + {statusCheckRollup: $r}')
   fi
