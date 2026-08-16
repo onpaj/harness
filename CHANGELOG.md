@@ -1,6 +1,47 @@
 # CHANGELOG
 
 
+## v0.31.4 (2026-08-16)
+
+### Refactoring
+
+- Route automerge skills' own GitHub reads through the github MCP server
+  ([`559a926`](https://github.com/onpaj/harness/commit/559a926881c96eb3bf6554e3e51d9afaa84166cf))
+
+The automerge skills mixed two transports at the agent level: the skill itself and its reviewer
+  subagent hand-wrote `gh` calls (with USE_GH_API branches beside each one), while the deterministic
+  work already lived in candidates.sh / apply_verdict.sh / hygiene-pr's update_and_wait.sh. Every
+  read the agent did therefore duplicated transport logic the scripts already own, in prose, twice
+  per call.
+
+Agent-level GitHub access now goes through the `github` MCP server and nothing else. The scripts are
+  untouched and keep their `gh` / USE_GH_API transport — the split is stated once, in automerge-pr's
+  new "GitHub access" section, rather than repeated at each call site.
+
+Converted calls: - current-branch PR lookup -> list_pull_requests (state=open, head=owner:branch) -
+  reviewer's pr view/diff -> pull_request_read get / get_files / get_diff - reviewer's issue view ->
+  issue_read get - step 5 linked-issue body fetch -> pull_request_read get
+
+Field references follow the REST shape the MCP tools return, not gh's JSON aliases: .author.login
+  becomes .user.login and .files[].path becomes .filename. Getting this wrong would have silently
+  broken the dependency-bot and docs-only exemptions, which branch on exactly those two fields.
+
+The reviewer's READ-ONLY prohibition now names the MCP write tools (merge_pull_request,
+  update_pull_request, issue_write, add_issue_comment, pull_request_review_write) instead of `gh pr
+  merge/close/edit`, and the Limits section's caveat about the reviewer sharing this skill's
+  credentials is restated in those terms.
+
+Tool names and parameter shapes were verified against the live server's tools/list rather than
+  assumed.
+
+Prerequisite, not yet satisfied in this repo: the `github` MCP server is registered only for the
+  Anela.Heblo project in ~/.claude.json. Both skills stop and report when it is unavailable rather
+  than falling back to `gh` on their own, so an unconfigured or headless environment fails loudly
+  instead of drifting back to the CLI path.
+
+Re-syncs the packaged skill mirror under agentharness/data/skills.
+
+
 ## v0.31.3 (2026-08-12)
 
 ### Bug Fixes
