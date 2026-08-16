@@ -10,13 +10,38 @@ PR, or by `/automerge-all` as part of a full-backlog sweep.
 
 **All deterministic work is done by the scripts beside this file.** Do not
 re-implement their logic, re-derive the score thresholds, or hand-write
-`gh` commands they already own. Your only judgement call is the review
+GitHub calls they already own. Your only judgement call is the review
 itself.
 
-**If `USE_GH_API` is set in the environment**, every `gh` invocation shown
-below — including the ones the code-reviewer subagent's prompt lists —
-is routed through `.claude/skills/_lib/gh_api.sh` instead -- a curl+REST
-equivalent for environments where the `gh` CLI itself is not permitted.
+## GitHub access: MCP for you, scripts for everything else
+
+GitHub access here is split in two, and the split is deliberate:
+
+- **Everything *you* read or write directly** goes through the **`github`
+  MCP server** — the `mcp__github__*` tools. Do not shell out to `gh`, and
+  do not hand-write `curl` calls against `api.github.com`.
+- **Everything the scripts do** (`candidates.sh`, `apply_verdict.sh`,
+  `hygiene-pr/update_and_wait.sh`) stays inside those scripts. They keep
+  their own transport — `gh` by default, or `.claude/skills/_lib/gh_api.sh`
+  when `USE_GH_API` is set. That is their business, not yours: never
+  reimplement a script's GitHub call as an MCP call to "check its work".
+
+Every `mcp__github__*` call needs `owner` and `repo`. Resolve them once, at
+the start of the run, from `GH_REPO` (format `owner/repo`) if it is set,
+otherwise from the `origin` remote:
+
+```bash
+echo "${GH_REPO:-$(git remote get-url origin)}"
+```
+
+Parse `owner` and `repo` out of that and reuse them for every MCP call
+below. `git` itself is fine to run — it is not a GitHub API call.
+
+**If the `github` MCP server is not available** in this environment (common
+in headless or scheduled runs, where an interactively-authenticated MCP
+server may not be connected), stop and report that as the reason rather
+than falling back to `gh` yourself. The scripts still work without MCP; the
+review step does not.
 
 ## 1. Resolve the target PR
 
@@ -24,17 +49,17 @@ If a PR number was given in your invocation, use it as `{N}`. Otherwise,
 check whether the branch you're currently on already has an open PR — if
 so, treat it as the target, the same as an explicit number:
 
-```bash
-if [ -n "${USE_GH_API:-}" ]; then
-  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  .claude/skills/_lib/gh_api.sh pr-view "$CURRENT_BRANCH" 2>/dev/null | jq -r 'select(.state == "OPEN") | .number'
-else
-  gh pr view --json number,state -q 'select(.state == "OPEN") | .number' 2>/dev/null
-fi
-```
+Get the current branch with `git rev-parse --abbrev-ref HEAD`, then call:
 
-If that prints a number, use it as `{N}` and skip the candidate search
-below. Otherwise, find the oldest (lowest-numbered) open `agent` PR:
+**`mcp__github__list_pull_requests`**
+- `owner`, `repo` — as resolved above
+- `state`: `"open"`
+- `head`: `"{owner}:{current-branch}"`
+- `fields`: `["number", "state"]`
+
+If that returns exactly one PR, use its `.number` as `{N}` and skip the
+candidate search below. If it returns nothing, find the oldest
+(lowest-numbered) open `agent` PR:
 
 ```bash
 .claude/skills/automerge-pr/candidates.sh
@@ -91,15 +116,25 @@ replaced by the PR number:
 > Review pull request #{N} in this repository and score how confident you are
 > that it can be merged to `master` with no human looking at it.
 >
-> You are READ-ONLY. You must not run `gh pr merge`, `gh pr close`,
-> `gh pr edit`, `git push`, or any other state-changing command. Gather context
-> with:
-> - `gh pr view {N} --json title,body,headRefName,additions,deletions,changedFiles,author,files`
->   — or, if `USE_GH_API` is set in the environment, `.claude/skills/_lib/gh_api.sh pr-view {N} files,author`
->   instead (a curl+REST equivalent for environments where the `gh` CLI itself is not permitted)
-> - `gh pr diff {N}` — or `.claude/skills/_lib/gh_api.sh pr-diff {N}` under `USE_GH_API`
-> - `gh issue view <issue> --json title,body` for the issue the PR body links —
->   or `.claude/skills/_lib/gh_api.sh issue-view <issue>` under `USE_GH_API`
+> All GitHub access goes through the `github` MCP server (`mcp__github__*`
+> tools) against `owner: {owner}`, `repo: {repo}`. Do not shell out to the
+> `gh` CLI and do not `curl` `api.github.com`.
+>
+> You are READ-ONLY. You must not call `mcp__github__merge_pull_request`,
+> `mcp__github__update_pull_request`, `mcp__github__issue_write`,
+> `mcp__github__add_issue_comment`, `mcp__github__pull_request_review_write`,
+> or any other write tool, and you must not run `git push` or any other
+> state-changing command. Gather context with:
+> - `mcp__github__pull_request_read` with `method: "get"`, `pullNumber: {N}`
+>   — title, body, head ref, `additions`, `deletions`, `changed_files`, and
+>   the author under `.user.login`
+> - `mcp__github__pull_request_read` with `method: "get_files"`,
+>   `pullNumber: {N}` — the changed-file list; each entry's path is its
+>   `filename`
+> - `mcp__github__pull_request_read` with `method: "get_diff"`,
+>   `pullNumber: {N}` — the diff itself
+> - `mcp__github__issue_read` with `method: "get"`, `issue_number: <issue>`
+>   for the issue the PR body links
 > - `Read` and `Grep` on the repo, to check the change fits the code around it
 >
 > Do not run the test suite, or any individual test, yourself — under any
@@ -110,8 +145,8 @@ replaced by the PR number:
 > independently re-confirm its outcome. You also must not assume the code
 > works just because it looks plausible.
 >
-> First check `.author.login` and every entry's `path` in `.files` from the
-> `gh pr view` call above:
+> First check `.user.login` from the `method: "get"` call and every entry's
+> `filename` from the `method: "get_files"` call above:
 >
 > - **Dependency-bot PR** — author is a known dependency-update bot
 >   (`dependabot[bot]`, `renovate[bot]`, or similar — also recognizable from
@@ -204,11 +239,11 @@ Determine your mode from your invocation prompt:
 
   Use the `linkedIssue` field from step 1's candidate object (or the
   `linkedIssue` the caller gave you if invoked with an explicit PR number
-  and no candidates.sh lookup was needed — fetch it via
-  `gh pr view {N} --json body` (or `.claude/skills/_lib/gh_api.sh pr-view {N}`
-  under `USE_GH_API`) and the same `Closes #(\d+)` pattern `candidates.sh`
-  uses, if you don't already have it). Pass `--issue` when non-null, omit
-  it when null.
+  and no candidates.sh lookup was needed — if you don't already have it,
+  fetch the PR body with `mcp__github__pull_request_read`
+  (`method: "get"`, `pullNumber: {N}`) and apply the same `Closes #(\d+)`
+  pattern `candidates.sh` uses). Pass `--issue` when non-null, omit it when
+  null.
 
 - **Orchestrated** (your invocation explicitly says "ORCHESTRATED MODE" —
   this is how `/automerge-all` calls you): do **not** call
@@ -256,12 +291,14 @@ change that reads correctly and is not. There is also no confirmation
 prompt. Watch the first few runs.
 
 The reviewer subagent's READ-ONLY instruction is a prompt constraint, not an
-enforced sandbox — it currently has Bash access and the same `gh`
-credentials as this skill. A subagent that follows a malicious instruction
-embedded in a PR's diff or title could act independently of the score it
-reports. Until a Bash-less or credential-scoped reviewer ships, treat every
-merge this skill performs as something a compromised or confused subagent
-could have influenced beyond its stated score.
+enforced sandbox — it currently has Bash access and the same `github` MCP
+credentials as this skill, which include the write tools it is told not to
+call. A subagent that follows a malicious instruction embedded in a PR's
+diff or title could act independently of the score it reports. Until a
+reviewer ships that is restricted to the read-only `mcp__github__*` tools
+(or has no Bash at all), treat every merge this skill performs as something
+a compromised or confused subagent could have influenced beyond its stated
+score.
 
 A PR that lands in the `comment` band gets the review posted once, then is
 labelled `human-required` and excluded from future candidate lists by
