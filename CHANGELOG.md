@@ -1,6 +1,35 @@
 # CHANGELOG
 
 
+## v0.32.0 (2026-08-19)
+
+### Features
+
+- Make pr hygiene resolve merge conflicts instead of rejecting them
+  ([`d423e30`](https://github.com/onpaj/harness/commit/d423e30f50f2bca2c5fda5ff1f144a84d2b25179))
+
+A conflicted PR used to be flagged `needs-work` the moment `gh pr update-branch` failed, which meant
+  hygiene rejected exactly the PRs it was there to unblock and handed them to /rework-pr — a skill
+  whose entry point is a rejected *code review*, not a stale branch.
+
+Hygiene now owns the resolution:
+
+- New `hygiene-pr/resolve_conflict.sh` with three steps around the one judgement call (what a
+  conflicting hunk should say): `prepare` claims the PR with `agent-wip` (the same claim /rework-pr
+  takes, so neither pushes to a branch the other owns), builds a detached per-branch worktree and
+  attempts the merge; `finish` stages only the conflicted paths, refuses to push leftover conflict
+  markers, commits and pushes with retry, then releases the claim; `abort` cleans up and flags
+  `needs-work`. - `update_and_wait.sh` reports `conflict` without flagging it — rejection now
+  happens only after a resolution was tried and declined. - The `verdict: REJECT` comment block
+  moves to `_lib/flag_needs_work.sh`, shared by both hygiene callers, so /rework-pr's
+  revision-attempt cap keeps counting hygiene rejections. - `candidates.sh --include-conflicting`
+  lets /hygiene-all see conflicted PRs (it cannot fix what it filters out) while /automerge-all
+  keeps skipping them. The flag does not bypass the draft/needs-work/human-required filters.
+
+/automerge-pr and /automerge-all delegate their `conflict` branch to hygiene-pr's step 3 rather than
+  treating it as a rejection.
+
+
 ## v0.31.4 (2026-08-16)
 
 ### Refactoring
