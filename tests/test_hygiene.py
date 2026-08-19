@@ -19,7 +19,8 @@ GH_STUB = """\
 #   `api repos/.../compare/...` echoes $GH_STUB_BEHIND_BY (the --jq the
 #   script passes already reduces the payload to that one number).
 #   `label create`/`pr comment`/`pr edit` are what apply_verdict.sh calls
-#   when update_and_wait.sh flags a PR needs-work — all succeed by default;
+#   when update_and_wait.sh flags a still-failing PR needs-work — all
+#   succeed by default;
 #   `pr edit` fails per $GH_STUB_LABEL_EDIT_EXIT. `pr comment`'s
 #   --body-file content is copied to $GH_STUB_COMMENT_BODY when set, so
 #   tests can assert on the posted comment.
@@ -427,7 +428,11 @@ def test_still_failing_flags_needs_work_and_comments(hygiene_runner):
     assert "still-failing" in result["_comment_body"]
 
 
-def test_conflict_flags_needs_work_and_comments(hygiene_runner):
+def test_conflict_is_reported_without_flagging_needs_work(hygiene_runner):
+    # Resolving the conflict is hygiene-pr's job now (resolve_conflict.sh,
+    # driven by the skill around its own judgement). Rejecting the PR here
+    # would flag it before that attempt had even been made; the needs-work
+    # flag for a conflict comes from `resolve_conflict.sh --step abort`.
     result = hygiene_runner(
         [_view(mergeable="CONFLICTING", merge_state="DIRTY")],
         update_branch_exit=1, update_branch_err="merge conflict",
@@ -435,10 +440,8 @@ def test_conflict_flags_needs_work_and_comments(hygiene_runner):
 
     assert result["status"] == "conflict"
     joined = "\n".join(result["_gh_calls"])
-    assert "pr edit 129" in joined and "needs-work" in joined
-    assert result["_comment_body"] is not None
-    assert re.search(r"verdict:\s*REJECT", result["_comment_body"])
-    assert "merge conflict" in result["_comment_body"]
+    assert "pr comment" not in joined and "pr edit" not in joined
+    assert result["_comment_body"] is None
 
 
 def test_already_clean_does_not_touch_labels(hygiene_runner):
@@ -495,21 +498,6 @@ def test_needs_work_flag_failure_is_noted_but_status_is_still_reported(hygiene_r
     assert "simulated label API outage" in result["detail"]
 
 
-def test_hygiene_needs_work_block_emits_a_countable_verdict_line():
-    # rework-pr/find_candidate.sh and list_candidates.sh count a PR's prior
-    # rejections toward MAX_REVISION_ATTEMPTS by matching comment bodies
-    # against `verdict:\s*REJECT`. The needs-work block this script writes
-    # must keep emitting that pattern, or a PR with a permanently broken
-    # build bounces between hygiene/automerge-pr and /rework-pr forever
-    # without ever hitting the cap.
-    script = (SKILL_DIR / "update_and_wait.sh").read_text()
-
-    marker = "Hygiene check found this PR cannot be merged as-is"
-    assert marker in script, "needs-work verdict block is gone or was reworded"
-    block = script[script.index(marker):]
-    block = block[: block.index("concerns:")]
-
-    assert re.search(r"verdict:\s*REJECT", block), (
-        "needs-work block no longer emits a `verdict: REJECT` line; "
-        "rework-pr's revision-attempt cap would stop counting it"
-    )
+# The `verdict: REJECT` block itself now lives in _lib/flag_needs_work.sh,
+# shared with resolve_conflict.sh — see
+# tests/test_hygiene_conflict.py::test_shared_needs_work_helper_emits_a_countable_verdict_line.

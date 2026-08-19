@@ -163,7 +163,7 @@ def gh_stub(tmp_path):
     stub.write_text(GH_STUB)
     stub.chmod(0o755)
 
-    def run(pr_list):
+    def run(pr_list, args=()):
         payload = tmp_path / "prs.json"
         payload.write_text(json.dumps(pr_list))
         env = {
@@ -172,7 +172,7 @@ def gh_stub(tmp_path):
             "GH_REPO": "onpaj/harness",
         }
         proc = subprocess.run(
-            [str(SKILL_DIR / "candidates.sh")],
+            [str(SKILL_DIR / "candidates.sh"), *args],
             capture_output=True, text=True, env=env,
         )
         assert proc.returncode == 0, proc.stderr
@@ -218,6 +218,59 @@ def test_ineligible_prs_are_skipped_with_a_reason(gh_stub, overrides, reason):
     assert result["candidates"] == []
     assert result["skipped"][0]["number"] == 112
     assert reason in result["skipped"][0]["reason"]
+
+
+# /hygiene-all opts in to conflicted PRs: resolving a conflict is hygiene-pr's
+# job now, so the sweep that feeds it must actually see them. /automerge-all
+# keeps the default — it cannot review a PR that hygiene has not fixed yet.
+
+
+def test_conflicting_pr_is_a_candidate_under_include_conflicting(gh_stub):
+    result = gh_stub([_pr(112, mergeable="CONFLICTING")], args=["--include-conflicting"])
+
+    assert [c["number"] for c in result["candidates"]] == [112]
+    assert result["skipped"] == []
+
+
+def test_include_conflicting_still_skips_every_other_ineligible_pr(gh_stub):
+    result = gh_stub(
+        [_pr(101, isDraft=True), _pr(102, mergeable="UNKNOWN"),
+         _pr(103, labels=[{"name": "needs-work"}]),
+         _pr(104, labels=[{"name": "human-required"}]),
+         _pr(105, reviewDecision="CHANGES_REQUESTED")],
+        args=["--include-conflicting"],
+    )
+
+    assert result["candidates"] == []
+    assert [s["number"] for s in result["skipped"]] == [101, 102, 103, 104, 105]
+
+
+@pytest.mark.parametrize(
+    "overrides,reason",
+    [
+        ({"labels": [{"name": "needs-work"}]}, "needs-work"),
+        ({"labels": [{"name": "human-required"}]}, "human-required"),
+        ({"reviewDecision": "CHANGES_REQUESTED"}, "CHANGES_REQUESTED"),
+        ({"isDraft": True}, "draft"),
+    ],
+)
+def test_include_conflicting_still_applies_the_other_filters_to_a_conflicted_pr(
+    gh_stub, overrides, reason,
+):
+    result = gh_stub(
+        [_pr(112, mergeable="CONFLICTING", **overrides)], args=["--include-conflicting"],
+    )
+
+    assert result["candidates"] == []
+    assert reason in result["skipped"][0]["reason"]
+
+
+def test_unknown_argument_is_rejected():
+    proc = subprocess.run(
+        [str(SKILL_DIR / "candidates.sh"), "--nope"],
+        capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "GH_REPO": "o/r"},
+    )
+    assert proc.returncode == 1
 
 
 def test_empty_pr_list_yields_empty_candidates(gh_stub):
