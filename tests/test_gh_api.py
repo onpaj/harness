@@ -192,3 +192,96 @@ def test_hygiene_still_sees_a_genuinely_running_check_as_ci_running(gh_api):
 
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["status"] == "ci-running"
+
+
+# === pr-ready: the mutation's response is not evidence ===
+#
+# `markPullRequestReadyForReview` has been observed returning a clean,
+# error-free response while the PR stayed a draft. pr_ready used to return 0 on
+# that response alone, and implement-next-task's Finishing step treats exit 0
+# as "the PR is mergeable now" — so six PRs ended up in draft with their issues
+# labelled agent-completed, invisible to every downstream skill.
+
+READY_STUB = """\
+#!/usr/bin/env bash
+url="${@: -1}"
+echo "$url" >> "$CURL_STUB_LOG"
+case "$url" in
+  *"/graphql"*)
+    if [ -n "${UNDRAFT_TAKES_EFFECT:-}" ]; then touch "$CURL_STUB_DIR/undrafted"; fi
+    printf '%s\\n__HTTP_CODE__200' '{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"PR_x"}}}}'
+    ;;
+  *"/pulls/"*)
+    if [ -f "$CURL_STUB_DIR/undrafted" ]; then
+      cat "$CURL_STUB_DIR/pull_ready.json"
+    else
+      cat "$CURL_STUB_DIR/pull_draft.json"
+    fi
+    printf '\\n__HTTP_CODE__200'
+    ;;
+  *) echo "unexpected URL: $url" >&2; exit 1 ;;
+esac
+"""
+
+
+@pytest.fixture
+def gh_api_ready(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "curl"
+    stub.write_text(READY_STUB)
+    stub.chmod(0o755)
+
+    payload_dir = tmp_path / "payloads"
+    payload_dir.mkdir()
+    draft = _pull()
+    draft["draft"] = True
+    draft["node_id"] = "PR_x"
+    ready = dict(draft, draft=False)
+    (payload_dir / "pull_draft.json").write_text(json.dumps(draft))
+    (payload_dir / "pull_ready.json").write_text(json.dumps(ready))
+
+    def run(argv, undraft_takes_effect: bool):
+        env = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "CURL_STUB_DIR": str(payload_dir),
+            "CURL_STUB_LOG": str(tmp_path / "curl.log"),
+            "GH_REPO": "onpaj/harness",
+            "GITHUB_TOKEN": "fake-token-for-tests",
+        }
+        if undraft_takes_effect:
+            env["UNDRAFT_TAKES_EFFECT"] = "1"
+        return subprocess.run(
+            argv, capture_output=True, text=True, env=env, cwd=REPO_ROOT,
+        )
+
+    return run
+
+
+def test_pr_ready_succeeds_once_the_pr_actually_left_draft(gh_api_ready):
+    proc = gh_api_ready([str(LIB), "pr-ready", str(PR_NUMBER)], undraft_takes_effect=True)
+
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_pr_ready_fails_when_the_mutation_returns_clean_but_the_pr_is_still_draft(gh_api_ready):
+    proc = gh_api_ready([str(LIB), "pr-ready", str(PR_NUMBER)], undraft_takes_effect=False)
+
+    assert proc.returncode != 0, "a still-draft PR must not be reported as ready"
+    assert "still a draft" in proc.stderr
+
+
+# === graphql: a query with no variables ===
+
+
+def test_graphql_accepts_a_query_with_no_variables(gh_api_ready):
+    # `vars="${2:-{\}}"` cannot yield a literal `{}` — it yields `{\}`, which
+    # jq rejects with "invalid JSON text passed to --argjson", so every
+    # variable-less GraphQL call died before it was ever sent.
+    proc = gh_api_ready(
+        [str(LIB), "graphql", "mutation{markPullRequestReadyForReview}"],
+        undraft_takes_effect=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "argjson" not in proc.stderr

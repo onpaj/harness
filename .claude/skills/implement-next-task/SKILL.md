@@ -194,7 +194,7 @@ TASKS_DONE=$(agentharness checkpoint status "feat-${ISSUE_ID}" 2>/dev/null | gre
 FIX_PENDING="artifacts/feat-${ISSUE_ID}/task-context/code-review-fixes.md"
 
 if [ "$TASKS_DONE" = "yes" ] && [ ! -f "$FIX_PENDING" ]; then
-  # Artifact state confirms finishing -- surface code review and undraft
+  # Artifact state confirms finishing -- surface the code review, then finish.
   REVIEW_FILE=$(ls -1 artifacts/feat-${ISSUE_ID}/code-review.r*.md 2>/dev/null | sort -V | tail -n1)
   if [ -n "$REVIEW_FILE" ]; then
     REVIEW_BODY=$(printf '## Code review\n\n%s\n' "$(cat "$REVIEW_FILE")")
@@ -206,37 +206,16 @@ if [ "$TASKS_DONE" = "yes" ] && [ ! -f "$FIX_PENDING" ]; then
       gh pr comment "$BRANCH" --body "$REVIEW_BODY" 2>/dev/null || true
     fi
   fi
-  if [ -n "${USE_GH_API:-}" ]; then
-    "$LIB" pr-ready "$BRANCH"
-    "$LIB" label-create agent-completed 5319e7 "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-    "$LIB" issue-edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed
-  else
-    gh pr ready "$BRANCH"
-    gh label create agent-completed --color 5319e7 \
-      --description "AgentHarness pipeline stage label" >/dev/null 2>&1 || true
-    gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed
-  fi
 
-  # Verify before reporting "complete" -- don't assume the two GitHub-state calls above
-  # landed just because they didn't throw.
-  FINISH_OK=true
-  if [ -n "${USE_GH_API:-}" ]; then
-    "$LIB" pr-view "$BRANCH" 2>/dev/null | jq -e '.isDraft == false' >/dev/null || FINISH_OK=false
-    "$LIB" issue-view "$ISSUE_ID" 2>/dev/null | jq -e '[.labels[].name] | index("agent-completed")' >/dev/null || FINISH_OK=false
-  else
-    gh pr view "$BRANCH" --json isDraft --jq '.isDraft == false' 2>/dev/null | grep -q true || FINISH_OK=false
-    gh issue view "$ISSUE_ID" --json labels --jq '[.labels[].name] | index("agent-completed")' 2>/dev/null | grep -qv null || FINISH_OK=false
-  fi
-  if [ "$FINISH_OK" != "true" ]; then
-    # One repair retry, then report exactly what's still wrong rather than "complete".
-    if [ -n "${USE_GH_API:-}" ]; then
-      "$LIB" pr-ready "$BRANCH" 2>/dev/null || true
-      "$LIB" issue-edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
-    else
-      gh pr ready "$BRANCH" 2>/dev/null || true
-      gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
-    fi
-  fi
+  # Undraft the PR, prove the undraft actually took effect, and only then swap
+  # the issue to a terminal label. Never inline this ordering again: applying
+  # `agent-completed` first and verifying afterwards is what let six PRs sit in
+  # draft with their issues marked complete.
+  FINISH_JSON=$(.claude/skills/implement-next-task/finish_pr.sh \
+    --issue "$ISSUE_ID" --branch "$BRANCH")
+  FINISH_STATUS=$(echo "$FINISH_JSON" | jq -r '.status')
+  FINISH_DETAIL=$(echo "$FINISH_JSON" | jq -r '.detail')
+  echo "Finishing: ${FINISH_STATUS} -- ${FINISH_DETAIL}"
 else
   # Orchestrator said finishing but artifact state disagrees -- do not undraft.
   # Treat conservatively as more work remains; next invocation will re-evaluate.
@@ -244,9 +223,21 @@ else
 fi
 ```
 
-   (`gh pr comment` accepts a branch name as the target. `gh pr ready` accepts
-   either a PR number or branch. The PR was opened against `$BRANCH` by
+   (`gh pr comment` accepts a branch name as the target, as does
+   `finish_pr.sh`'s `--branch`. The PR was opened against `$BRANCH` by
    `/plan-next-task`.)
+
+   `finish_pr.sh` reports exactly one of three outcomes, and step 10 must
+   repeat whichever it got rather than flattening them all to "finished":
+
+   - `completed` -- PR confirmed out of draft, issue confirmed
+     `agent-completed`. This is the only outcome that counts as finished.
+   - `needs-human` -- the PR would not leave draft after two attempts. The
+     issue went to `agent-needs-human` and the PR was flagged `needs-work`
+     instead. /automerge-pr, /hygiene-pr and /rework-pr all skip drafts, so a
+     human undrafting it is the only way out; nothing automated recovers it.
+   - `unconfirmed` -- the PR is out of draft but the `agent-completed` swap
+     could not be confirmed. Nothing else is safe to assume; report it.
 
 8. **Otherwise** (more work remains -- a dev task passed, a revision was
    requested, or a code-review round finished with more Blocking
@@ -273,9 +264,9 @@ git worktree remove "$WORKTREE" --force 2>/dev/null || true
 
 10. Report: issue number, unit completed, whether the pipeline finished,
     a terminal task failure was flagged, or more work remains -- and stop.
-    Only report "finished" if step 7's `$FINISH_OK` check (after its repair
-    retry) actually came back true; otherwise report exactly which of the
-    PR-undraft or `agent-completed` label swap is still unconfirmed.
+    Only report "finished" if step 7's `finish_pr.sh` returned status
+    `completed`; for `needs-human` or `unconfirmed`, report that status and
+    its `detail` verbatim instead.
 
 ## Concurrency & conflict handling
 
