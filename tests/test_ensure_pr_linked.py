@@ -82,6 +82,13 @@ def run_script(tmp_path):
         env = dict(os.environ)
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
         env["GH_FAKE_STATE"] = str(state_path)
+        # These cases stub the `gh` CLI, so the script must take its `gh`
+        # branch. USE_GH_API is a real deployment setting (set wherever `gh`
+        # is blocked), and inheriting it from the developer's environment
+        # routes the script through gh_api.sh to the live API instead —
+        # turning this suite red for reasons that have nothing to do with
+        # the change under test.
+        env.pop("USE_GH_API", None)
 
         proc = subprocess.run(
             ["bash", str(SCRIPT), pr, issue],
