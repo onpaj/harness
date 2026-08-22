@@ -149,7 +149,11 @@ req_paginate() {
 graphql() {
   # graphql QUERY [VARS_JSON] — POSTs {query, variables} to /graphql, prints
   # the `.data` object. Errors (including GraphQL-level `errors[]`) exit.
-  local query="$1" vars="${2:-{\}}"
+  local query="$1" vars="${2:-}"
+  # Not `${2:-{\}}`: brace-expansion inside a parameter default cannot
+  # produce a literal `{}` — it yields `{\}`, which jq rejects with
+  # "invalid JSON text passed to --argjson" on every variable-less query.
+  [ -n "$vars" ] || vars='{}'
   local payload
   payload=$(jq -n --arg q "$query" --argjson v "$vars" '{query:$q, variables:$v}')
   local resp data
@@ -458,6 +462,15 @@ pr_ready() {
   node_id=$(echo "$pr" | jq -r '.node_id')
   graphql 'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}' \
     "$(jq -n --arg id "$node_id" '{id:$id}')" >/dev/null
+  # A clean mutation response is not proof the PR left draft — the observed
+  # failure mode is exactly that: the mutation returns without a GraphQL
+  # `errors[]` while the PR stays a draft. Callers (implement-next-task's
+  # Finishing step) treat exit 0 here as "the PR is mergeable now" and move the
+  # issue to a terminal label on the strength of it, so confirm against a fresh
+  # read rather than trusting the response.
+  resp=$(req GET "/repos/${REPO}/pulls/${n}")
+  emit "$resp" | jq -e '.draft == false' >/dev/null \
+    || err "pr-ready: PR #${n} is still a draft after markPullRequestReadyForReview"
 }
 
 pr_update_branch() {
