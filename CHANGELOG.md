@@ -1,6 +1,94 @@
 # CHANGELOG
 
 
+## v0.33.0 (2026-09-03)
+
+### Bug Fixes
+
+- Give every pipeline skill an explicit GitHub-access rule
+  ([`b1e3175`](https://github.com/onpaj/harness/commit/b1e3175bb2265da6a647ddea0da9f9e09128bf0c))
+
+559a926 routed automerge-pr and automerge-all through the github MCP server but stopped there.
+  hygiene-pr, hygiene-all, rework-pr and rework-all were left with no GitHub-access rule at all and
+  bash blocks that shell out to `gh` directly — and /automerge-pr step 2 hands straight off to
+  /hygiene-pr, so the automerge chain reached `gh` two steps into a run that had just declared it
+  would not. In an environment where `gh` is blocked, that fails the run.
+
+A skill with no stated rule is not neutral. The agent falls back to whatever the consumer repo's
+  CLAUDE.md says, and "use the gh CLI for GitHub" is a common thing for it to say — user
+  instructions outrank skills, so the skill loses an argument it never knew it was having.
+
+- hygiene-pr, rework-pr: gained the GitHub-access section, with reads on mcp__github__* and every
+  `gh` branch replaced. - hygiene-all, rework-all: gained the section too. They only spawn
+  subagents, but an orchestrator that never states the rule inherits CLAUDE.md's. - automerge-pr,
+  automerge-all: "MCP missing -> stop and report" becomes "MCP missing -> _lib/gh_api.sh", and never
+  `gh`. Refusing to run is the wrong failure mode for a scheduled sweep when a working transport is
+  right there.
+
+Two things deliberately stay on gh_api.sh even when MCP is available, and the new section says why:
+  label writes, because gh_api.sh uses the additive POST/DELETE .../issues/{n}/labels endpoints
+  while the MCP issue-update tools take a whole label array and would drop every other label on the
+  PR; and any value feeding a shell variable, because an MCP result cannot be piped into $(...) and
+  hand-transcribing it into a `git` argument invites typos.
+
+tests/test_skill_github_access.py guards all six: each must state a rule, name gh_api.sh as its
+  fallback, and never invoke `gh` from a bash block. It caught hygiene-all and rework-all having no
+  rule, and an early version of its own regex missing indented `gh` calls inside an `if`.
+
+Also isolates test_ensure_pr_linked.py from an ambient USE_GH_API. It stubs the `gh` CLI but
+  inherited os.environ wholesale, so a developer or runner with USE_GH_API=1 exported — the very
+  setting we now tell people to use where `gh` is blocked — sent all 12 of its cases to the live
+  API. The suite is now deterministic with the variable set or unset.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_011YehMe2tEqFxVbvzqa71Fa
+
+### Features
+
+- Hygiene-all sweeps every open PR, not just agent-labelled ones
+  ([`a52b2c1`](https://github.com/onpaj/harness/commit/a52b2c19d71518b63aa07c3abe2853b5dcbea99e))
+
+`candidates.sh` filtered on `--label agent` for both of its callers, so a PR nobody labelled was
+  invisible to the whole skill family — it did not even appear in `skipped`, because the filter
+  removed it before the script ran. That is the wrong default for hygiene: a stale branch, a merge
+  conflict and a red build are the same problem whoever opened the PR, and an unlabelled PR is the
+  one most likely to rot unnoticed.
+
+- New `candidates.sh --all-open` drops the label filter. `/hygiene-all` now passes it alongside
+  `--include-conflicting`; `/automerge-all` keeps the `agent`-only default, since autonomous
+  review-and-merge is only ever delegated for pipeline PRs. - `gh_api.sh`'s `pr-list` takes
+  LABEL_CSV as optional, omitting the `labels=` query param when empty — the transport-level
+  equivalent of `gh pr list` with no `--label`. The `has("pull_request")` filter already drops the
+  plain issues the /issues endpoint also returns. - The draft / UNKNOWN / CHANGES_REQUESTED /
+  needs-work / human-required skips are unchanged, and `hygiene-pr` only ever pushes a merge commit
+  from the base branch, so sweeping a person's in-flight branch cannot rewrite their history.
+
+Both transports verified in both modes against a live repo and a stubbed `gh`; the empty-label build
+  produces no stray `--label ""` argument.
+
+fix: send JSON Content-Type on gh_api.sh write requests
+
+`curl -d` alone defaults to application/x-www-form-urlencoded, which GitHub's git-data endpoints
+  reject with "Form-encoded request bodies are not accepted on this endpoint. Send the documented
+  JSON body." (403) — breaking ref creation for every consumer, and misreported by `req()`'s retry
+  loop as a rate limit.
+
+fix: force-stage pipeline artifacts so the commit is not a silent no-op
+
+Consuming repos routinely gitignore `artifacts/`, so `git add -A artifacts/feat-{id}` staged nothing
+  and the commit no-opped; the `git ls-files --error-unmatch` hard-verify then failed a step too
+  late to be useful. Adds `-f` to all 11 occurrences across the orchestrator, plan-orchestrator and
+  `/oneshot`, with the rationale recorded inline.
+
+Both fixes had been applied downstream in a consuming repo and were reverted there by every
+  `agentharness init --force` run, because they only ever existed downstream.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01BPSGmh9hRKVYwnBrYsqhJ8
+
+
 ## v0.32.0 (2026-08-19)
 
 ### Features
