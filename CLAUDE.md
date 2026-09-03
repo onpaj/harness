@@ -67,7 +67,7 @@ tests/              Unit tests (pytest-asyncio)
 | `/brainstorm` | new feature idea | Discovery conversation → writes `brief.md` → uploads to configured backend |
 | `/oneshot {feat-id}` | after brainstorm | Enqueues analyst task → starts autonomous pipeline |
 | `/hygiene-pr {N}` | one PR's mergeability | Confirms one PR is mergeable with green CI, back-merging its base only when it can't merge as-is (`--force` back-merges any behind PR) and resolving a real merge conflict itself via `resolve_conflict.sh`; flags `needs-work` only if it's still failing or the conflict is beyond resolving, never reviews or merges |
-| `/hygiene-all` | PR backlog | Runs `/hygiene-pr` against every open `agent` PR in parallel, conflicted ones included — a standalone mergeability/CI/conflict sweep, independent of review or merge |
+| `/hygiene-all` | PR backlog | Runs `/hygiene-pr` against every open PR in parallel — unlabelled and human-opened ones included, conflicted ones included — a standalone mergeability/CI/conflict sweep, independent of review or merge |
 | `/automerge-pr {N}` | one PR | Checks mergeability/CI via `/hygiene-pr`, reviews it with a fresh subagent, and merges/comments/flags `needs-work` based on the score |
 | `/automerge-all` | PR backlog | Runs `/automerge-pr`'s review against every open `agent` PR in parallel, applies verdicts serially so merges never race |
 | `/rework-pr {N}` | one `needs-work` PR | Claims it (`agent-wip`, shared with `/hygiene-pr`'s conflict resolution), syncs with the default branch, revises it using the review or CI-failure feedback that flagged it, and pushes the fix |
