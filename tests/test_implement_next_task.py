@@ -48,6 +48,18 @@ exec /usr/bin/git "$@"
 """
 
 
+# find_candidate.sh asks _lib/lease.sh for each implementing issue's lease
+# state. Stubbing it keeps these tests about candidate SELECTION -- the real
+# lease mechanics (and its git-ref compare-and-set) are covered end-to-end
+# against real repos in test_lease.py.
+FIND_LEASE_STUB = """\
+#!/usr/bin/env bash
+# args: status <lease-id>
+file="$FIND_STUB_LEASES_DIR/$2"
+if [ -f "$file" ]; then cat "$file"; else echo '{"state":"absent","held":false,"holder":"","expires_at":""}'; fi
+"""
+
+
 @pytest.fixture
 def implement_candidate_runner(tmp_path):
     bin_dir = tmp_path / "bin"
@@ -56,13 +68,18 @@ def implement_candidate_runner(tmp_path):
     (bin_dir / "gh").chmod(0o755)
     (bin_dir / "git").write_text(FIND_GIT_STUB)
     (bin_dir / "git").chmod(0o755)
+    lease_stub = tmp_path / "lease.sh"
+    lease_stub.write_text(FIND_LEASE_STUB)
+    lease_stub.chmod(0o755)
+    leases_dir = tmp_path / "leases"
+    leases_dir.mkdir()
     commits_dir = tmp_path / "commits"
     commits_dir.mkdir()
     branches_dir = tmp_path / "branches"
     branches_dir.mkdir()
     log = tmp_path / "find.log"
 
-    def run(ready_issues, implementing_issues=None, commit_dates=None, branch_names=None, stale_minutes=None, now_override=None):
+    def run(ready_issues, implementing_issues=None, commit_dates=None, branch_names=None, stale_minutes=None, now_override=None, leases=None, lease_script_missing=False):
         ready_json = tmp_path / "ready.json"
         ready_json.write_text(json.dumps(ready_issues))
         implementing_json = tmp_path / "implementing.json"
@@ -75,6 +92,8 @@ def implement_candidate_runner(tmp_path):
             )
         for number, branch in (branch_names or {}).items():
             (branches_dir / str(number)).write_text(branch)
+        for lease_id, lease_state in (leases or {}).items():
+            (leases_dir / str(lease_id)).write_text(json.dumps(lease_state))
         env = {
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "FIND_STUB_LOG": str(log),
@@ -82,6 +101,8 @@ def implement_candidate_runner(tmp_path):
             "FIND_STUB_IMPLEMENTING_JSON": str(implementing_json),
             "FIND_STUB_COMMITS_DIR": str(commits_dir),
             "FIND_STUB_BRANCHES_DIR": str(branches_dir),
+            "FIND_STUB_LEASES_DIR": str(leases_dir),
+            "LEASE_SH": str(tmp_path / "no-such-lease.sh") if lease_script_missing else str(lease_stub),
             "GH_REPO": "onpaj/harness",
         }
         if stale_minutes is not None:
@@ -256,3 +277,113 @@ def test_terminal_task_failure_removes_issue_from_implementing_pool():
         'gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-needs-human'
         in failed_task_block
     )
+
+
+# === lease gate on the stale-reclaim path ===
+#
+# Regression tests for the bug where a healthy worker was preempted: commit
+# age alone is not a liveness signal, because a single unit of work (above
+# all a full build+test verification pass) routinely runs far longer than
+# the staleness window without committing anything.
+
+
+def _held(holder="worker-a", expires_at="2999-01-01T00:00:00Z"):
+    return {"state": "held", "held": True, "holder": holder, "expires_at": expires_at}
+
+
+def _expired(holder="worker-a"):
+    return {"state": "expired", "held": False, "holder": holder,
+            "expires_at": "2020-01-01T00:00:00Z"}
+
+
+def test_live_lease_blocks_reclaim_even_when_the_commit_is_ancient(implement_candidate_runner):
+    """THE regression test. The branch has not been committed to in months,
+    which the old commit-age rule read as 'abandoned' -- but a live lease
+    says a worker is mid-unit right now, so it must not be preempted."""
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-Long-Verification"},
+        commit_dates={"feature/1-Long-Verification": "2026-01-01T00:00:00Z"},
+        leases={"feat-1": _held(holder="mac-4321")},
+        now_override="2026-08-07T00:00:00Z",
+        stale_minutes=10,
+    )
+    assert result["candidate"] is None
+    assert result["skipped"][0]["number"] == 1
+    assert "lease held by mac-4321" in result["skipped"][0]["reason"]
+
+
+def test_live_lease_loses_to_a_fresh_handoff_rather_than_being_reclaimed(implement_candidate_runner):
+    result = implement_candidate_runner(
+        ready_issues=[_issue(9, "2026-08-05T00:00:00Z")],
+        implementing_issues=[_issue(1, "2026-01-01T00:00:00Z")],
+        branch_names={1: "feature/1-Leased"},
+        commit_dates={"feature/1-Leased": "2020-01-01T00:00:00Z"},
+        leases={"feat-1": _held()},
+        now_override="2026-08-06T00:00:00Z",
+    )
+    # Issue 1 is older and would otherwise win the merged pool outright.
+    assert result["candidate"]["number"] == 9
+    assert result["candidate"]["source"] == "fresh-handoff"
+
+
+def test_expired_lease_plus_stale_commit_is_reclaimable(implement_candidate_runner):
+    """A worker that really did die must not wedge the issue forever."""
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-Dead-Worker"},
+        commit_dates={"feature/1-Dead-Worker": "2026-08-01T00:00:00Z"},
+        leases={"feat-1": _expired()},
+        now_override="2026-08-01T00:20:00Z",
+        stale_minutes=10,
+    )
+    assert result["candidate"]["number"] == 1
+    assert result["candidate"]["source"] == "stale-reclaim"
+
+
+def test_expired_lease_with_a_recent_commit_is_still_not_reclaimed(implement_candidate_runner):
+    """Both gates must agree. An expired lease over a branch that was
+    committed to a minute ago means a pre-lease worker is active -- the
+    retained commit-age check is exactly what protects it."""
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-Old-Worker"},
+        commit_dates={"feature/1-Old-Worker": "2026-08-01T00:19:00Z"},
+        leases={"feat-1": _expired()},
+        now_override="2026-08-01T00:20:00Z",
+        stale_minutes=10,
+    )
+    assert result["candidate"] is None
+
+
+def test_absent_lease_falls_back_to_the_commit_age_check(implement_candidate_runner):
+    """Issues already in flight when leases shipped have no lease at all;
+    they must keep behaving exactly as before."""
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-No-Lease"},
+        commit_dates={"feature/1-No-Lease": "2026-08-01T00:00:00Z"},
+        now_override="2026-08-01T00:20:00Z",
+        stale_minutes=10,
+    )
+    assert result["candidate"]["number"] == 1
+    assert result["candidate"]["source"] == "stale-reclaim"
+
+
+def test_a_missing_lease_script_degrades_to_the_old_behaviour(implement_candidate_runner, tmp_path):
+    """If lease.sh is absent the gate must not wedge the whole stage --
+    selection falls back to commit age, which is no worse than before."""
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-Old-Thing"},
+        commit_dates={"feature/1-Old-Thing": "2026-08-01T00:00:00Z"},
+        now_override="2026-08-01T00:20:00Z",
+        stale_minutes=10,
+        lease_script_missing=True,
+    )
+    assert result["candidate"]["number"] == 1
