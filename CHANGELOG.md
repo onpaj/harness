@@ -1,6 +1,41 @@
 # CHANGELOG
 
 
+## v0.33.1 (2026-09-10)
+
+### Bug Fixes
+
+- Give implement-next-task a real lease instead of guessing from commit age
+  ([`84557e5`](https://github.com/onpaj/harness/commit/84557e5f348a38f58fa84d15eb6d39d84566a9b1))
+
+`find_candidate.sh` decided whether another worker was still on an issue purely from the age of the
+  last commit on its feature branch, with a ten-minute window. That is not a liveness signal. A
+  single unit of work -- above all a full build+test verification pass -- routinely runs far longer
+  than ten minutes without committing anything, so a perfectly healthy worker got declared abandoned
+  and its issue was handed to a second worker that then raced it.
+
+Observed in Anela.Heblo #4071: a worker was 27 minutes into `full-verification` and actively writing
+  `state.json`, and the next scheduled cycle still classified the issue as `stale-reclaim`.
+
+Adds `_lib/lease.sh`, a lease stored as a git ref on origin. A ref update is atomic server-side, so
+  parenting each lease commit on exactly the sha that was read gives real compare-and-set --
+  something no GitHub label or issue comment can offer. `acquire` records its identity under the git
+  common dir so a later shell's `release` recognises it, and deliberately never reads that file
+  back, or a second worker in the same checkout could adopt the first's identity and take over its
+  live lease.
+
+Reclaiming now requires BOTH a dead lease and a stale commit, so issues already in flight without a
+  lease keep their previous behaviour.
+
+Also fixes a latent data-loss path in the same skill: cleanup ran `git worktree remove --force`
+  unconditionally, including on a worktree the invocation had found rather than created --
+  destroying another run's uncommitted work. Removal is now gated on having created it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01QnkLactbcZxPPwtgLDmDFL
+
+
 ## v0.33.0 (2026-09-03)
 
 ### Bug Fixes
