@@ -320,8 +320,12 @@ if [ "${WORKTREE_CREATED:-false}" = "true" ]; then
 fi
 
 # Release the lease last, once nothing else can still be writing to the
-# worktree or the branch.
-.claude/skills/_lib/lease.sh release "feat-${ISSUE_ID}" >/dev/null 2>&1 || true
+# worktree or the branch. A failed release is survivable -- the lease
+# expires on its own -- so it must never abort cleanup; but it is worth
+# seeing in the log, since it means the issue stays blocked until the TTL
+# runs out rather than being free immediately.
+.claude/skills/_lib/lease.sh release "feat-${ISSUE_ID}" \
+  || echo "WARNING: lease release failed; feat-${ISSUE_ID} stays claimed until its TTL expires" >&2
 ```
 
    `$REPO_ROOT` is whatever the primary checkout's path actually is in
@@ -348,6 +352,21 @@ commit is parented on exactly the sha that was read, so a push succeeds
 only if nobody else moved the ref in between. Two workers cannot both
 acquire. It holds for the whole unit of work, so a worker sitting inside a
 long build or test run with nothing yet committed still looks alive.
+
+Releasing is a compare-and-set too, and for the same reason: our lease can
+lapse while we are still finishing, another worker can legitimately take
+it over in the moment between our reading the ref and our deleting it, and
+an unconditional delete would then wipe *its* lease -- leaving it working
+without exclusivity and the issue free for a third worker to claim. So the
+delete names the sha it expects, and a refused delete is reported rather
+than glossed as success.
+
+The other thing a lease will not do is guess. When `lease.sh` cannot reach
+`origin` at all it reports state `unknown`, never `absent` -- it did not
+learn that nobody holds the lease, only that it could not find out --  and
+`find_candidate.sh` refuses to reclaim on `unknown`. Otherwise every
+network hiccup would read as "abandoned", which is exactly the failure
+that motivated all of this.
 
 **The `agent-implementing` label (step 4) is only a marker.** `gh issue
 edit` has no compare-and-set, so the label never enforced anything; it

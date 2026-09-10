@@ -47,15 +47,20 @@ def clone_factory(tmp_path, origin):
     return make
 
 
-def run_lease(cwd, *args, holder=None, now=None, expect=None):
+BASE_PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+
+
+def run_lease(cwd, *args, holder=None, now=None, expect=None,
+              path_prefix=None, env_extra=None):
     env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+        "PATH": f"{path_prefix}:{BASE_PATH}" if path_prefix else BASE_PATH,
         "HOME": str(cwd),
     }
     if holder is not None:
         env["AGENT_LEASE_HOLDER"] = holder
     if now is not None:
         env["LEASE_NOW_OVERRIDE"] = now
+    env.update(env_extra or {})
     proc = subprocess.run(
         [str(LEASE_SH), *args], cwd=cwd, capture_output=True, text=True, env=env
     )
@@ -338,3 +343,185 @@ def test_stale_recorded_id_does_not_let_us_steal_a_new_holders_lease(clone_facto
               now="2026-01-01T01:00:00Z", expect=0)
 
     run_lease(a, "release", "feat-24", now="2026-01-01T01:01:00Z", expect=3)
+
+
+# === release is a compare-and-set too ===
+
+# A `git` that, exactly once, lets a second worker legitimately take the
+# lease over in the instant between our read of the ref and our delete of
+# it. That TOCTOU window is the only way a release can destroy a lease that
+# is no longer ours, so it is the one thing worth simulating precisely.
+GIT_TAKEOVER_SHIM = """\
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = "--delete" ] && [ ! -f "$SHIM_MARKER" ]; then
+    : > "$SHIM_MARKER"
+    ( cd "$SHIM_THIEF_REPO" \\
+      && AGENT_LEASE_HOLDER=thief LEASE_NOW_OVERRIDE="$SHIM_NOW" \\
+         "$SHIM_LEASE_SH" acquire "$SHIM_LEASE_ID" 120 ) >/dev/null 2>&1 || true
+    break
+  fi
+done
+exec /usr/bin/git "$@"
+"""
+
+
+@pytest.fixture
+def takeover_shim(tmp_path, clone_factory):
+    """PATH prefix + env that stage a mid-release takeover by another clone."""
+    def stage(lease_id, now):
+        thief = clone_factory()
+        shim_dir = tmp_path / f"shim-{lease_id}"
+        shim_dir.mkdir()
+        git_shim = shim_dir / "git"
+        git_shim.write_text(GIT_TAKEOVER_SHIM)
+        git_shim.chmod(0o755)
+        return str(shim_dir), {
+            "SHIM_MARKER": str(tmp_path / f"marker-{lease_id}"),
+            "SHIM_THIEF_REPO": str(thief),
+            "SHIM_LEASE_SH": str(LEASE_SH),
+            "SHIM_LEASE_ID": lease_id,
+            "SHIM_NOW": now,
+        }
+
+    return stage
+
+
+def test_release_does_not_destroy_a_lease_taken_over_since_we_read_it(
+    clone_factory, takeover_shim
+):
+    """The delete must be a compare-and-set, not an unconditional wipe.
+
+    Our own lease lapses, we release it, and in the gap between reading the
+    ref and deleting it a second worker legitimately takes it over. An
+    unconditional `git push origin :ref` would delete that new holder's
+    lease -- leaving it working without exclusivity while a third worker is
+    free to acquire, which is the exact collision this library prevents.
+    """
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-30", "1", holder="worker-a",
+              now="2026-01-01T00:00:00Z", expect=0)
+
+    path_prefix, env_extra = takeover_shim("feat-30", "2026-01-01T00:02:00Z")
+    proc = run_lease(a, "release", "feat-30", holder="worker-a",
+                     now="2026-01-01T00:02:00Z",
+                     path_prefix=path_prefix, env_extra=env_extra)
+
+    assert json.loads(proc.stdout)["released"] is False
+    status = json.loads(run_lease(a, "status", "feat-30",
+                                  now="2026-01-01T00:03:00Z", expect=0).stdout)
+    assert status["held"] is True
+    assert status["holder"] == "thief"
+
+
+def test_release_reports_the_takeover_rather_than_a_bare_failure(
+    clone_factory, takeover_shim
+):
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-31", "1", holder="worker-a",
+              now="2026-01-01T00:00:00Z", expect=0)
+
+    path_prefix, env_extra = takeover_shim("feat-31", "2026-01-01T00:02:00Z")
+    proc = run_lease(a, "release", "feat-31", holder="worker-a",
+                     now="2026-01-01T00:02:00Z",
+                     path_prefix=path_prefix, env_extra=env_extra)
+
+    assert json.loads(proc.stdout)["holder"] == "thief"
+
+
+# === an unreachable origin is not an absent lease ===
+
+def _break_origin(repo):
+    _git(repo, "remote", "set-url", "origin", str(repo / "no-such-origin.git"))
+
+
+def test_release_does_not_claim_success_when_origin_is_unreachable(clone_factory):
+    """`released: true` must mean the remote ref is gone. Reporting it after
+    a failed push tells the caller the lease was dropped when it is still
+    held remotely until its TTL runs out."""
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-32", holder="worker-a", expect=0)
+    _break_origin(a)
+
+    proc = run_lease(a, "release", "feat-32", holder="worker-a")
+
+    assert proc.returncode != 0
+    payload = json.loads(proc.stdout)
+    assert payload["released"] is False
+    assert "origin" in payload["reason"]
+
+
+def test_release_of_an_absent_lease_still_fails_when_origin_is_unreachable(clone_factory):
+    """Without a reachable origin we cannot tell 'no lease' from 'cannot
+    see the lease', and must not guess the reassuring one."""
+    a = clone_factory()
+    _break_origin(a)
+
+    proc = run_lease(a, "release", "feat-33", holder="worker-a")
+
+    assert proc.returncode != 0
+    assert json.loads(proc.stdout)["released"] is False
+
+
+def test_renew_says_origin_is_unreachable_rather_than_lease_lost(clone_factory):
+    """'Someone stole your lease' and 'the network blipped' call for very
+    different reactions from the caller."""
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-34", holder="worker-a", expect=0)
+    _break_origin(a)
+
+    proc = run_lease(a, "renew", "feat-34", holder="worker-a")
+
+    assert proc.returncode != 0
+    payload = json.loads(proc.stdout)
+    assert payload["renewed"] is False
+    assert "origin" in payload["reason"]
+
+
+def test_status_reports_unknown_when_origin_is_unreachable(clone_factory):
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-35", holder="worker-a", expect=0)
+    _break_origin(a)
+
+    payload = json.loads(run_lease(a, "status", "feat-35", expect=0).stdout)
+
+    assert payload["state"] == "unknown"
+    assert payload["held"] is False
+
+
+def test_status_of_a_reachable_lease_reports_the_fetch_succeeded(clone_factory):
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-36", holder="worker-a", expect=0)
+
+    payload = json.loads(run_lease(a, "status", "feat-36", expect=0).stdout)
+
+    assert payload["state"] == "held"
+    assert payload["fetch_ok"] is True
+
+
+# === holder identity is per checkout, not per working directory ===
+
+def test_release_from_a_subdirectory_recognises_our_own_lease(clone_factory):
+    """acquire runs from the repo root and release from wherever the skill
+    happens to be; both must resolve to the same recorded identity."""
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-37", expect=0)
+    subdir = a / "nested" / "deeper"
+    subdir.mkdir(parents=True)
+
+    proc = run_lease(subdir, "release", "feat-37", expect=0)
+
+    assert json.loads(proc.stdout)["released"] is True
+
+
+def test_a_lost_acquire_race_keeps_the_earlier_holder_record(clone_factory):
+    """A second acquire in the same checkout is correctly refused -- but it
+    must not take the first worker's recorded identity down with it, or the
+    live lease becomes unreleasable until its TTL expires."""
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-38", expect=0)
+
+    run_lease(a, "acquire", "feat-38", expect=3)
+
+    proc = run_lease(a, "release", "feat-38", expect=0)
+    assert json.loads(proc.stdout)["released"] is True

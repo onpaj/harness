@@ -49,14 +49,22 @@ LIB=".claude/skills/_lib/gh_api.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LEASE_SH="${LEASE_SH:-$SCRIPT_DIR/../_lib/lease.sh}"
 
-# Echo the lease state ("held"/"expired"/"absent") for a feature id, plus
-# the holder on a second line. A missing or failing lease script yields
-# "absent", which alone can no longer cause a reclaim -- the commit-age
-# check below still has to agree -- so degrading this way is safe.
+# Echo the lease state ("held"/"expired"/"absent"/"unknown") for a feature
+# id, plus the holder on a second line. A missing or failing lease script
+# yields "absent", which alone can no longer cause a reclaim -- the
+# commit-age check below still has to agree -- so degrading this way is
+# safe. It is still announced on stderr: a packaging regression that drops
+# lease.sh would otherwise disable the whole gate with nothing to show.
 lease_state_for() {  # feature-id
   local out state holder
-  if [ ! -x "$LEASE_SH" ]; then echo "absent"; echo ""; return; fi
-  out=$(LEASE_NOW_OVERRIDE="${NOW_OVERRIDE:-}" "$LEASE_SH" status "$1" 2>/dev/null) || { echo "absent"; echo ""; return; }
+  if [ ! -x "$LEASE_SH" ]; then
+    echo "lease.sh not found at $LEASE_SH -- falling back to commit age alone" >&2
+    echo "absent"; echo ""; return
+  fi
+  out=$(LEASE_NOW_OVERRIDE="${NOW_OVERRIDE:-}" "$LEASE_SH" status "$1" 2>/dev/null) || {
+    echo "lease.sh status failed for $1 -- falling back to commit age alone" >&2
+    echo "absent"; echo ""; return
+  }
   state=$(echo "$out" | jq -r '.state // "absent"' 2>/dev/null) || state="absent"
   holder=$(echo "$out" | jq -r '.holder // ""' 2>/dev/null) || holder=""
   echo "$state"
@@ -129,6 +137,15 @@ for n in $sorted_implementing_numbers; do
   if [ "$lease_state" = "held" ]; then
     skipped=$(echo "$skipped" | jq --argjson n "$n" --arg holder "$lease_holder" \
       '. + [{number: $n, reason: ("lease held by " + (if $holder == "" then "another worker" else $holder end))}]')
+    continue
+  fi
+
+  # "unknown" means lease.sh could not reach origin, so it learned nothing
+  # about whether a worker is alive. Treating that as "no lease" would put
+  # every network hiccup back on the old, wrong footing.
+  if [ "$lease_state" = "unknown" ]; then
+    skipped=$(echo "$skipped" | jq --argjson n "$n" \
+      '. + [{number: $n, reason: "lease could not be read (origin unreachable); not reclaiming"}]')
     continue
   fi
 

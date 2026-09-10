@@ -59,7 +59,8 @@
 # Usage:
 #   lease.sh acquire <lease-id> [ttl-minutes]   # 0 acquired, 3 held by other
 #   lease.sh renew   <lease-id> [ttl-minutes]   # 0 renewed,  3 lost
-#   lease.sh release <lease-id>                 # 0 released/absent, 3 not ours
+#   lease.sh release <lease-id>                 # 0 released/absent, 3 not ours,
+#                                               # 1 origin unreachable
 #   lease.sh status  <lease-id>                 # 0, prints JSON
 set -euo pipefail
 
@@ -78,6 +79,15 @@ die() { echo "lease.sh: $*" >&2; exit 1; }
 holder_file() {  # lease-id
   local common
   common="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  # `--git-common-dir` answers relative to the CURRENT directory, so the
+  # same checkout yields ".git" from the root and "../.git" one level down.
+  # Both resolve to the same file today only because every caller uses the
+  # answer without changing directory first; absolutising it removes that
+  # unwritten precondition.
+  case "$common" in
+    /*) ;;
+    *) common="$(cd "$common" 2>/dev/null && pwd)" || return 1 ;;
+  esac
   echo "${common}/agentharness-leases/$1"
 }
 
@@ -111,6 +121,19 @@ record_holder_id() {  # lease-id, holder
   f="$(holder_file "$1")" || return 0
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
   printf '%s' "$2" > "$f" 2>/dev/null || true
+}
+
+# The recorded id as it stands right now, or nothing. Used only to put it
+# back when an acquire we optimistically recorded turns out to have lost.
+read_holder_record() {  # lease-id
+  local f
+  f="$(holder_file "$1")" || return 0
+  [[ -f "$f" ]] || return 0
+  cat "$f" 2>/dev/null || true
+}
+
+restore_holder_id() {  # lease-id, previous-record ("" means there was none)
+  if [[ -n "$2" ]]; then record_holder_id "$1" "$2"; else forget_holder_id "$1"; fi
 }
 
 forget_holder_id() {  # lease-id
@@ -147,16 +170,38 @@ epoch_to_iso() {
     || return 1
 }
 
-# Refresh the local mirror of the remote lease ref and echo its sha, or
-# nothing when no lease exists remotely.
+# Refresh the local mirror of the remote lease ref, setting LEASE_SHA to
+# its sha (empty when no lease exists remotely) and LEASE_FETCH_OK to
+# whether we actually managed to ask origin at all.
+#
+# That second signal matters: a fetch also fails when the ref simply is not
+# there, and folding both outcomes into "absent" would let a network blip
+# read as "nobody holds this" -- harmless for `acquire` (the CAS push still
+# rejects a double-acquire) but not for `release`, which would report a
+# successful release of a lease it never touched. So the ambiguous case is
+# disambiguated with one extra probe, and only when the fetch failed.
+#
+# CALL THIS AS A PLAIN STATEMENT, never inside `$(...)`: the globals it
+# sets would be discarded along with the subshell.
 #
 # The local ref is deleted FIRST so that a lease released on another
 # machine cannot linger here and make an absent lease look held.
-fetch_lease_sha() {
+LEASE_FETCH_OK=1
+fetch_lease_ref() {
   local ref="$1"
+  LEASE_SHA=""
   git update-ref -d "$ref" 2>/dev/null || true
-  git fetch --quiet origin "+${ref}:${ref}" 2>/dev/null || true
-  git rev-parse --verify --quiet "$ref" 2>/dev/null || true
+  if git fetch --quiet origin "+${ref}:${ref}" 2>/dev/null; then
+    LEASE_FETCH_OK=1
+  elif git ls-remote origin >/dev/null 2>&1; then
+    # Origin answered, so the ref genuinely is not there. (No --exit-code:
+    # a reachable repo with no refs at all must still count as reachable.)
+    LEASE_FETCH_OK=1
+  else
+    LEASE_FETCH_OK=0
+    return
+  fi
+  LEASE_SHA="$(git rev-parse --verify --quiet "$ref" 2>/dev/null || true)"
 }
 
 # Echo the lease JSON stored in a lease commit's message.
@@ -212,7 +257,7 @@ validate_lease_id() {
     || die "lease-id must match [A-Za-z0-9._-]+, got: $1"
 }
 
-# Populate LEASE_STATE ("held"/"expired"/"absent") plus the sha, payload,
+# Populate LEASE_STATE ("held"/"expired"/"absent"/"unknown") plus the sha, payload,
 # holder and expiry of the current lease.
 #
 # CALL THIS AS A PLAIN STATEMENT, never as `x="$(inspect_lease ...)"`: a
@@ -226,10 +271,13 @@ LEASE_HOLDER=""
 LEASE_EXPIRES=""
 inspect_lease() {
   local ref="$1" now exp_epoch
-  LEASE_SHA="$(fetch_lease_sha "$ref")"
+  fetch_lease_ref "$ref"
   if [[ -z "$LEASE_SHA" ]]; then
     LEASE_PAYLOAD=""; LEASE_HOLDER=""; LEASE_EXPIRES=""
-    LEASE_STATE="absent"; return
+    # "unknown" is deliberately not "absent": we did not learn that nobody
+    # holds this lease, only that we could not find out.
+    if [ "$LEASE_FETCH_OK" -eq 0 ]; then LEASE_STATE="unknown"; else LEASE_STATE="absent"; fi
+    return
   fi
   LEASE_PAYLOAD="$(read_lease_payload "$LEASE_SHA")"
   LEASE_HOLDER="$(echo "$LEASE_PAYLOAD" | jq -r '.holder // ""' 2>/dev/null || echo "")"
@@ -249,9 +297,16 @@ cmd_acquire() {
   [[ -n "$lease_id" ]] || die "usage: lease.sh acquire <lease-id> [ttl-minutes]"
   validate_lease_id "$lease_id"; validate_ttl "$ttl"
 
-  local ref="${REF_PREFIX}/${lease_id}" me now acquired expires payload
+  local ref="${REF_PREFIX}/${lease_id}" me now acquired expires payload prev_record
   me="$(acquire_holder_id)"
   inspect_lease "$ref"
+
+  # Cannot see origin, so cannot know whether anyone holds this. Refusing
+  # is the only safe answer; the push would fail immediately anyway.
+  if [[ "$LEASE_STATE" == "unknown" ]]; then
+    jq -nc '{acquired: false, reason: "could not reach origin to read the lease"}'
+    return $EXIT_HELD
+  fi
 
   # An unexpired lease belonging to someone else is the whole point: stop.
   if [[ "$LEASE_STATE" == "held" && "$LEASE_HOLDER" != "$me" ]]; then
@@ -265,13 +320,21 @@ cmd_acquire() {
   expires="$(epoch_to_iso "$((now + ttl * 60))")"
   payload="$(make_payload "$lease_id" "$me" "$ttl" "$acquired" "$expires")"
 
+  # Record BEFORE pushing. Die in the gap between a push that landed and
+  # the record of it, and the lease exists remotely with nothing locally
+  # able to name itself as its holder -- so nothing can release it before
+  # its TTL runs out. Recording first cannot cause the opposite error: the
+  # id is checked against the remote holder either way, and a lost race
+  # simply puts the previous record back.
+  prev_record="$(read_holder_record "$lease_id")"
+  record_holder_id "$lease_id" "$me"
   if ! push_lease "$ref" "$LEASE_SHA" "$payload" >/dev/null; then
     # Rejected push == another worker moved the ref between our read and
     # our write. Losing this race is a normal outcome, not an error.
+    restore_holder_id "$lease_id" "$prev_record"
     jq -nc '{acquired: false, holder: "unknown", reason: "lost the race to acquire"}'
     return $EXIT_HELD
   fi
-  record_holder_id "$lease_id" "$me"
   echo "$payload"
 }
 
@@ -283,6 +346,13 @@ cmd_renew() {
   local ref="${REF_PREFIX}/${lease_id}" me now expires payload
   me="$(current_holder_id "$lease_id")"
   inspect_lease "$ref"
+
+  # "We lost the lease" and "the network blipped" call for very different
+  # reactions from the caller, so never dress the second up as the first.
+  if [[ "$LEASE_STATE" == "unknown" ]]; then
+    jq -nc '{renewed: false, reason: "could not reach origin to renew the lease"}'
+    return $EXIT_HELD
+  fi
 
   # Renewing is only meaningful while we still hold it. If the lease is
   # gone or already stolen, say so instead of silently re-acquiring -- the
@@ -314,6 +384,13 @@ cmd_release() {
   me="$(current_holder_id "$lease_id")"
   inspect_lease "$ref"
 
+  # Reporting `released: true` without having reached origin would tell the
+  # caller the lease is free when it in fact stays held until its TTL runs
+  # out -- and would discard the identity a retry needs.
+  if [[ "$LEASE_STATE" == "unknown" ]]; then
+    jq -nc '{released: false, reason: "could not reach origin to release the lease"}'
+    return 1
+  fi
   if [[ "$LEASE_STATE" == "absent" ]]; then
     forget_holder_id "$lease_id"
     jq -nc '{released: true, reason: "no lease to release"}'
@@ -326,7 +403,33 @@ cmd_release() {
       '{released: false, holder: $holder, reason: "lease is held by another worker"}'
     return $EXIT_HELD
   fi
-  git push --quiet origin ":${ref}" 2>/dev/null || true
+  # The delete is a compare-and-set like every other write here. A plain
+  # `push origin :ref` deletes whatever the ref points at *now*, which in
+  # the window between the read above and this push may already be a SECOND
+  # worker's freshly and legitimately acquired lease -- wiping it while it
+  # believes it holds exclusivity, and freeing a third worker to acquire.
+  # Naming the sha we read makes the server refuse exactly that case.
+  if ! git push --quiet --force-with-lease="${ref}:${LEASE_SHA}" \
+        origin --delete "${ref}" 2>/dev/null; then
+    # Either the ref moved under us or origin went away. Find out which,
+    # and never claim a release that did not happen.
+    inspect_lease "$ref"
+    if [[ "$LEASE_STATE" == "absent" ]]; then
+      git update-ref -d "$ref" 2>/dev/null || true
+      forget_holder_id "$lease_id"
+      jq -nc '{released: true, reason: "lease was already gone"}'
+      return 0
+    fi
+    if [[ "$LEASE_STATE" == "unknown" ]]; then
+      jq -nc '{released: false, reason: "could not reach origin to release the lease"}'
+      return 1
+    fi
+    forget_holder_id "$lease_id"
+    jq -nc --arg holder "$LEASE_HOLDER" \
+      '{released: false, holder: $holder,
+        reason: "lease was taken over before we could release it"}'
+    return $EXIT_HELD
+  fi
   git update-ref -d "$ref" 2>/dev/null || true
   forget_holder_id "$lease_id"
   jq -nc '{released: true}'
@@ -339,9 +442,12 @@ cmd_status() {
 
   local ref="${REF_PREFIX}/${lease_id}"
   inspect_lease "$ref"
+  local fetch_ok=false
+  [ "$LEASE_FETCH_OK" -eq 1 ] && fetch_ok=true
   jq -nc --arg state "$LEASE_STATE" --arg holder "${LEASE_HOLDER:-}" \
-    --arg expires_at "${LEASE_EXPIRES:-}" \
-    '{state: $state, held: ($state == "held"), holder: $holder, expires_at: $expires_at}'
+    --arg expires_at "${LEASE_EXPIRES:-}" --argjson fetch_ok "$fetch_ok" \
+    '{state: $state, held: ($state == "held"), holder: $holder,
+      expires_at: $expires_at, fetch_ok: $fetch_ok}'
 }
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -358,7 +464,7 @@ usage: lease.sh <command> [args]
   acquire <lease-id> [ttl-minutes]   take the lease (exit 3 if held by another)
   renew   <lease-id> [ttl-minutes]   extend a lease we hold (exit 3 if lost)
   release <lease-id>                 drop a lease we hold (exit 3 if not ours)
-  status  <lease-id>                 print {state, held, holder, expires_at}
+  status  <lease-id>                 print {state, held, holder, expires_at, fetch_ok}
 
 `acquire` records the identity it used under the git common dir, so a
 later renew/release in a DIFFERENT shell recognises the lease as its own

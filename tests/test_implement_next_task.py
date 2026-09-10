@@ -114,8 +114,10 @@ def implement_candidate_runner(tmp_path):
             capture_output=True, text=True, env=env,
         )
         assert proc.returncode == 0, proc.stderr
+        run.last_stderr = proc.stderr
         return json.loads(proc.stdout)
 
+    run.last_stderr = ""
     return run
 
 
@@ -387,3 +389,42 @@ def test_a_missing_lease_script_degrades_to_the_old_behaviour(implement_candidat
         lease_script_missing=True,
     )
     assert result["candidate"]["number"] == 1
+
+
+def _unknown():
+    """What lease.sh reports when it could not reach origin at all."""
+    return {"state": "unknown", "held": False, "holder": "", "expires_at": "",
+            "fetch_ok": False}
+
+
+def test_unknown_lease_state_blocks_reclaim(implement_candidate_runner):
+    """`unknown` means we could not find out whether a worker is alive, not
+    that none is. Reclaiming on it would hand a live worker's issue away
+    every time the network hiccups -- the very bug leases exist to stop."""
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-Unreachable"},
+        commit_dates={"feature/1-Unreachable": "2026-08-01T00:00:00Z"},
+        leases={"feat-1": _unknown()},
+        now_override="2026-08-01T00:20:00Z",
+        stale_minutes=10,
+    )
+    assert result["candidate"] is None
+    assert "could not be read" in result["skipped"][0]["reason"]
+
+
+def test_a_missing_lease_script_says_so_on_stderr(implement_candidate_runner):
+    """Degrading to commit-age alone is safe, but silent degradation means
+    a packaging regression could disable the lease gate for months with
+    nothing to show for it."""
+    implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_issue(1, "2026-08-01T00:00:00Z")],
+        branch_names={1: "feature/1-Old-Thing"},
+        commit_dates={"feature/1-Old-Thing": "2026-08-01T00:00:00Z"},
+        now_override="2026-08-01T00:20:00Z",
+        stale_minutes=10,
+        lease_script_missing=True,
+    )
+    assert "lease" in implement_candidate_runner.last_stderr.lower()
