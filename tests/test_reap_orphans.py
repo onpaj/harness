@@ -44,14 +44,25 @@ if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   if [ -f "$file" ]; then cat "$file"; else echo "[]"; fi
   exit 0
 fi
+# A PR ref is either a bare number or a head branch; both must land on the
+# same canonical fixture, so the tests can tell which one the reaper used.
+_pr_file() {
+  if [[ "$1" =~ ^[0-9]+$ ]]; then
+    echo "$REAP_STUB_PRS_DIR/pr-$1.json"
+    return
+  fi
+  local issue ptr
+  issue=$(echo "$1" | sed -E 's#^feature/([0-9]+)-.*#\\1#')
+  ptr="$REAP_STUB_PRS_DIR/branch-$issue"
+  if [ -f "$ptr" ]; then echo "$REAP_STUB_PRS_DIR/pr-$(cat "$ptr").json"; fi
+}
 if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
   if [ -n "${REAP_STUB_CLOSE_FAILS:-}" ]; then
     echo "could not close pull request" >&2
     exit 1
   fi
-  n=$(echo "$3" | sed -E 's#feature/([0-9]+)-.*#\\1#')
-  file="$REAP_STUB_PRS_DIR/$n.json"
-  if [ -f "$file" ]; then
+  file=$(_pr_file "$3")
+  if [ -n "$file" ] && [ -f "$file" ]; then
     /usr/bin/sed -i.bak 's/"state": "OPEN"/"state": "CLOSED"/' "$file"
   fi
   exit 0
@@ -61,9 +72,8 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     echo "error connecting to api.github.com" >&2
     exit 1
   fi
-  n=$(echo "$3" | sed -E 's#feature/([0-9]+)-.*#\\1#')
-  file="$REAP_STUB_PRS_DIR/$n.json"
-  if [ -f "$file" ]; then cat "$file"; exit 0; fi
+  file=$(_pr_file "$3")
+  if [ -n "$file" ] && [ -f "$file" ]; then cat "$file"; exit 0; fi
   echo "no pull requests found for branch $3" >&2
   exit 1
 fi
@@ -90,7 +100,11 @@ if [ "$1" = "ls-remote" ]; then
   fi
   n=$(echo "$*" | grep -oE 'feature/[0-9]+' | grep -oE '[0-9]+')
   file="$REAP_STUB_BRANCHES_DIR/$n"
-  if [ -f "$file" ]; then echo "deadbeef refs/heads/$(cat "$file")"; fi
+  if [ -f "$file" ]; then
+    while IFS= read -r b || [ -n "$b" ]; do
+      [ -n "$b" ] && echo "deadbeef refs/heads/$b"
+    done < "$file"
+  fi
   exit 0
 fi
 exec /usr/bin/git "$@"
@@ -146,11 +160,14 @@ def reaper(tmp_path):
             args=(), stale_minutes=None, now_override=NOW, close_fails=False,
             fail=None):
         for label, issues in (closed or {}).items():
-            (closed_dir / f"{label}.json").write_text(json.dumps(issues))
+            (closed_dir / f"{label}.json").write_text(
+                issues if isinstance(issues, str) else json.dumps(issues))
         for issue, pr in (prs or {}).items():
-            (prs_dir / f"{issue}.json").write_text(json.dumps(pr))
+            (prs_dir / f"pr-{pr['number']}.json").write_text(json.dumps(pr))
+            (prs_dir / f"branch-{issue}").write_text(str(pr["number"]))
         for issue, branch in (branches or {}).items():
-            (branches_dir / str(issue)).write_text(branch)
+            names = [branch] if isinstance(branch, str) else list(branch)
+            (branches_dir / str(issue)).write_text("\n".join(names) + "\n")
         for ref, iso in (commit_dates or {}).items():
             path = commits_dir / f"{ref}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -230,7 +247,7 @@ def test_closes_the_pr_of_an_artifact_only_orphan(reaper):
 
     assert _by_number(proc, 3972)["action"] == "closed"
     assert _by_number(proc, 3972)["pr"] == 3982
-    assert "pr close feature/3972-widget" in log
+    assert "pr close 3982" in log
 
 
 def test_strips_the_stage_label_from_a_reaped_issue(reaper):
@@ -255,8 +272,8 @@ def test_comments_on_the_pr_before_closing_it(reaper):
         commit_dates={"feature/3972-widget": LONG_AGO},
     )
 
-    comment_at = log.index("pr comment feature/3972-widget")
-    close_at = log.index("pr close feature/3972-widget")
+    comment_at = log.index("pr comment 3982")
+    close_at = log.index("pr close 3982")
     assert comment_at < close_at, "a PR closed with no explanation left behind"
 
 
@@ -300,7 +317,7 @@ def test_routes_a_branch_with_real_work_to_a_human(reaper):
     assert "--add-label agent-needs-human" in log
     assert "--add-label needs-work" in log
     assert f"--remove-label {IMPLEMENTING}" in log
-    assert "pr comment feature/3972-widget" in log
+    assert "pr comment 3982" in log
 
 
 def test_refuses_to_close_when_the_file_list_is_truncated(reaper):
@@ -739,3 +756,119 @@ def test_a_genuine_no_pr_message_still_strips_the_label(reaper):
 
     assert _by_number(proc, 3972)["action"] == "label-stripped"
     assert f"--remove-label {READY}" in log
+
+
+# === one issue prefix, one branch — anything else is not safe to guess ===
+
+
+def test_skips_when_more_than_one_branch_matches_the_issue_prefix(reaper):
+    # `feature/{n}-*` is a glob, and slug drift produces a second branch for
+    # one issue (implement-next-task warns that issue titles get edited after
+    # the branch is cut). Picking the first match and stripping the stage
+    # label would leave the *other* branch's still-open PR with no handle at
+    # all — the exact permanent stranding this script exists to undo.
+    proc, log = reaper(
+        closed={READY: [_issue(3972)]},
+        branches={3972: ["feature/3972-widget", "feature/3972-widget-v2"]},
+        prs={3972: _pr(3982, _artifact_files(3972))},
+        commit_dates={"feature/3972-widget": LONG_AGO},
+    )
+
+    assert _by_number(proc, 3972)["action"] == "skipped"
+    assert "pr close" not in log
+    assert "issue edit" not in log
+
+
+def test_never_treats_a_branch_name_as_a_pr_reference(reaper):
+    # A ref that reaches `gh pr view`/`_resolve_pr_number` as `.../pull/99`
+    # resolves to PR #99. A branch name is attacker-influenced by anyone with
+    # push access, so a branch shaped like a PR URL must never be forwarded
+    # as a PR ref — it would aim the close at an unrelated PR.
+    proc, log = reaper(
+        closed={READY: [_issue(3972)]},
+        branches={3972: "feature/3972-widget/pull/99"},
+        prs={3972: _pr(3982, _artifact_files(3972))},
+        commit_dates={"feature/3972-widget/pull/99": LONG_AGO},
+    )
+
+    assert _by_number(proc, 3972)["action"] == "skipped"
+    assert "pr close" not in log
+    assert "issue edit" not in log
+
+
+# === act on the PR that was vetted, not on whatever the branch resolves to ===
+
+
+def test_addresses_its_writes_to_the_vetted_pr_number_not_the_branch(reaper):
+    # The safety gate vets one specific PR and yields its number. Re-resolving
+    # from the branch for each write reopens the question: a PR created for
+    # that branch in between, or a transport whose lookup prefers a different
+    # one, gets the close instead of the PR that was actually checked.
+    proc, log = reaper(
+        closed={READY: [_issue(3972)]},
+        branches={3972: "feature/3972-widget"},
+        prs={3972: _pr(3982, _artifact_files(3972))},
+        commit_dates={"feature/3972-widget": LONG_AGO},
+    )
+
+    assert _by_number(proc, 3972)["action"] == "closed"
+    assert "pr close 3982" in log
+    assert "pr comment 3982" in log
+    assert "pr close feature/3972-widget" not in log
+    assert "pr comment feature/3972-widget" not in log
+
+
+def test_flagging_also_addresses_the_vetted_pr_number(reaper):
+    proc, log = reaper(
+        closed={READY: [_issue(3972)]},
+        branches={3972: "feature/3972-widget"},
+        prs={3972: _pr(3982, _artifact_files(3972) + ["agentharness/cli.py"])},
+        commit_dates={"feature/3972-widget": LONG_AGO},
+    )
+
+    assert _by_number(proc, 3972)["action"] == "flagged"
+    assert "pr edit 3982" in log
+    assert "pr edit feature/3972-widget" not in log
+
+
+# === the audit record is the whole point: never lose it ===
+
+
+def test_a_nonsense_file_count_is_skipped_rather_than_killing_the_sweep(reaper):
+    # `listed`/`changed` feed `[ x -ne y ]`. A non-integer there is a fatal
+    # bash error under `set -euo pipefail`, which would abort before the
+    # orphans JSON is printed — throwing away the record of every close and
+    # comment already performed this run.
+    proc, log = reaper(
+        closed={READY: [_issue(3972), _issue(4003)]},
+        branches={3972: "feature/3972-widget", 4003: "feature/4003-thing"},
+        prs={
+            3972: _pr(3982, _artifact_files(3972), changed_files="many"),
+            4003: _pr(4013, _artifact_files(4003)),
+        },
+        commit_dates={"feature/3972-widget": LONG_AGO,
+                      "feature/4003-thing": LONG_AGO},
+    )
+
+    assert _by_number(proc, 3972)["action"] == "skipped"
+    # the sweep carried on and the second, healthy orphan was still handled
+    assert _by_number(proc, 4003)["action"] == "closed"
+
+
+def test_still_reports_what_it_already_did_when_the_sweep_dies_midway(reaper):
+    # A truncated or malformed issue-list response makes jq exit non-zero,
+    # and under `set -euo pipefail` that ends the run — after earlier pools
+    # have already had PRs commented on and closed. Those actions are
+    # irreversible and the JSON is their only record, so it has to survive
+    # the crash; the caller treats a non-zero exit as non-fatal anyway.
+    proc, log = reaper(
+        closed={PLANNING: [_issue(4003)], READY: "{not json"},
+        branches={4003: "feature/4003-thing"},
+        prs={4003: _pr(4013, _artifact_files(4003))},
+        commit_dates={"feature/4003-thing": LONG_AGO},
+    )
+
+    assert proc.returncode != 0, "a failed sweep should not report success"
+    orphans = json.loads(proc.stdout)["orphans"]
+    assert [o["action"] for o in orphans if o["number"] == 4003] == ["closed"]
+    assert "pr close 4013" in log

@@ -111,9 +111,27 @@ commit_data_for() {  # ref
 # in a file rather than a variable (a command substitution's assignments do
 # not survive its subshell).
 PR_ERR_FILE=$(mktemp)
-trap 'rm -f "$PR_ERR_FILE"' EXIT
 
-pr_json_for() {  # branch -- non-zero on failure, message in $PR_ERR_FILE
+# Every action this script takes is irreversible and this JSON is its only
+# record, so it is emitted from the EXIT trap rather than from the end of the
+# script. Anything that ends the run early under `set -euo pipefail` -- a
+# truncated API response that jq chokes on, an unhandled edge in a later
+# pool -- would otherwise throw away the record of the PRs already commented
+# on and closed in earlier ones. The caller treats a non-zero exit as
+# non-fatal to the cycle precisely so this record still gets read.
+orphans="[]"
+ORPHANS_EMITTED=false
+
+emit_orphans() {
+  [ "$ORPHANS_EMITTED" = true ] && return 0
+  ORPHANS_EMITTED=true
+  jq -n --argjson orphans "$orphans" '{orphans: $orphans}' 2>/dev/null \
+    || printf '{"orphans": []}\n'
+}
+
+trap 'emit_orphans; rm -f "$PR_ERR_FILE"' EXIT
+
+pr_json_for() {  # branch or PR number -- non-zero on failure, msg in $PR_ERR_FILE
   : > "$PR_ERR_FILE"
   if [[ -n "${USE_GH_API:-}" ]]; then
     GH_REPO="$REPO" "$LIB" pr-view "$1" files 2>"$PR_ERR_FILE"
@@ -170,7 +188,7 @@ issue_swap_label() {  # issue, remove, [add]
   fi
 }
 
-pr_add_label() {  # branch, label
+pr_add_label() {  # pr, label
   if [[ -n "${USE_GH_API:-}" ]]; then
     GH_REPO="$REPO" "$LIB" pr-edit "$1" --add-label "$2" 2>/dev/null || true
   else
@@ -178,7 +196,7 @@ pr_add_label() {  # branch, label
   fi
 }
 
-pr_comment_file() {  # branch, file
+pr_comment_file() {  # pr, file
   if [[ -n "${USE_GH_API:-}" ]]; then
     GH_REPO="$REPO" "$LIB" pr-comment "$1" "$2" 2>/dev/null || true
   else
@@ -186,7 +204,7 @@ pr_comment_file() {  # branch, file
   fi
 }
 
-pr_close() {  # branch
+pr_close() {  # pr
   if [[ -n "${USE_GH_API:-}" ]]; then
     GH_REPO="$REPO" "$LIB" pr-close "$1" 2>/dev/null || true
   else
@@ -200,7 +218,7 @@ epoch_of() {  # iso8601 -- empty when unparseable, on GNU or BSD date
   date -u -d "$1" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null || echo ""
 }
 
-comment_with() {  # branch, body
+comment_with() {  # pr, body
   local file
   file=$(mktemp)
   printf '%s' "$2" > "$file"
@@ -211,7 +229,6 @@ comment_with() {  # branch, body
 now_epoch=$(epoch_of "${NOW_OVERRIDE:-now}")
 [ -n "$now_epoch" ] || now_epoch=$(date -u +%s)
 
-orphans="[]"
 seen=""
 
 record() {  # number, label, branch, pr, action, reason
@@ -246,10 +263,33 @@ for label in "${STAGE_LABELS[@]}"; do
       record "$n" "$label" "" null "skipped" "could not list remote branches (git ls-remote exit ${ls_exit}) -- retried next cycle"
       continue
     fi
+    # Exactly one match, or nothing is decided here. `feature/${n}-*` is a
+    # glob, and two branches for one issue is a real state -- slug drift
+    # produces it whenever an issue title is edited after its branch was cut
+    # (implement-next-task warns about exactly that). Taking the first match
+    # and stripping the stage label would leave the other branch's still-open
+    # PR with no handle at all: the permanent stranding this script exists to
+    # undo, inflicted by the script itself.
+    branch_count=$(echo "$heads" | grep -c 'refs/heads/' || true)
+    if [ "$branch_count" -gt 1 ]; then
+      record "$n" "$label" "" null "skipped" "${branch_count} branches match feature/${n}-* -- cannot tell which one this run used"
+      continue
+    fi
     branch=$(echo "$heads" | head -1 | awk '{print $2}' | sed 's#refs/heads/##')
     if [ -z "$branch" ]; then
       $DRY_RUN || issue_swap_label "$n" "$label"
       record "$n" "$label" "" null "label-stripped" "no feature/${n}-* branch on origin"
+      continue
+    fi
+
+    # The glob matches across `/`, so `feature/${n}-anything/at/all` comes
+    # back from ls-remote too. Branch names are chosen by whoever can push,
+    # and a ref shaped like a PR URL is read as a PR reference by both
+    # transports -- `feature/${n}-x/pull/99` would aim this sweep's close at
+    # the unrelated PR #99. Only the shape the pipeline actually creates is
+    # acted on; anything else is a human's problem, not this script's.
+    if [[ ! "$branch" =~ ^feature/${n}-[A-Za-z0-9._-]+$ ]]; then
+      record "$n" "$label" "$branch" null "skipped" "branch name is not the shape this pipeline creates -- not acting on it unexamined"
       continue
     fi
 
@@ -312,10 +352,20 @@ for label in "${STAGE_LABELS[@]}"; do
     # single page of at most 100. If the two disagree, the listing is
     # truncated and "everything listed is an artifact" no longer implies
     # "everything changed is an artifact".
-    listed=$(echo "$pr_json" | jq '(.files // []) | length')
-    changed=$(echo "$pr_json" | jq '.changedFiles // 0')
+    listed=$(echo "$pr_json" | jq '(.files // []) | length' 2>/dev/null || echo "")
+    changed=$(echo "$pr_json" | jq '.changedFiles // 0' 2>/dev/null || echo "")
     foreign=$(echo "$pr_json" | jq -r --arg prefix "artifacts/feat-${n}/" \
-      '[(.files // [])[] | .path | select(startswith($prefix) | not)] | length')
+      '[(.files // [])[] | .path | select(startswith($prefix) | not)] | length' 2>/dev/null || echo "")
+
+    # All three feed `[ x -ne y ]`, where a non-integer is a fatal bash error
+    # under `set -euo pipefail`. That would abort the sweep before the
+    # orphans JSON is printed -- discarding the audit record of every close
+    # and comment already made this run, which for a script whose actions are
+    # irreversible is the worst available failure mode.
+    if ! [[ "$listed" =~ ^[0-9]+$ && "$changed" =~ ^[0-9]+$ && "$foreign" =~ ^[0-9]+$ ]]; then
+      record "$n" "$label" "$branch" "$pr_number" "skipped" "could not read this PR's file counts -- retried next cycle"
+      continue
+    fi
 
     reason=""
     if [ "$listed" -eq 0 ]; then
@@ -335,10 +385,15 @@ for label in "${STAGE_LABELS[@]}"; do
     # through to the human-routed branch below rather than retrying
     # forever: the stage label still has to come off, or every later cycle
     # re-finds this orphan and posts the same comment again.
+    # Addressed by number, never by branch. The gate above vetted one
+    # specific PR; re-resolving from the branch for each write reopens the
+    # question it just answered -- a PR opened for that branch in between, or
+    # a transport whose head lookup prefers a different one of several, would
+    # receive the close instead of the PR that was checked.
     if [ -z "$reason" ] && ! $DRY_RUN; then
-      comment_with "$branch" "$(printf 'Closing as superseded.\n\nIssue #%s was closed while this AgentHarness run was still in its pipeline phase. Every stage selects candidates with `--state open`, so this PR could never be picked up again despite its `%s` label -- and draft PRs are invisible to `automerge-*`, `hygiene-*` and `rework-*` too.\n\nThis branch changes only pipeline artifacts under `artifacts/feat-%s/` -- no implementation -- so nothing is lost by closing it. The branch itself is left in place.\n\nReaped automatically by `_lib/reap_orphans.sh`.\n' "$n" "$label" "$n")"
-      pr_close "$branch"
-      after_state=$(pr_json_for "$branch" | jq -r '.state // empty' 2>/dev/null || echo "")
+      comment_with "$pr_number" "$(printf 'Closing as superseded.\n\nIssue #%s was closed while this AgentHarness run was still in its pipeline phase. Every stage selects candidates with `--state open`, so this PR could never be picked up again despite its `%s` label -- and draft PRs are invisible to `automerge-*`, `hygiene-*` and `rework-*` too.\n\nThis branch changes only pipeline artifacts under `artifacts/feat-%s/` -- no implementation -- so nothing is lost by closing it. The branch itself is left in place.\n\nReaped automatically by `_lib/reap_orphans.sh`.\n' "$n" "$label" "$n")"
+      pr_close "$pr_number"
+      after_state=$(pr_json_for "$pr_number" | jq -r '.state // empty' 2>/dev/null || echo "")
       if [ "$after_state" = "OPEN" ] || [ -z "$after_state" ]; then
         reason="the close did not take effect (PR still ${after_state:-unreadable}) -- needs closing by hand"
       fi
@@ -348,8 +403,8 @@ for label in "${STAGE_LABELS[@]}"; do
       if ! $DRY_RUN; then
         ensure_label "$NEEDS_HUMAN_LABEL" "$FLAG_COLOR" "AgentHarness pipeline stage label"
         ensure_label "$NEEDS_WORK_LABEL" "$FLAG_COLOR" "Agent review found blocking problems"
-        comment_with "$branch" "$(printf 'This PR is orphaned and needs a human.\n\nIssue #%s is **closed** but this branch still carries `%s`. Every stage of the pipeline selects candidates with `--state open`, so nothing will ever pick this run up again, and `automerge-*`/`hygiene-*`/`rework-*` all skip draft PRs.\n\nIt was **not** closed automatically: %s\n\nSomeone needs to decide whether to finish this work, retarget it at another issue, or close it.\n' "$n" "$label" "$reason")"
-        pr_add_label "$branch" "$NEEDS_WORK_LABEL"
+        comment_with "$pr_number" "$(printf 'This PR is orphaned and needs a human.\n\nIssue #%s is **closed** but this branch still carries `%s`. Every stage of the pipeline selects candidates with `--state open`, so nothing will ever pick this run up again, and `automerge-*`/`hygiene-*`/`rework-*` all skip draft PRs.\n\nIt was **not** closed automatically: %s\n\nSomeone needs to decide whether to finish this work, retarget it at another issue, or close it.\n' "$n" "$label" "$reason")"
+        pr_add_label "$pr_number" "$NEEDS_WORK_LABEL"
         issue_swap_label "$n" "$label" "$NEEDS_HUMAN_LABEL"
       fi
       record "$n" "$label" "$branch" "$pr_number" "flagged" "$reason"
@@ -361,4 +416,4 @@ for label in "${STAGE_LABELS[@]}"; do
   done
 done
 
-jq -n --argjson orphans "$orphans" '{orphans: $orphans}'
+emit_orphans
