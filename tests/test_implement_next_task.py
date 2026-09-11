@@ -1,5 +1,6 @@
 """Tests for the /implement-next-task skill scripts."""
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -387,3 +388,48 @@ def test_a_missing_lease_script_degrades_to_the_old_behaviour(implement_candidat
         lease_script_missing=True,
     )
     assert result["candidate"]["number"] == 1
+
+
+# === artifact staging guards (artifacts/ is gitignored in consuming repos) ===
+
+ORCHESTRATOR = CLAUDE_AGENTS_DIR / "implement-orchestrator.md"
+ARTIFACT_FORCE_ADD = "git add -A -f artifacts/feat-{issue_number}"
+
+
+def _staging_runs(content: str) -> list[str]:
+    """Return the staging commands preceding each `git commit` in the template.
+
+    Fenced blocks and inline prose commands are flattened alike, so a run is
+    everything between the previous commit/push boundary and the next commit.
+    Only `git commit -m` counts as a commit, so prose that merely mentions a
+    commit in passing is not mistaken for one.
+    """
+    flat = " ".join(content.split())
+    boundaries = [m.end() for m in re.finditer(r"git push|git commit -m", flat)]
+    return [
+        flat[max([b for b in boundaries if b <= m.start()], default=0):m.start()]
+        for m in re.finditer(r"git commit -m", flat)
+    ]
+
+
+def test_every_commit_force_adds_the_artifacts_path():
+    """`git add -A` honours .gitignore, and consuming repos routinely ignore
+    `artifacts/`, so a bare `git add -A` silently drops state.json and the
+    impl/review markdown from every pipeline commit."""
+    runs = _staging_runs(ORCHESTRATOR.read_text())
+    assert len(runs) >= 5, "expected every commit point in the template to be checked"
+    for run in runs:
+        assert ARTIFACT_FORCE_ADD in run, (
+            f"commit staged without force-adding the artifacts path: {run!r}"
+        )
+
+
+def test_every_commit_also_stages_the_rest_of_the_worktree():
+    """The force-add must be *additional* to the plain `git add -A` — staging
+    only `artifacts/feat-{issue_number}` is what left developer code changes
+    uncommitted when a session died."""
+    runs = _staging_runs(ORCHESTRATOR.read_text())
+    for run in runs:
+        assert re.search(r"git add -A(?! -f)", run), (
+            f"commit staged the artifacts path but not the worktree: {run!r}"
+        )
