@@ -1,6 +1,86 @@
 # CHANGELOG
 
 
+## v0.34.0 (2026-09-11)
+
+### Bug Fixes
+
+- Address review - anchor the PR URL form in _resolve_pr_number
+  ([`c644110`](https://github.com/onpaj/harness/commit/c644110ddb17524e7da70e8fd379f58e45bc50f1))
+
+A PR ref here is legitimately one of three things: a number, a PR URL, or a head branch name. The
+  URL form was matched unanchored, so any ref merely *containing* `/pull/<n>` short-circuited to <n>
+  before the branch lookup ever ran.
+
+Branch names are chosen by whoever can push, and `git ls-remote`'s `feature/{n}-*` glob matches
+  across `/`. A branch called `feature/12-x/pull/99` therefore resolved to the unrelated PR #99 and
+  aimed this transport's writes -- pr-close, pr-edit, pr-merge -- at it. reap_orphans is the first
+  caller to feed it branch names it discovered itself, unattended.
+
+Anchored to a full PR URL. A branch now goes through the head lookup like any other branch.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_0162mRHZvBjcg5nE9v2R4DdW
+
+- Address review - reap only an unambiguous PR, and never lose the record
+  ([`0f08ded`](https://github.com/onpaj/harness/commit/0f08ded2b90515c6fd9e93f2ef60dbfb6781cab9))
+
+Four findings against reap_orphans.sh, all variants of the same mistake: acting on something less
+  certain than the safety gate assumes.
+
+Branch identity. `feature/{n}-*` is a glob and `head -1` took whichever match sorted first. Two
+  branches for one issue is a real state -- slug drift produces it whenever an issue title is edited
+  after its branch was cut, which implement-next-task already warns about -- and acting on one while
+  stripping the stage label leaves the other branch's still-open PR with no handle at all. That is
+  the permanent stranding this script exists to undo, inflicted by the script itself. More than one
+  match is now `skipped`. The glob also matches across `/`, so the branch must additionally look
+  like what the pipeline actually creates (`feature/{n}-[A-Za-z0-9._-]+`); anything else is
+  `skipped` rather than acted on unexamined. That guard runs before the branch reaches an API path,
+  which also removes the one unencoded interpolation.
+
+PR identity. The gate vets one specific PR and yields its number, but every write re-resolved from
+  the branch name instead -- reopening the question it had just answered. A PR opened for that
+  branch in between, or a transport whose head lookup prefers a different one of several (gh_api
+  takes the newest of any state; `gh pr view` prefers the open one), would receive the close instead
+  of the PR that was checked. All writes now address `$pr_number`.
+
+The truncation gate could be bypassed silently. `listed`/`changed`/`foreign` were unguarded and feed
+  `[ x -ne y ]`. A non-integer there does NOT abort the run: `[` prints "integer expression
+  expected" and exits 2, but as an `elif` condition that status is exempt from `set -e` and simply
+  reads as false. So an unexpected API shape made the truncation check -- the one standing between a
+  partially-listed PR and being closed as "artifact-only" -- quietly pass, and the PR was closed.
+  That is a direct breach of the never-close-real-work invariant, not a crash. The counts are now
+  integer-validated before any numeric comparison, falling to `skipped`.
+
+The audit record. A transient failure listing the second or third stage label's pool does kill the
+  run under `set -euo pipefail` -- after earlier pools have already had PRs commented on and closed.
+  Those actions are irreversible and this JSON is their only record, so it is now emitted from the
+  EXIT trap and survives anything that ends the run early. The caller already treats a non-zero exit
+  as non-fatal to the cycle.
+
+Tests: 6 new, each confirmed failing against the old code first. 460 passed, 2 skipped.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_0162mRHZvBjcg5nE9v2R4DdW
+
+### Testing
+
+- Name the file-count guard's test after the bug it actually guards
+  ([`0af6cd7`](https://github.com/onpaj/harness/commit/0af6cd722368932fb8d55c9cdf41a1a185b721cf))
+
+The test was written believing a non-integer count aborted the sweep. It does not: `[` exits 2, but
+  as an `elif` condition that status is exempt from `set -e` and reads as false, so the truncation
+  check silently passed and the PR was closed. The assertions were right for the wrong reason; this
+  names the real failure and asserts the part that matters -- that no close is issued for a PR whose
+  file counts could not be read.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_0162mRHZvBjcg5nE9v2R4DdW
+
+
 ## v0.33.1 (2026-09-10)
 
 ### Bug Fixes
@@ -34,6 +114,74 @@ Also fixes a latent data-loss path in the same skill: cleanup ran `git worktree 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 
 Claude-Session: https://claude.ai/code/session_01QnkLactbcZxPPwtgLDmDFL
+
+### Chores
+
+- Track uv.lock
+  ([`255938e`](https://github.com/onpaj/harness/commit/255938ec16c1c60b9f2fca61547dc8c36ab05443))
+
+Lockfile generated by uv in this worktree; previously untracked and unrelated to the reaper change,
+  kept as its own commit.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_0162mRHZvBjcg5nE9v2R4DdW
+
+### Features
+
+- Reap pipeline runs whose issue was closed externally
+  ([`f5dade2`](https://github.com/onpaj/harness/commit/f5dade2a0f3106b8e2d28797e323ceddb37683ff))
+
+Every stage selects work with `gh issue list --state open`. That is right for picking up work, but
+  it means an issue closed from outside the pipeline -- a human closing a duplicate, a `Fixes #N` in
+  someone else's PR, a competing agent whose own PR merged first -- drops out of the world the
+  moment it closes, still carrying an in-flight stage label. Its branch and still-draft PR are then
+  unreachable by everything: candidate selection never sees the issue again, and automerge-*,
+  hygiene-* and rework-* all skip drafts. Nothing logged it, nothing retried it, nothing flagged it.
+  Eight draft PRs were stranded this way in a consumer repo over eight days.
+
+Adds `_lib/reap_orphans.sh`, invoked as implement-next-task step 1 (before the concurrency gate, so
+  a stage at capacity still gets swept). It sweeps closed issues carrying agent-planning,
+  agent-ready-for-dev or agent-implementing and classifies each:
+
+closed artifact-only branch -- PR commented on and closed, stage label stripped flagged holds real
+  work, or that could not be proven -- agent-needs-human + needs-work, PR left open label-stripped
+  no branch or no open PR left to close skipped nothing determined safely; retried next cycle
+
+Two invariants drive the design:
+
+Never close real work. That cannot be read off commit messages -- implementation commits carry the
+  same `chore(feat-N):` prefix planning artifacts do -- so the signal is changed paths: a run that
+  never reached implementation touches nothing outside `artifacts/feat-{N}/`. A truncated file
+  listing, an empty one, or another feature's artifacts all fail closed to a human. The close is
+  then confirmed against a fresh read, per #140: a write that returned clean is not proof it landed,
+  and reporting "closed" while stripping the label off a PR that never closed would strand it
+  permanently.
+
+Never turn a read failure into a label strip. A failed `git ls-remote` or `gh pr view` must not read
+  as "no branch"/"no PR" -- that would inflict the exact bug being fixed. Every such read fails into
+  `skipped`.
+
+Also:
+
+- `_lib/gh_api.sh` gains `pr-close`; the gh-less transport had no verb for it, so the reaper's call
+  would have failed into `|| true`. - `_resolve_pr_number` no longer masks a transport error as "no
+  PR found for branch". `emit` err+exits on a non-2xx, but inside a command substitution that exit
+  kills only the subshell, so piping it into jq turned every failed request into an empty result and
+  then into a confirmed "this branch has no PR" -- a fact about the network reported as a fact about
+  the branch. - `issue_swap_label` adds before removing. Under USE_GH_API those are two HTTP calls;
+  remove-first would leave an interrupted swap carrying neither label, invisible to both `--state
+  open` selection and this reaper's own sweep. - plan-next-task/SKILL.md notes that its own stage's
+  orphans are reaped from implement-next-task, so a repo that rarely runs the implementing stage
+  knows to schedule the sweep itself.
+
+Tests: 30 for the reaper (both transports, every classification, the safety gate, the dry run, and
+  each read-failure path), 3 for `pr-close`, and a guard that every shipped skill script is
+  executable. 419 passed, 2 skipped.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01EELJNg2mr15javDGNhALkE
 
 
 ## v0.33.0 (2026-09-03)
