@@ -83,3 +83,19 @@ def test_packaged_skills_match_their_source():
             f"packaged skill '{skill}' has drifted from .claude/skills/{skill} — "
             "re-copy it so the shipped copy stays in sync."
         )
+
+
+def test_reaper_ships_in_the_shared_lib():
+    # The orphan sweep is the only pass that ever looks at a closed issue
+    # still carrying a stage label. If it does not ship, a consumer repo's
+    # stranded draft PRs stay stranded and nothing says so.
+    script = DATA_SKILLS / "_lib" / "reap_orphans.sh"
+    assert script.is_file(), "reap_orphans.sh must ship inside _lib"
+
+
+def test_shipped_skill_scripts_are_executable():
+    # `agentharness init` copies these with copy2, which preserves mode —
+    # a script committed without +x installs unrunnable into every
+    # consumer repo, and its skill fails at the shell, not at review.
+    for script in DATA_SKILLS.rglob("*.sh"):
+        assert script.stat().st_mode & 0o111, f"{script} is not executable"

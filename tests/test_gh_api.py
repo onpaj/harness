@@ -27,10 +27,11 @@ HEAD_SHA = "12be804b418a9db06ca042b852534b4a351169da"
 CURL_STUB = """\
 #!/usr/bin/env bash
 url="${@: -1}"
-echo "$url" >> "$CURL_STUB_LOG"
+echo "$*" >> "$CURL_STUB_LOG"
 case "$url" in
   *"/check-runs"*) body=$(cat "$CURL_STUB_DIR/check_runs.json") ;;
   *"/status"*)     body=$(cat "$CURL_STUB_DIR/status.json") ;;
+  *"/pulls?"*)     body="[$(cat "$CURL_STUB_DIR/pull.json")]" ;;
   *"/pulls/"*)     body=$(cat "$CURL_STUB_DIR/pull.json") ;;
   *) echo "unexpected URL: $url" >&2; exit 1 ;;
 esac
@@ -90,6 +91,7 @@ def gh_api(tmp_path):
         proc = subprocess.run(
             argv, capture_output=True, text=True, env=env, cwd=REPO_ROOT,
         )
+        proc.curl_log = log.read_text() if log.exists() else ""
         return proc
 
     return run
@@ -192,3 +194,68 @@ def test_hygiene_still_sees_a_genuinely_running_check_as_ci_running(gh_api):
 
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["status"] == "ci-running"
+
+
+# === pr-close ===
+#
+# reap_orphans.sh closes a superseded PR through this verb. Without it the
+# gh-less transport would fail the call, and the reaper's `|| true` would
+# turn that into a silent no-op — a PR reported closed but still open.
+
+
+def test_pr_close_patches_the_pr_state_to_closed(gh_api):
+    proc = gh_api([str(LIB), "pr-close", str(PR_NUMBER)])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "-X PATCH" in proc.curl_log
+    assert '{"state":"closed"}' in proc.curl_log.replace(" ", "")
+    assert f"/pulls/{PR_NUMBER}" in proc.curl_log
+
+
+def test_pr_close_resolves_a_branch_name_to_its_pr(gh_api):
+    # A PR ref is a number, a PR URL, or a head branch — the same three
+    # forms `gh pr close <ref>` accepts.
+    proc = gh_api([str(LIB), "pr-close", "feature/x"])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "head=onpaj%3Afeature%2Fx" in proc.curl_log
+    assert f"-X PATCH" in proc.curl_log
+    assert f"/pulls/{PR_NUMBER}" in proc.curl_log
+
+
+def test_pr_close_leaves_the_branch_in_place(gh_api):
+    # Deliberate: a reaped branch stays recoverable. Deleting the ref is
+    # what `pr-merge --delete-branch` is for.
+    proc = gh_api([str(LIB), "pr-close", str(PR_NUMBER)])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "-X DELETE" not in proc.curl_log
+    assert "/git/refs/" not in proc.curl_log
+
+
+# === a PR ref is three forms, and a branch name is not the URL one ===
+
+
+def test_a_branch_name_containing_a_pull_path_is_not_read_as_that_pr(gh_api):
+    # The URL form was matched unanchored, so any ref merely *containing*
+    # `/pull/<n>` short-circuited to <n>. Branch names come from whoever can
+    # push, and `git ls-remote`'s `feature/12-*` glob matches across `/`, so
+    # a branch called `feature/12-x/pull/99` would have aimed a close at the
+    # unrelated PR #99. A branch must go through the head lookup like any
+    # other branch.
+    proc = gh_api([str(LIB), "pr-close", "feature/12-x/pull/99"])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "/pulls/99" not in proc.curl_log, "a branch name was parsed as a PR URL"
+    assert "head=onpaj%3Afeature%2F12-x%2Fpull%2F99" in proc.curl_log
+    assert f"/pulls/{PR_NUMBER}" in proc.curl_log
+
+
+def test_a_real_pr_url_still_resolves_without_a_lookup(gh_api):
+    # The anchored form must still recognise the genuine article.
+    proc = gh_api([str(LIB), "pr-close",
+                   f"https://github.com/onpaj/harness/pull/{PR_NUMBER}"])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "/pulls?" not in proc.curl_log, "resolved a full PR URL via a head lookup"
+    assert f"/pulls/{PR_NUMBER}" in proc.curl_log
