@@ -55,6 +55,14 @@ def test_claim_issue_script_ships_with_plan_next_task():
     assert script.is_file(), "claim_issue.sh must ship inside plan-next-task"
 
 
+def test_lease_script_ships_in_lib():
+    """The implementing stage refuses to start without it: `lease.sh` is the
+    mutual exclusion that keeps two workers off one issue, so a consumer
+    repo that received the skill but not the library would race."""
+    script = DATA_SKILLS / "_lib" / "lease.sh"
+    assert script.is_file(), "lease.sh must ship inside _lib"
+
+
 def test_find_candidate_scripts_ship_with_both_new_skills():
     assert (DATA_SKILLS / "plan-next-task" / "find_candidate.sh").is_file()
     assert (DATA_SKILLS / "implement-next-task" / "find_candidate.sh").is_file()
