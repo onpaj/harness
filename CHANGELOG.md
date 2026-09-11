@@ -1,6 +1,57 @@
 # CHANGELOG
 
 
+## v0.34.1 (2026-09-11)
+
+### Bug Fixes
+
+- Force-add artifacts in every implement-orchestrator commit
+  ([`162dd3c`](https://github.com/onpaj/harness/commit/162dd3cb1558d289e44213ae4ddbb8fb60d64fbf))
+
+`git add -A` honours .gitignore, and consuming repos routinely ignore artifacts/ (Anela.Heblo does).
+  Every commit this template made therefore dropped artifacts/feat-{N}/ — state.json, impl/*.md,
+  review/*.md — from the branch. The only thing catching it was the STRICT `git ls-files
+  --error-unmatch` lines that follow three of the five commit points; the other two stranded the
+  artifacts permanently. Because state.json on the pushed branch is what the next invocation reads
+  to decide the next unit, the next invocation then redid work already done. 3 of 5 parallel
+  /implement-next-task workers hit this on 2026-09-11.
+
+The sibling templates already force-add: plan-orchestrator.md uses `git add -A -f
+  artifacts/feat-{issue_number}`, and oneshot/SKILL.md issues both forms in sequence.
+
+The bare `git add -A` here is deliberate — an earlier version staged only
+  artifacts/feat-{issue_number} and left developer code uncommitted when a session died — so this
+  adds the force-add *alongside* it rather than swapping one for the other. Both lines are now
+  stated once as a Staging rule section and referenced from each commit point, including the three
+  prose "commit and push" branches in the code-review phase that never spelled a command out at all.
+
+Two guards: every `git commit -m` in the template must be preceded by both a force-add of the
+  artifacts path and a plain `git add -A`. The second guard is what stops the swap regression the
+  comment warns about.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01HaJCcBsUgyVSdPCHeewZJC
+
+- Require the developer agent to run builds in the foreground
+  ([`abd86f8`](https://github.com/onpaj/harness/commit/abd86f8e26052bad4b3faf9932e56256939aadd6))
+
+A developer subagent backgrounded a long `dotnet build` and then stopped, waiting for a completion
+  notification that nothing in a non-interactive run was ever going to deliver. The unit stalled
+  until a human resumed it with an explicit instruction to run the build in the foreground with a
+  timeout.
+
+developer.md is the one place that covers it: it is the system prompt for the developer agent in
+  both execution paths — the in-process worker and the Task the implement-orchestrator spawns — and
+  the orchestrator itself never runs builds, the developer does. Added as hard constraint 5,
+  alongside constraint 4 ("Never wait for interactive input"), which is the same class of
+  unattended-pipeline stall.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01HaJCcBsUgyVSdPCHeewZJC
+
+
 ## v0.34.0 (2026-09-11)
 
 ### Bug Fixes
