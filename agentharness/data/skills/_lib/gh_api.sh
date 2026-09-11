@@ -284,7 +284,12 @@ _resolve_pr_number() {
   need_repo
   local ref="$1"
   if [[ "$ref" =~ ^[0-9]+$ ]]; then echo "$ref"; return 0; fi
-  if [[ "$ref" =~ /pull/([0-9]+) ]]; then echo "${BASH_REMATCH[1]}"; return 0; fi
+  # ANCHORED, deliberately. Matching `/pull/<n>` anywhere in the ref meant
+  # any ref merely containing that substring short-circuited to <n> -- and a
+  # head branch is a legitimate ref form here, its name chosen by whoever can
+  # push. A branch called `feature/12-x/pull/99` resolved to the unrelated PR
+  # #99, aiming this transport's writes (pr-close, pr-merge, pr-edit) at it.
+  if [[ "$ref" =~ ^https?://[^/]+/[^/]+/[^/]+/pull/([0-9]+)/?$ ]]; then echo "${BASH_REMATCH[1]}"; return 0; fi
   local owner enc resp body n
   owner="${REPO%%/*}"
   enc=$(jq -rn --arg h "${owner}:${ref}" '$h|@uri')

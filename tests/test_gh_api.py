@@ -213,8 +213,8 @@ def test_pr_close_patches_the_pr_state_to_closed(gh_api):
 
 
 def test_pr_close_resolves_a_branch_name_to_its_pr(gh_api):
-    # Every reaper call site passes a branch, not a number, exactly as
-    # `gh pr close <branch>` accepts.
+    # A PR ref is a number, a PR URL, or a head branch — the same three
+    # forms `gh pr close <ref>` accepts.
     proc = gh_api([str(LIB), "pr-close", "feature/x"])
 
     assert proc.returncode == 0, proc.stderr
@@ -231,3 +231,31 @@ def test_pr_close_leaves_the_branch_in_place(gh_api):
     assert proc.returncode == 0, proc.stderr
     assert "-X DELETE" not in proc.curl_log
     assert "/git/refs/" not in proc.curl_log
+
+
+# === a PR ref is three forms, and a branch name is not the URL one ===
+
+
+def test_a_branch_name_containing_a_pull_path_is_not_read_as_that_pr(gh_api):
+    # The URL form was matched unanchored, so any ref merely *containing*
+    # `/pull/<n>` short-circuited to <n>. Branch names come from whoever can
+    # push, and `git ls-remote`'s `feature/12-*` glob matches across `/`, so
+    # a branch called `feature/12-x/pull/99` would have aimed a close at the
+    # unrelated PR #99. A branch must go through the head lookup like any
+    # other branch.
+    proc = gh_api([str(LIB), "pr-close", "feature/12-x/pull/99"])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "/pulls/99" not in proc.curl_log, "a branch name was parsed as a PR URL"
+    assert "head=onpaj%3Afeature%2F12-x%2Fpull%2F99" in proc.curl_log
+    assert f"/pulls/{PR_NUMBER}" in proc.curl_log
+
+
+def test_a_real_pr_url_still_resolves_without_a_lookup(gh_api):
+    # The anchored form must still recognise the genuine article.
+    proc = gh_api([str(LIB), "pr-close",
+                   f"https://github.com/onpaj/harness/pull/{PR_NUMBER}"])
+
+    assert proc.returncode == 0, proc.stderr
+    assert "/pulls?" not in proc.curl_log, "resolved a full PR URL via a head lookup"
+    assert f"/pulls/{PR_NUMBER}" in proc.curl_log
