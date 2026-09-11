@@ -834,11 +834,14 @@ def test_flagging_also_addresses_the_vetted_pr_number(reaper):
 # === the audit record is the whole point: never lose it ===
 
 
-def test_a_nonsense_file_count_is_skipped_rather_than_killing_the_sweep(reaper):
-    # `listed`/`changed` feed `[ x -ne y ]`. A non-integer there is a fatal
-    # bash error under `set -euo pipefail`, which would abort before the
-    # orphans JSON is printed — throwing away the record of every close and
-    # comment already performed this run.
+def test_a_nonsense_file_count_never_reads_as_a_passed_truncation_check(reaper):
+    # `listed`/`changed` feed `[ x -ne y ]`, and a non-integer there does NOT
+    # abort the run: `[` exits 2 with "integer expression expected", but as an
+    # `elif` condition that status is exempt from `set -e` and simply reads as
+    # false. So an unexpected API shape made the truncation check — the one
+    # thing standing between a partially-listed PR and being closed as
+    # "artifact-only" — quietly pass, and the PR got closed. A silent breach
+    # of the never-close-real-work invariant, not a crash.
     proc, log = reaper(
         closed={READY: [_issue(3972), _issue(4003)]},
         branches={3972: "feature/3972-widget", 4003: "feature/4003-thing"},
@@ -851,7 +854,8 @@ def test_a_nonsense_file_count_is_skipped_rather_than_killing_the_sweep(reaper):
     )
 
     assert _by_number(proc, 3972)["action"] == "skipped"
-    # the sweep carried on and the second, healthy orphan was still handled
+    assert "pr close 3982" not in log, "closed a PR whose file counts were unreadable"
+    # and the sweep carried on: the second, healthy orphan was still handled
     assert _by_number(proc, 4003)["action"] == "closed"
 
 
