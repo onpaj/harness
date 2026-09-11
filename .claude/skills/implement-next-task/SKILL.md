@@ -197,6 +197,14 @@ cd "$WORKTREE"
    finishing), does it, commits, and **pushes** before it stops. It always
    stops after one unit -- it never loops.
 
+   If the `implement-orchestrator` agent type is **not available** in this
+   environment, do not skip the unit and do not improvise a substitute:
+   `read` `.claude/agents/implement-orchestrator.md` yourself and **follow**
+   its sections in order, in this session, exactly as the Task tool would
+   have. `agentharness init` installs the file whether or not the agent type
+   is registered, so the instructions are always on disk. Say which of the
+   two you did in your final report.
+
 8. **Check for a terminal task failure first, before considering
    Finishing.** A developer task that exhausted `max_revisions` makes the
    orchestrator print a message starting `Task {task_name} failed for
@@ -266,6 +274,27 @@ fi
 ```bash
 LIB=".claude/skills/_lib/gh_api.sh"
 
+verify_finish() {
+  # Recomputes FINISH_OK from FRESH reads of the PR and the issue. Call it
+  # again after any repair retry: a best-effort `|| true` call's exit status
+  # proves nothing about what actually landed on GitHub.
+  #
+  # The label check must read the names and match one exactly --
+  # `--jq '.labels[].name' | grep -qx agent-completed`. NEVER go back to
+  # `--jq '[.labels[].name] | index("agent-completed")' | grep -qv null`:
+  # `gh --jq` renders a null result as an EMPTY LINE, not the literal string
+  # `null`, so `grep -v null` matched that empty line and reported success for
+  # an issue that had never been relabelled at all. That check could not fail.
+  FINISH_OK=true
+  if [ -n "${USE_GH_API:-}" ]; then
+    "$LIB" pr-view "$BRANCH" 2>/dev/null | jq -e '.isDraft == false' >/dev/null || FINISH_OK=false
+    "$LIB" issue-view "$ISSUE_ID" 2>/dev/null | jq -e '[.labels[].name] | index("agent-completed")' >/dev/null || FINISH_OK=false
+  else
+    gh pr view "$BRANCH" --json isDraft --jq '.isDraft == false' 2>/dev/null | grep -q true || FINISH_OK=false
+    gh issue view "$ISSUE_ID" --json labels --jq '.labels[].name' 2>/dev/null | grep -qx agent-completed || FINISH_OK=false
+  fi
+}
+
 TASKS_DONE=$(agentharness checkpoint status "feat-${ISSUE_ID}" 2>/dev/null | grep -q '"type": "complete"' && echo yes || echo no)
 FIX_PENDING="artifacts/feat-${ISSUE_ID}/task-context/code-review-fixes.md"
 
@@ -295,16 +324,11 @@ if [ "$TASKS_DONE" = "yes" ] && [ ! -f "$FIX_PENDING" ]; then
 
   # Verify before reporting "complete" -- don't assume the two GitHub-state calls above
   # landed just because they didn't throw.
-  FINISH_OK=true
-  if [ -n "${USE_GH_API:-}" ]; then
-    "$LIB" pr-view "$BRANCH" 2>/dev/null | jq -e '.isDraft == false' >/dev/null || FINISH_OK=false
-    "$LIB" issue-view "$ISSUE_ID" 2>/dev/null | jq -e '[.labels[].name] | index("agent-completed")' >/dev/null || FINISH_OK=false
-  else
-    gh pr view "$BRANCH" --json isDraft --jq '.isDraft == false' 2>/dev/null | grep -q true || FINISH_OK=false
-    gh issue view "$ISSUE_ID" --json labels --jq '[.labels[].name] | index("agent-completed")' 2>/dev/null | grep -qv null || FINISH_OK=false
-  fi
+  verify_finish
   if [ "$FINISH_OK" != "true" ]; then
-    # One repair retry, then report exactly what's still wrong rather than "complete".
+    # One repair retry, then RE-VERIFY and report exactly what's still wrong
+    # rather than "complete". The retry's own calls are deliberately
+    # best-effort, so their exit status says nothing -- only a fresh read does.
     if [ -n "${USE_GH_API:-}" ]; then
       "$LIB" pr-ready "$BRANCH" 2>/dev/null || true
       "$LIB" issue-edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
@@ -312,6 +336,7 @@ if [ "$TASKS_DONE" = "yes" ] && [ ! -f "$FIX_PENDING" ]; then
       gh pr ready "$BRANCH" 2>/dev/null || true
       gh issue edit "$ISSUE_ID" --remove-label agent-implementing --add-label agent-completed 2>/dev/null || true
     fi
+    verify_finish
   fi
 else
   # Orchestrator said finishing but artifact state disagrees -- do not undraft.

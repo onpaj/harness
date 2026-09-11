@@ -433,3 +433,117 @@ def test_every_commit_also_stages_the_rest_of_the_worktree():
         assert re.search(r"git add -A(?! -f)", run), (
             f"commit staged the artifacts path but not the worktree: {run!r}"
         )
+
+
+# === step 9's own Finishing verification ===
+#
+# The label-swap check ran the absent case through `grep -qv null`. `gh --jq`
+# renders a null result as an EMPTY LINE, not the literal string `null`, so
+# `grep -v null` matched that empty line and returned success: the check
+# passed whether or not `agent-completed` had actually been applied. Combined
+# with a `$LIB` transport that no-ops silently, a worker reported "pipeline
+# finished" while its PR sat stranded as a draft.
+
+SKILL_MD = SKILL_DIR / "SKILL.md"
+
+
+def _verification_line(needle: str) -> str:
+    """The single line in step 9 that decides FINISH_OK from `needle`'s transport."""
+    lines = [
+        ln.strip() for ln in SKILL_MD.read_text(encoding="utf-8").splitlines()
+        if "FINISH_OK=false" in ln and needle in ln
+    ]
+    assert len(lines) == 1, f"expected exactly one {needle!r} label check, got {lines}"
+    return lines[0]
+
+
+def _run_label_check(line: str, labels, tmp_path, transport):
+    """Run one extracted verification line against a stubbed transport."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    payload = json.dumps({"labels": [{"name": n} for n in labels]})
+
+    if transport == "gh":
+        # `gh --jq` renders a null result as an EMPTY LINE, where plain
+        # `jq -r` would print the literal string "null". That difference is
+        # the entire defect, so the stub reproduces gh's rendering (verified
+        # against the live API) rather than jq's.
+        stub = bin_dir / "gh"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f"filter=$(echo \"$*\" | sed -n 's/.*--jq //p')\n"
+            f"/usr/bin/env jq -r \"$filter\" <<<{payload!r} | sed 's/^null$//'\n"
+        )
+    else:
+        stub = bin_dir / "lib.sh"
+        stub.write_text(f"#!/usr/bin/env bash\nprintf '%s' {payload!r}\n")
+    stub.chmod(0o755)
+
+    script = f'FINISH_OK=true\nISSUE_ID=1\nBRANCH=feature/x\nLIB="{stub}"\n{line}\necho "$FINISH_OK"'
+    proc = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def test_finish_verification_fails_when_agent_completed_is_absent(tmp_path):
+    result = _run_label_check(
+        _verification_line("gh issue view"), ["agent-implementing"], tmp_path, "gh"
+    )
+
+    assert result == "false", (
+        "step 9 confirmed the agent-completed label swap even though the issue "
+        "is still agent-implementing — the check cannot detect a failed swap"
+    )
+
+
+def test_finish_verification_passes_when_agent_completed_is_present(tmp_path):
+    result = _run_label_check(
+        _verification_line("gh issue view"),
+        ["agent-completed", "agent"], tmp_path, "gh",
+    )
+
+    assert result == "true"
+
+
+def test_finish_verification_is_not_fooled_by_a_label_that_merely_contains_the_name(tmp_path):
+    result = _run_label_check(
+        _verification_line("gh issue view"), ["not-agent-completed-yet"], tmp_path, "gh"
+    )
+
+    assert result == "false"
+
+
+def test_the_gh_api_transport_check_also_rejects_an_absent_label(tmp_path):
+    # The USE_GH_API mirror uses `jq -e`, which exits non-zero on null, so it
+    # never shared the `grep -qv null` hole. Pinned so it cannot acquire one.
+    result = _run_label_check(
+        _verification_line("issue-view"), ["agent-implementing"], tmp_path, "lib"
+    )
+
+    assert result == "false"
+
+
+def test_the_gh_api_transport_check_accepts_a_present_label(tmp_path):
+    result = _run_label_check(
+        _verification_line("issue-view"), ["agent-completed"], tmp_path, "lib"
+    )
+
+    assert result == "true"
+
+
+def test_finish_reverifies_after_its_repair_retry():
+    """The retry wrapped every call in `|| true` and never recomputed
+    FINISH_OK, so step 10's "only report finished if FINISH_OK" gate was
+    unsatisfiable by construction -- the repair's outcome was never checked."""
+    body = SKILL_MD.read_text(encoding="utf-8")
+    retry_block = body.split("One repair retry", 1)[1].split("\n```", 1)[0]
+    # Everything after the retry's last best-effort write.
+    tail = retry_block.rsplit("--add-label agent-completed", 1)[1]
+
+    assert re.search(r"verify_finish|FINISH_OK=", tail), (
+        "nothing re-verifies after the repair retry — its `|| true` calls "
+        "cannot report whether the repair actually landed"
+    )

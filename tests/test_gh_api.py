@@ -259,3 +259,109 @@ def test_a_real_pr_url_still_resolves_without_a_lookup(gh_api):
     assert proc.returncode == 0, proc.stderr
     assert "/pulls?" not in proc.curl_log, "resolved a full PR URL via a head lookup"
     assert f"/pulls/{PR_NUMBER}" in proc.curl_log
+
+
+# === .env discovery across git worktrees ===
+#
+# The pipeline runs every unit of work inside a `git worktree add`-created
+# worktree. `.env` is gitignored, so it exists only in the main checkout and
+# is never present in a worktree. Resolving it from the script's own path
+# therefore found nothing, and with USE_GH_API set every call from inside a
+# worktree died with "no token" — which implement-next-task's step 9 then
+# swallowed via `|| true`, reporting success while writing nothing.
+
+
+def _seed_repo(root: Path, token_line: str) -> None:
+    """A git repo carrying the real gh_api.sh, plus a gitignored .env."""
+    lib_dir = root / ".claude" / "skills" / "_lib"
+    lib_dir.mkdir(parents=True)
+    target = lib_dir / "gh_api.sh"
+    target.write_text(LIB.read_text())
+    target.chmod(0o755)
+    (root / ".gitignore").write_text(".env\n")
+    subprocess.run(["git", "init", "-q", "-b", "master"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=root, check=True,
+    )
+    (root / ".env").write_text(token_line)
+
+
+def _run_lib(cwd: Path, argv_extra=None, env_extra=None):
+    """Run gh_api.sh with no token in the environment at all."""
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "HOME": str(cwd),
+        "GH_REPO": "onpaj/harness",
+        **(env_extra or {}),
+    }
+    return subprocess.run(
+        [str(cwd / ".claude" / "skills" / "_lib" / "gh_api.sh")] + (argv_extra or []),
+        capture_output=True, text=True, env=env, cwd=cwd,
+    )
+
+
+def test_token_is_read_from_the_main_checkouts_env_when_run_inside_a_worktree(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+    _seed_repo(main, "GIT_PAT=token-from-main-checkout\n")
+    tree = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feature/x", str(tree)],
+        cwd=main, check=True,
+    )
+    assert not (tree / ".env").exists(), "fixture invalid: .env must not reach the worktree"
+
+    proc = _run_lib(tree)
+
+    assert "no token" not in proc.stderr, (
+        "gh_api.sh could not find the main checkout's .env from inside a worktree — "
+        "every USE_GH_API call in the pipeline fails there"
+    )
+
+
+def test_token_is_still_read_from_env_in_the_primary_checkout(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+    _seed_repo(main, "GIT_PAT=token-from-main-checkout\n")
+
+    proc = _run_lib(main)
+
+    assert "no token" not in proc.stderr, proc.stderr
+
+
+def test_a_real_environment_token_still_wins_over_the_env_file(tmp_path):
+    # Precedence matters: an Orca automation injects GIT_PAT directly, and a
+    # stale .env in the main checkout must never shadow it.
+    main = tmp_path / "main"
+    main.mkdir()
+    _seed_repo(main, "GIT_PAT=token-from-env-file\n")
+    tree = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feature/x", str(tree)],
+        cwd=main, check=True,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "curl.log"
+    stub = bin_dir / "curl"
+    stub.write_text(
+        '#!/usr/bin/env bash\necho "$*" >> "$CURL_STUB_LOG"\n'
+        "printf '%s\\n__HTTP_CODE__200' " + repr(json.dumps(_pull())) + "\n"
+    )
+    stub.chmod(0o755)
+
+    proc = _run_lib(
+        tree,
+        ["pr-close", str(PR_NUMBER)],
+        {
+            "GIT_PAT": "token-from-environment",
+            "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin",
+            "CURL_STUB_LOG": str(log),
+        },
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Bearer token-from-environment" in log.read_text()
+    assert "token-from-env-file" not in log.read_text()
