@@ -1,6 +1,44 @@
 # CHANGELOG
 
 
+## v0.34.2 (2026-09-12)
+
+### Bug Fixes
+
+- Close three silent-failure paths in the pipeline templates
+  ([`5bfdcb9`](https://github.com/onpaj/harness/commit/5bfdcb9b1c30a234a1db21be23e0503b67820b55))
+
+Surfaced by 24 real worker invocations across 5 features in onpaj/Anela.Heblo on agentharness
+  v0.34.0.
+
+`_lib/gh_api.sh` was tokenless in every pipeline worktree. It resolved `.env` from its own path, but
+  `.env` is gitignored and therefore exists only in the main checkout, never in a `git worktree
+  add`-created one, so with USE_GH_API set every call from inside a worktree died with "no token".
+  It now also searches the repository's main worktree, located via `git rev-parse --git-common-dir`.
+
+implement-next-task step 9's Finishing verification could not fail. `gh --jq` renders a null result
+  as an EMPTY LINE, not the literal string `null`, so `index("agent-completed") | grep -qv null`
+  matched that empty line and reported success for an issue that had never been relabelled. It now
+  reads the label names and matches one exactly. The repair retry re-verifies too: its calls are `||
+  true`, so their exit status proved nothing and FINISH_OK was never recomputed, which left step
+  10's "only report finished if FINISH_OK" gate unsatisfiable by construction. The USE_GH_API mirror
+  used `jq -e` and never had the hole; it is now pinned.
+
+The developer, planner and brainstorm agents' `context_files` globs hardcoded a
+  `superpowers-marketplace/` cache directory that no longer exists (`claude-plugins-official/`
+  does), so each agent ran without its declared skill on every invocation. The marketplace segment
+  is now a wildcard, and the orchestrators must stop rather than run an agent whose declared context
+  resolved to nothing.
+
+Also: the orchestrator templates declared only `id:`, never the `name:` key Claude Code registers an
+  agent type under — so `agentharness init` installed the file and the agent type still did not
+  exist. Both worker skills now name a fallback for that case.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01NbujESnU4B9knMr5EyXwhd
+
+
 ## v0.34.1 (2026-09-11)
 
 ### Bug Fixes
