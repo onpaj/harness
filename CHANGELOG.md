@@ -1,6 +1,43 @@
 # CHANGELOG
 
 
+## v0.34.3 (2026-09-12)
+
+### Bug Fixes
+
+- Store agent leases as branch refs, and release them honestly
+  ([`bfd4878`](https://github.com/onpaj/harness/commit/bfd4878d31cce36f4ac00529e6c89548b1ae6758))
+
+`lease.sh acquire` failed 100% of the time in a Claude Code cloud session, always at the first step
+  with exit 3 ("lost the race to acquire") even when no other worker held the lease. Five parallel
+  workers against five confirmed lease-free issues all failed identically.
+
+A cloud session's git egress can create and fast-forward refs under `refs/heads/**` and nothing
+  else. Creating `refs/agent-leases/*` -- or a tag, or any other custom namespace -- is answered
+  with HTTP 403 by GitHub itself, and deleting any ref at all is refused too, including a branch the
+  session just created. The credential makes no difference: the platform manages that auth layer, so
+  supplying the owner's own PAT via `http.extraHeader` or a rewritten remote URL changes nothing.
+
+Move the lease to `refs/heads/agent-leases/<id>`. An ordinary branch ref is writable everywhere, so
+  no environment detection or fallback path is needed. `push_lease`, `fetch_lease_sha`,
+  `inspect_lease` and the acquire / renew / status commands are already ref-path-agnostic and are
+  unchanged.
+
+Also fix a pre-existing bug in `cmd_release`, independent of the above: its remote delete was
+  best-effort (`|| true`) and it then reported `{"released": true}` unconditionally. A failed delete
+  left the lease live on `origin` at its original expiry, so every other worker correctly refused
+  the issue until the full TTL lapsed while the releasing worker believed it had freed it. Release
+  now deletes where deletion works, and where it does not, expires the lease in place via a
+  compare-and-set update with a backdated `expires_at` -- still a real release, since every reader
+  already treats an expired payload as available. Only if neither succeeds does it report
+  `{"released": false}` and exit non-zero.
+
+Side effects: released leases accumulate as inert branches on `origin` wherever deletion is refused;
+  SKILL.md gains a prune snippet that only deletes refs whose payload has already expired. Consumer
+  repos need `/update-agentharness` to pick this up, and it should ship while the pipeline is quiet
+  -- leases held under the old prefix are invisible to the patched script.
+
+
 ## v0.34.2 (2026-09-12)
 
 ### Bug Fixes
