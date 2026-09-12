@@ -338,3 +338,82 @@ def test_stale_recorded_id_does_not_let_us_steal_a_new_holders_lease(clone_facto
               now="2026-01-01T01:00:00Z", expect=0)
 
     run_lease(a, "release", "feat-24", now="2026-01-01T01:01:00Z", expect=3)
+
+
+# === ref namespace ===
+#
+# A Claude Code cloud session's git egress can create and fast-forward refs
+# under refs/heads/** and nothing else: a push creating refs/agent-leases/*
+# (or a tag, or any other custom namespace) is answered with HTTP 403, so
+# every acquire there failed at the very first step. Storing the lease as an
+# ordinary branch ref is the one shape that is writable everywhere.
+
+
+def _origin_refs(origin):
+    return _git(origin, "for-each-ref", "--format=%(refname)").stdout.split()
+
+
+def test_lease_ref_is_stored_under_refs_heads(clone_factory, origin):
+    run_lease(clone_factory(), "acquire", "feat-30", holder="worker-a", expect=0)
+
+    refs = _origin_refs(origin)
+    assert "refs/heads/agent-leases/feat-30" in refs
+    assert not any(r.startswith("refs/agent-leases/") for r in refs), (
+        f"no lease may live outside refs/heads/**, got {refs}"
+    )
+
+
+# === release where ref deletion is forbidden ===
+#
+# The same environment that can write refs/heads/** cannot DELETE any ref at
+# all. `receive.denyDeletes` reproduces that server-side refusal exactly.
+
+
+def _forbid_deletes(origin):
+    _git(origin, "config", "receive.denyDeletes", "true")
+
+
+def _reject_every_push(origin):
+    hook = Path(origin) / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+
+
+def test_release_deletes_the_ref_where_deletion_is_permitted(clone_factory, origin):
+    """The unchanged happy path: a real delete, leaving nothing behind."""
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-31", holder="worker-a", expect=0)
+    run_lease(a, "release", "feat-31", holder="worker-a", expect=0)
+
+    assert "refs/heads/agent-leases/feat-31" not in _origin_refs(origin)
+
+
+def test_release_expires_the_lease_in_place_when_deletion_is_forbidden(
+    clone_factory, origin
+):
+    """Degrade to a real release by another means, not to a silent lie."""
+    a, b = clone_factory(), clone_factory()
+    run_lease(a, "acquire", "feat-32", holder="worker-a", expect=0)
+    _forbid_deletes(origin)
+
+    proc = run_lease(a, "release", "feat-32", holder="worker-a", expect=0)
+    assert json.loads(proc.stdout)["released"] is True
+
+    # The ref survives -- but as an already-expired lease, which every
+    # reader (status, acquire, find_candidate.sh) treats as available.
+    assert "refs/heads/agent-leases/feat-32" in _origin_refs(origin)
+    assert json.loads(run_lease(b, "status", "feat-32", expect=0).stdout)["held"] is False
+    run_lease(b, "acquire", "feat-32", holder="worker-b", expect=0)
+
+
+def test_release_reports_failure_when_it_can_neither_delete_nor_expire(
+    clone_factory, origin
+):
+    """Anything short of an actual release must be reported as one."""
+    a = clone_factory()
+    run_lease(a, "acquire", "feat-33", holder="worker-a", expect=0)
+    _forbid_deletes(origin)
+    _reject_every_push(origin)
+
+    proc = run_lease(a, "release", "feat-33", holder="worker-a", expect=1)
+    assert json.loads(proc.stdout)["released"] is False

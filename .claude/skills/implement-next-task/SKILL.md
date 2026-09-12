@@ -98,7 +98,7 @@ SOURCE=$(echo "$RESULT" | jq -r '.candidate.source')
 
 4. **Take the lease before touching anything.** This is the real mutual
    exclusion -- the label swap in step 5 is only a human-visible marker.
-   `_lib/lease.sh` holds a compare-and-set git ref (`refs/agent-leases/feat-N`)
+   `_lib/lease.sh` holds a compare-and-set git ref (`refs/heads/agent-leases/feat-N`)
    for the duration of this unit of work, so a second worker cannot start
    on the same issue even while this one is deep inside a long build or
    test run with nothing committed yet.
@@ -442,8 +442,33 @@ explicitly:
 
 ```bash
 .claude/skills/_lib/lease.sh status "feat-<issue-number>"
-git push origin ":refs/agent-leases/feat-<issue-number>"   # force-clear
+git push origin ":refs/heads/agent-leases/feat-<issue-number>"   # force-clear
 ```
 
 Only force-clear after confirming the holder is genuinely gone -- that is
 exactly the check the lease is there to make unnecessary.
+
+### Leftover `agent-leases/*` branches
+
+A lease lives at `refs/heads/agent-leases/feat-N` because that is the only
+ref namespace every environment can write -- a Claude Code cloud session is
+refused (HTTP 403) on any other namespace, and is refused on deleting any
+ref at all. Where `release` cannot delete the ref it expires it in place
+instead, so released leases accumulate as branches on `origin`. They are
+inert: every reader treats an expired payload as available.
+
+Prune them occasionally from somewhere ref deletion does work (a local
+checkout, or CI with full repo permissions):
+
+```bash
+git fetch --quiet origin "+refs/heads/agent-leases/*:refs/heads/agent-leases/*"
+NOW=$(date -u +%s)
+for REF in $(git for-each-ref --format="%(refname)" "refs/heads/agent-leases/"); do
+  EXPIRES=$(git log -1 --format=%B "$REF" | head -1 | jq -r ".expires_at // empty")
+  [ -n "$EXPIRES" ] || continue
+  EXP=$(date -u -d "$EXPIRES" +%s 2>/dev/null \
+        || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$EXPIRES" +%s 2>/dev/null) || continue
+  [ "$NOW" -ge "$EXP" ] || continue          # never touch a live lease
+  git push --quiet origin ":${REF}" && git update-ref -d "$REF"
+done
+```
