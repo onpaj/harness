@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v0.34.4 (2026-10-13)
+
+### Bug Fixes
+
+- Exclude pipeline artifacts from automerge-pr review
+  ([`e280aa4`](https://github.com/onpaj/harness/commit/e280aa4df839c7300927b6dde97496ab004d0a6a))
+
+The reviewer prompt treated artifacts/feat-*/ planning and state files as part of the diff, so
+  pipeline PRs routinely lost 20 points to the size deduction and drew "do these belong in the repo"
+  concerns. Tell the reviewer to ignore artifacts/ entirely and to count size without it; a PR that
+  is empty once artifacts are excluded scores as claiming work it does not contain.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01GuZje9PjevEe5ia6ZzsQXq
+
+
 ## v0.34.3 (2026-09-12)
 
 ### Bug Fixes
