@@ -233,14 +233,6 @@ if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
   fi
   exit 0
 fi
-if [ "$1" = "api" ] && [ "$2" = "repos/{owner}/{repo}/git/refs" ]; then
-  if [ -f "$CLAIM_STUB_REF_EXISTS" ]; then
-    echo "HTTP 422: Reference already exists" >&2
-    exit 1
-  fi
-  touch "$CLAIM_STUB_REF_EXISTS"
-  exit 0
-fi
 if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
   exit 0
 fi
@@ -250,6 +242,17 @@ exit 1
 CLAIM_GIT_STUB = """\
 #!/usr/bin/env bash
 echo "$*" >> "$CLAIM_STUB_LOG"
+if [ "$1" = "push" ]; then
+  # Atomic create: a second push to the same ref is rejected (stale info),
+  # after which the branch is visible on origin.
+  if [ -f "$CLAIM_STUB_REF_EXISTS" ]; then
+    touch "$CLAIM_STUB_BRANCH_EXISTS"
+    echo "! [rejected] (stale info)" >&2
+    exit 1
+  fi
+  touch "$CLAIM_STUB_REF_EXISTS"
+  exit 0
+fi
 if [ "$1" = "ls-remote" ]; then
   # Check if called with feature branch pattern match (4th arg)
   if [ -n "${4:-}" ] && [[ "$4" == feature/* ]]; then
@@ -318,6 +321,14 @@ def test_claim_fails_when_ref_creation_loses_race(claim_runner):
     proc = claim_runner(42, "agent-planning", ref_exists=True)
     assert proc.returncode == 3
     assert "lost the race" in proc.stderr
+
+
+def test_claim_pushes_ref_instead_of_calling_refs_api(claim_runner):
+    proc = claim_runner(42, "agent-planning")
+    assert proc.returncode == 0, proc.stderr
+    calls = claim_runner.log.read_text()
+    assert "api repos" not in calls
+    assert "push --quiet --force-with-lease=refs/heads/feature/42-Some-Title: " in calls
 
 
 def test_claim_swaps_agent_label_for_target_label(claim_runner):
