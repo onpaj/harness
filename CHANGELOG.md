@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.34.5 (2026-10-19)
+
+### Bug Fixes
+
+- Claim issues via git push, not the refs REST API
+  ([`78d7423`](https://github.com/onpaj/harness/commit/78d7423ab1c5807b12fd0ee1dcca482ad4fca125))
+
+The cloud proxy blocks POST git/refs but allows pushes to refs/heads/**. Claim with an atomic push
+  (--force-with-lease=<ref>: fails if the ref exists).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+
 ## v0.34.4 (2026-10-13)
 
 ### Bug Fixes
