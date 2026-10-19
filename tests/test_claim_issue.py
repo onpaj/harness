@@ -11,7 +11,6 @@ GH_STUB = """\
 #!/usr/bin/env bash
 # Fake `gh` for tests. Behavior is driven by env vars:
 #   GH_STUB_TITLE     — issue title served by `gh issue view`
-#   GH_STUB_REF_MODE  — `gh api .../git/refs` outcome: ok | exists | fail
 # Every invocation's argv is appended to $GH_STUB_LOG.
 echo "$*" >> "$GH_STUB_LOG"
 if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
@@ -21,13 +20,6 @@ fi
 if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
   echo "master"
   exit 0
-fi
-if [ "$1" = "api" ]; then
-  case "$GH_STUB_REF_MODE" in
-    ok) echo '{}'; exit 0 ;;
-    exists) echo "HTTP 422: Reference already exists" >&2; exit 1 ;;
-    *) echo "HTTP 500: boom" >&2; exit 1 ;;
-  esac
 fi
 if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
   exit 0
@@ -39,13 +31,24 @@ GIT_STUB = """\
 #!/usr/bin/env bash
 # Fake `git` for tests. `ls-remote --heads` serves $GH_STUB_EXISTING_BRANCH
 # (one ref line) when set; `ls-remote origin refs/heads/...` serves the base
-# SHA. Argv is appended to $GH_STUB_LOG.
+# SHA. `push` outcome is driven by $GH_STUB_REF_MODE: ok | exists | fail;
+# `exists` simulates losing the race, so the branch then shows on origin.
+# Argv is appended to $GH_STUB_LOG.
 echo "git $*" >> "$GH_STUB_LOG"
 if [ "$1" = "ls-remote" ] && [ "$2" = "--heads" ]; then
   if [ -n "$GH_STUB_EXISTING_BRANCH" ]; then
     printf 'abc123\\trefs/heads/%s\\n' "$GH_STUB_EXISTING_BRANCH"
+  elif [ -f "$GH_STUB_LOG.raced" ]; then
+    printf 'abc123\\trefs/heads/feature/raced\\n'
   fi
   exit 0
+fi
+if [ "$1" = "push" ]; then
+  case "$GH_STUB_REF_MODE" in
+    ok) exit 0 ;;
+    exists) touch "$GH_STUB_LOG.raced"; echo "! [rejected] (stale info)" >&2; exit 1 ;;
+    *) echo "fatal: remote hung up" >&2; exit 1 ;;
+  esac
 fi
 if [ "$1" = "ls-remote" ]; then
   printf 'basesha\\t%s\\n' "$3"
@@ -89,10 +92,15 @@ def test_claims_unclaimed_issue(claim_runner):
     result, log = claim_runner(["42"])
     assert result.returncode == 0
     assert result.stdout.strip() == "feature/42-Add-Widget-Support"
-    # The claim ref is created before the advisory label swap.
-    api_idx = log.index("api repos/{owner}/{repo}/git/refs")
+    # The claim ref is pushed (not created via the REST refs API, which the
+    # cloud proxy blocks) before the advisory label swap.
+    assert "api repos" not in log
+    push_idx = log.index(
+        "git push --quiet --force-with-lease=refs/heads/feature/42-Add-Widget-Support: "
+        "origin basesha:refs/heads/feature/42-Add-Widget-Support"
+    )
     label_idx = log.index("issue edit 42 --add-label agent-wip --remove-label agent")
-    assert api_idx < label_idx
+    assert push_idx < label_idx
 
 
 def test_slug_matches_oneshot_convention(claim_runner):
@@ -106,7 +114,7 @@ def test_existing_remote_branch_means_already_claimed(claim_runner):
     assert result.returncode == 3
     assert "already claimed" in result.stderr
     # No ref creation and no label swap were attempted.
-    assert "api repos" not in log
+    assert "git push" not in log
     assert "issue edit" not in log
 
 
@@ -117,7 +125,7 @@ def test_lost_race_exits_3(claim_runner):
     assert "issue edit" not in log
 
 
-def test_api_failure_exits_1(claim_runner):
+def test_push_failure_exits_1(claim_runner):
     result, _ = claim_runner(["42"], ref_mode="fail")
     assert result.returncode == 1
     assert "failed to create claim ref" in result.stderr
