@@ -86,7 +86,7 @@ agentharness observe                            # start observer (primary execut
 agentharness watch                              # Textual TUI, auto-refresh 2s
 agentharness status feat-20260425-abc123        # one-shot status snapshot
 agentharness list                               # all features
-agentharness init                               # initialize project scaffolding
+agentharness init                               # install/refresh scaffolding (keeps locally edited files; --overwrite-local to reset)
 ```
 
 Internal (called by observer, not for direct use):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json as _json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
+from agentharness.scaffold import copy_dir, load_manifest, save_manifest
 from agentharness.checkpoint import (
     init_checkpoint as _cp_init,
     load_checkpoint,
@@ -127,32 +127,29 @@ def brainstorm() -> None:
     start_brainstorm()
 
 
-def _copy_dir(src: Path, dst: Path, target: Path) -> None:
-    if not src.exists():
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-    for src_file in src.iterdir():
-        if not src_file.is_file():
-            continue
-        dst_file = dst / src_file.name
-        shutil.copy2(src_file, dst_file)
-        console.print(f"[green]wrote[/green] {dst_file.relative_to(target)}")
-
-
 @main.command("init")
 @click.option("--dir", "target_dir", default=".", show_default=True, type=click.Path())
 @click.option(
     "--force",
     is_flag=True,
     hidden=True,
-    help="No-op, kept for backward compatibility — init always overwrites now.",
+    help="No-op, kept for backward compatibility.",
 )
-def init_project(target_dir: str, force: bool) -> None:
+@click.option(
+    "--overwrite-local",
+    is_flag=True,
+    help="Also overwrite files that were edited locally since the last init.",
+)
+def init_project(target_dir: str, force: bool, overwrite_local: bool) -> None:
     """Install agent definitions, skills, and pipeline config into a project directory.
 
     Files are copied into the target repo's standard locations and are meant to be
-    committed to the consumer repo's source control. Always overwrites existing files
-    with the installed package's version — commit or stash local customizations first.
+    committed to the consumer repo's source control, together with the
+    `.agentharness-manifest.json` that records what was installed. A file that was
+    edited locally since the last init is left alone (and reported); pass
+    --overwrite-local to replace it with the packaged version anyway. The first init
+    on a repo with no manifest overwrites everything — commit or stash local
+    customizations first.
     """
     data_root = Path(__file__).parent / "data"
     target = Path(target_dir).resolve()
@@ -169,16 +166,31 @@ def init_project(target_dir: str, force: bool) -> None:
         (data_root / "skills", target / ".claude" / "skills", True),
     ]
 
-    for src_dir, dst_dir, entries_are_dirs in groups:
-        if entries_are_dirs:
-            if src_dir.exists():
-                for entry in src_dir.iterdir():
-                    if entry.is_dir():
-                        _copy_dir(entry, dst_dir / entry.name, target)
-        else:
-            _copy_dir(src_dir, dst_dir, target)
+    manifest = load_manifest(target)
+    recorded: dict[str, str] = {}
+    kept: list[str] = []
 
+    for src_dir, dst_dir, entries_are_dirs in groups:
+        pairs = (
+            [(e, dst_dir / e.name) for e in sorted(src_dir.iterdir()) if e.is_dir()]
+            if entries_are_dirs and src_dir.exists()
+            else [(src_dir, dst_dir)]
+        )
+        for src, dst in pairs:
+            result = copy_dir(src, dst, target, manifest, overwrite_local)
+            recorded.update(result.recorded)
+            kept.extend(result.kept)
+            for rel in result.written:
+                console.print(f"[green]wrote[/green] {rel}")
+            for rel in result.kept:
+                console.print(f"[yellow]kept[/yellow] {rel} (edited locally; --overwrite-local to replace)")
+
+    save_manifest(target, recorded)
     _write_env(target)
+    if kept:
+        console.print(
+            f"\n[yellow]{len(kept)} locally edited file(s) were not overwritten.[/yellow]"
+        )
     console.print("\n[bold]Done.[/bold] Run [bold]/oneshot <issue-number>[/bold] in Claude Code to start the pipeline.")
 
 
