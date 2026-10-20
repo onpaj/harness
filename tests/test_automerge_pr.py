@@ -524,3 +524,68 @@ def test_skill_md_prompt_thresholds_match_parser_constants():
         in skill_md
     )
     assert f"REJECT if < {parser.NEEDS_WORK_THRESHOLD}" in skill_md
+
+
+# === sandbox proxy refusals (HTTP 403) must be loud, not silent ===
+
+PROXY_403 = (
+    "HTTP 403: Write access to this GitHub API path is not permitted "
+    "through this proxy"
+)
+
+
+def test_proxy_refused_issue_label_after_merge_is_reported_as_partial(apply_runner):
+    # The merge landed, but the post-merge label write was refused. This used
+    # to read as a clean `ok`, so nobody knew the agent-merged label was never
+    # applied.
+    proc, _ = apply_runner("merge", issue=118, fail_on="issue edit", fail_message=PROXY_403)
+
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "partial"
+    assert payload["proxy_blocked"] is True
+    assert payload["skipped_steps"][0]["step"] == "add label agent-merged"
+    assert payload["skipped_steps"][0]["target"] == "issue #118"
+    assert "not permitted through this proxy" in payload["skipped_steps"][0]["error"]
+
+
+def test_non_proxy_label_failure_stays_ok_but_still_lists_the_skipped_step(apply_runner):
+    proc, _ = apply_runner("merge", issue=118, fail_on="issue edit")
+
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "ok"
+    assert payload["proxy_blocked"] is False
+    assert [s["step"] for s in payload["skipped_steps"]] == ["add label agent-merged"]
+
+
+def test_clean_run_has_no_skipped_steps_field(apply_runner):
+    proc, _ = apply_runner("merge", issue=118)
+
+    assert "skipped_steps" not in json.loads(proc.stdout)
+
+
+def test_proxy_refused_review_comment_fails_with_the_cause(apply_runner):
+    proc, _ = apply_runner("needs-work", fail_on="pr comment", fail_message=PROXY_403)
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "failed"
+    assert payload["proxy_blocked"] is True
+    assert "not permitted through this proxy" in payload["detail"]
+
+
+def test_proxy_refused_merge_is_reported_as_proxy_blocked(apply_runner):
+    proc, _ = apply_runner("merge", fail_on="pr merge", fail_message=PROXY_403)
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "failed"
+    assert payload["proxy_blocked"] is True
+    assert payload["skipped_steps"][0]["step"] == "merge PR"
+
+
+def test_proxy_refused_needs_work_label_fails_loudly(apply_runner):
+    proc, _ = apply_runner("needs-work", fail_on="pr edit", fail_message=PROXY_403)
+
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout)["proxy_blocked"] is True
