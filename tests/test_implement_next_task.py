@@ -547,3 +547,30 @@ def test_finish_reverifies_after_its_repair_retry():
         "nothing re-verifies after the repair retry — its `|| true` calls "
         "cannot report whether the repair actually landed"
     )
+
+
+# === head-of-line blocking: agent-blocked issues are never candidates ===
+
+
+def _blocked(number, created_at):
+    return {**_issue(number, created_at), "labels": [{"name": "agent-blocked"}]}
+
+
+def test_blocked_ready_for_dev_issue_is_skipped_so_the_next_one_is_picked(implement_candidate_runner):
+    result = implement_candidate_runner(
+        ready_issues=[_blocked(1, "2026-07-01T00:00:00Z"), _issue(2, "2026-08-01T00:00:00Z")],
+    )
+    assert result["candidate"]["number"] == 2
+    assert any(s["number"] == 1 and "agent-blocked" in s["reason"] for s in result["skipped"])
+
+
+def test_blocked_stale_implementing_issue_is_not_reclaimed(implement_candidate_runner):
+    result = implement_candidate_runner(
+        ready_issues=[],
+        implementing_issues=[_blocked(1, "2026-07-01T00:00:00Z")],
+        commit_dates={"feature/1-x": "2026-07-01T00:00:00Z"},
+        branch_names={1: "feature/1-x"},
+        now_override="2026-09-01T00:00:00Z",
+    )
+    assert result["candidate"] is None
+    assert any(s["number"] == 1 and "agent-blocked" in s["reason"] for s in result["skipped"])

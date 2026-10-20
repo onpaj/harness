@@ -595,3 +595,75 @@ def test_plan_next_task_skill_exists_and_wires_dependencies():
     assert "claim_issue.sh" in content
     assert "plan-orchestrator.md" in content
     assert "agent-ready-for-dev" in content
+
+
+# === head-of-line blocking: issues that must never head the queue ===
+
+
+def _labelled(number, created_at, labels, title="Some Title"):
+    return {
+        "number": number, "title": title, "createdAt": created_at,
+        "labels": [{"name": name} for name in labels],
+    }
+
+
+def test_agent_blocked_issue_is_skipped_so_the_next_one_is_planned(plan_candidate_runner):
+    # The 7-day stall: the oldest `agent` issue also carried `agent-blocked`,
+    # was picked every cycle and declined, and starved everything behind it.
+    result = plan_candidate_runner(
+        agent_issues=[
+            _labelled(1, "2026-07-01T00:00:00Z", ["agent", "agent-blocked"]),
+            _labelled(2, "2026-08-01T00:00:00Z", ["agent"]),
+        ],
+    )
+    assert result["candidate"]["number"] == 2
+    assert any(s["number"] == 1 and "agent-blocked" in s["reason"] for s in result["skipped"])
+
+
+def test_only_a_blocked_issue_yields_null_candidate(plan_candidate_runner):
+    result = plan_candidate_runner(
+        agent_issues=[_labelled(1, "2026-07-01T00:00:00Z", ["agent", "agent-blocked"])],
+    )
+    assert result["candidate"] is None
+
+
+@pytest.mark.parametrize("title", ["Epic: new reporting", "epic: lower", "Epic tracker for X", "Epic"])
+def test_epic_titled_issue_is_skipped(plan_candidate_runner, title):
+    result = plan_candidate_runner(
+        agent_issues=[
+            _labelled(1, "2026-07-01T00:00:00Z", ["agent"], title=title),
+            _labelled(2, "2026-08-01T00:00:00Z", ["agent"]),
+        ],
+    )
+    assert result["candidate"]["number"] == 2
+    assert any(s["number"] == 1 and "epic" in s["reason"] for s in result["skipped"])
+
+
+def test_epic_labelled_issue_is_skipped(plan_candidate_runner):
+    result = plan_candidate_runner(
+        agent_issues=[
+            _labelled(1, "2026-07-01T00:00:00Z", ["agent", "epic"]),
+            _labelled(2, "2026-08-01T00:00:00Z", ["agent"]),
+        ],
+    )
+    assert result["candidate"]["number"] == 2
+
+
+def test_title_merely_containing_epic_is_still_plannable(plan_candidate_runner):
+    result = plan_candidate_runner(
+        agent_issues=[_labelled(1, "2026-07-01T00:00:00Z", ["agent"], title="Epicenter map widget")],
+    )
+    assert result["candidate"]["number"] == 1
+
+
+def test_blocked_issue_does_not_fall_through_to_stale_reclaim_pick_of_itself(plan_candidate_runner):
+    # A blocked issue that also still carries agent-planning is not in the
+    # `agent` pool walk's candidate set, and must not stop other work.
+    result = plan_candidate_runner(
+        agent_issues=[
+            _labelled(1, "2026-07-01T00:00:00Z", ["agent", "agent-blocked"]),
+            _labelled(2, "2026-08-01T00:00:00Z", ["agent", "agent-blocked"]),
+            _labelled(3, "2026-09-01T00:00:00Z", ["agent"]),
+        ],
+    )
+    assert result["candidate"]["number"] == 3

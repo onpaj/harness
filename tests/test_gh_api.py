@@ -196,6 +196,109 @@ def test_hygiene_still_sees_a_genuinely_running_check_as_ci_running(gh_api):
     assert json.loads(proc.stdout)["status"] == "ci-running"
 
 
+# === superseded runs: REST lists every run on the sha, GraphQL only the latest ===
+#
+# PR #4440 on Anela.Heblo was rejected "checks are failing" with every
+# current check green: a push (or a concurrency group) had cancelled the
+# earlier run of each job, and REST's /check-runs returns the cancelled run
+# next to its replacement. GraphQL's statusCheckRollup collapses those; the
+# REST path has to do it itself.
+
+HYGIENE_ENV = {"USE_GH_API": "1", "HYGIENE_POLL_MAX_ATTEMPTS": "2",
+               "HYGIENE_POLL_INTERVAL_SECONDS": "0"}
+
+
+def _run(id_, name, status, conclusion, started, app_id=15368):
+    return {"id": id_, "name": name, "status": status, "conclusion": conclusion,
+            "started_at": started, "completed_at": started if conclusion else None,
+            "app": {"id": app_id, "slug": "github-actions"}}
+
+
+CANCELLED_NEXT_TO_SUCCESS = [
+    _run(1, "build", "completed", "cancelled", "2026-10-06T10:00:00Z"),
+    _run(2, "build", "completed", "success", "2026-10-06T10:05:00Z"),
+    _run(3, "test", "completed", "cancelled", "2026-10-06T10:00:01Z"),
+    _run(4, "test", "completed", "success", "2026-10-06T10:05:01Z"),
+]
+
+
+def test_cancelled_run_superseded_by_a_success_is_dropped_from_the_rollup(gh_api):
+    proc = gh_api([str(LIB), "pr-view", str(PR_NUMBER), "statusCheckRollup"],
+                  check_runs=CANCELLED_NEXT_TO_SUCCESS)
+
+    assert _rollup(proc) == [
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+    ]
+
+
+def test_hygiene_does_not_flag_a_pr_whose_current_checks_are_green(gh_api):
+    # The exact false rejection: still-failing -> needs-work with all current
+    # checks SUCCESS and only CANCELLED duplicates.
+    proc = gh_api([str(HYGIENE), "--pr", str(PR_NUMBER)],
+                  check_runs=CANCELLED_NEXT_TO_SUCCESS, extra_env=HYGIENE_ENV)
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["status"] == "already-clean"
+
+
+def test_the_listing_order_does_not_decide_which_run_is_latest(gh_api):
+    # GitHub makes no ordering promise; the newer success may come first.
+    proc = gh_api([str(HYGIENE), "--pr", str(PR_NUMBER)],
+                  check_runs=list(reversed(CANCELLED_NEXT_TO_SUCCESS)),
+                  extra_env=HYGIENE_ENV)
+
+    assert json.loads(proc.stdout)["status"] == "already-clean"
+
+
+def test_a_cancelled_run_that_is_the_latest_still_counts_as_failing(gh_api):
+    # Only a *superseded* run is ignored. A check whose newest run was
+    # cancelled has no passing run to stand in for it.
+    proc = gh_api([str(HYGIENE), "--pr", str(PR_NUMBER)],
+                  check_runs=[
+                      _run(1, "build", "completed", "success", "2026-10-06T10:00:00Z"),
+                      _run(2, "build", "completed", "cancelled", "2026-10-06T10:05:00Z"),
+                  ], extra_env=HYGIENE_ENV)
+
+    assert json.loads(proc.stdout)["status"] == "still-failing"
+
+
+def test_a_newer_failure_is_not_masked_by_an_older_success(gh_api):
+    proc = gh_api([str(HYGIENE), "--pr", str(PR_NUMBER)],
+                  check_runs=[
+                      _run(1, "test", "completed", "success", "2026-10-06T10:00:00Z"),
+                      _run(2, "test", "completed", "failure", "2026-10-06T10:05:00Z"),
+                  ], extra_env=HYGIENE_ENV)
+
+    assert json.loads(proc.stdout)["status"] == "still-failing"
+
+
+def test_a_rerun_in_progress_supersedes_an_older_finished_run(gh_api):
+    proc = gh_api([str(HYGIENE), "--pr", str(PR_NUMBER)],
+                  check_runs=[
+                      _run(1, "build", "completed", "success", "2026-10-06T10:00:00Z"),
+                      _run(2, "build", "in_progress", None, "2026-10-06T10:05:00Z"),
+                  ], extra_env=HYGIENE_ENV)
+
+    assert json.loads(proc.stdout)["status"] == "ci-running"
+
+
+def test_same_named_checks_from_different_apps_are_not_collapsed(gh_api):
+    proc = gh_api([str(HYGIENE), "--pr", str(PR_NUMBER)],
+                  check_runs=[
+                      _run(1, "build", "completed", "failure", "2026-10-06T10:00:00Z", app_id=1),
+                      _run(2, "build", "completed", "success", "2026-10-06T10:05:00Z", app_id=2),
+                  ], extra_env=HYGIENE_ENV)
+
+    assert json.loads(proc.stdout)["status"] == "still-failing"
+
+
+def test_check_runs_are_requested_with_the_maximum_page_size(gh_api):
+    proc = gh_api([str(LIB), "pr-view", str(PR_NUMBER), "statusCheckRollup"])
+
+    assert "/check-runs?per_page=100" in proc.curl_log
+
+
 # === pr-close ===
 #
 # reap_orphans.sh closes a superseded PR through this verb. Without it the
