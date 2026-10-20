@@ -1,6 +1,70 @@
 # CHANGELOG
 
 
+## v0.35.0 (2026-10-20)
+
+### Bug Fixes
+
+- Collapse superseded check runs and re-check CI rejections before reworking
+  ([`4cf6d73`](https://github.com/onpaj/harness/commit/4cf6d731e8c79f93bb664b097dd5c96b83f4683e))
+
+REST /check-runs lists every run on the sha, so a CANCELLED run superseded by a newer SUCCESS read
+  as a failing check and PRs were flagged needs-work with all current checks green. gh_api.sh now
+  keeps the latest run per (app, name) and requests per_page=100. rework-pr gains
+  clear_stale_rejection.sh (backed by update_and_wait.sh --check-only), which re-checks a
+  still-failing rejection against live CI and clears needs-work instead of burning a revision
+  attempt.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- Report proxy-blocked GitHub writes loudly from apply_verdict
+  ([`7ffd84c`](https://github.com/onpaj/harness/commit/7ffd84cf44cff7154d532a75a14af00a6b65587b))
+
+When the cloud proxy refuses a GitHub write with HTTP 403, apply_verdict.sh used to bury it in a
+  generic caveat and report ok. It now captures each failed write, adds proxy_blocked and
+  skipped_steps to its JSON, reports status partial when a merged PR's follow-up writes were
+  refused, and includes the cause in failure details. automerge-pr/SKILL.md says what to do with a
+  partial result.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- Stop declined and epic issues heading the planning queue
+  ([`631e37a`](https://github.com/onpaj/harness/commit/631e37a711b129b0d9f9704b071f060051de7012))
+
+plan-next-task returned the oldest open `agent` issue even when it carried `agent-blocked`, and a
+  run that declined an issue changed nothing, so the same issue was re-picked hourly and 74 issues
+  starved behind it. find_candidate.sh (plan and implement) now skips `agent-blocked` issues and,
+  for plan, epic trackers (label `epic` or title `Epic:`). New _lib/decline_issue.sh labels a
+  declined issue `agent-blocked` with a reason comment; both SKILL.md files tell the worker to call
+  it before exiting.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- Surface git's real error from hygiene prepare and flag repeat failures
+  ([`4d2cf06`](https://github.com/onpaj/harness/commit/4d2cf0618901b5e92bd216262f1bd5385a21e500))
+
+resolve_conflict.sh prepare discarded git's stderr and reported a fixed 'failed without producing
+  conflicted files', releasing the claim without flagging, so a PR GitHub reported CONFLICTING
+  looped every sweep. The detail now carries git's own output (and fetch/checkout/worktree errors),
+  a shallow clone is unshallowed before merging, and each failure leaves a marker comment; after 3
+  identical failures the PR is flagged needs-work with the captured error. hygiene-pr/hygiene-all
+  docs no longer tell the agent to dismiss the error as infrastructure.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+### Features
+
+- Init keeps locally edited scaffolding via an install manifest
+  ([`f23204b`](https://github.com/onpaj/harness/commit/f23204b0fc81e65cd7285d9c2702f014d7aeebb1))
+
+init overwrote every scaffolding file, reverting repo-local skill fixes on each run (cloud session
+  setup re-runs it). It now records installed files by hash in .agentharness-manifest.json and
+  leaves files edited since the last init alone, reporting them as kept; --overwrite-local resets. A
+  repo with no manifest is still fully overwritten on its first run.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+
 ## v0.34.5 (2026-10-19)
 
 ### Bug Fixes
