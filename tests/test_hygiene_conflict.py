@@ -37,11 +37,18 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   cat "$GH_STUB_VIEW"
   exit 0
 fi
+# Comments persist across invocations (one JSON object per line), so a test
+# can run the script repeatedly and watch the repeated-error count build up.
+if [ "$1" = "api" ] && [ "$2" = "--paginate" ]; then
+  if [ -s "$GH_STUB_COMMENTS" ]; then jq -s . "$GH_STUB_COMMENTS"; else echo "[]"; fi
+  exit 0
+fi
 if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
   prev=""
   for arg in "$@"; do
     if [ "$prev" = "--body-file" ] && [ -n "${GH_STUB_COMMENT_BODY:-}" ]; then
       cp "$arg" "$GH_STUB_COMMENT_BODY"
+      jq -n --rawfile b "$arg" '{body: $b}' >> "$GH_STUB_COMMENTS"
     fi
     prev="$arg"
   done
@@ -128,6 +135,7 @@ def runner(tmp_path, repo):
             "GH_STUB_VIEW": str(view),
             "GH_STUB_LOG": str(log),
             "GH_STUB_COMMENT_BODY": str(comment_body),
+            "GH_STUB_COMMENTS": str(tmp_path / "comments.jsonl"),
             "GH_STUB_VIEW_EXIT": str(view_exit),
             "GH_REPO": "onpaj/harness",
             "GIT_AUTHOR_NAME": "Test",
@@ -381,3 +389,59 @@ def test_both_hygiene_scripts_use_the_shared_helper():
             f"{script.name} must flag needs-work through _lib/flag_needs_work.sh, "
             "not its own copy of the comment block"
         )
+
+
+# === prepare: a merge that fails for a reason other than a conflict ===
+#
+# `git merge` can fail without leaving a conflicted path -- the common sandbox
+# case is unrelated histories from a shallow clone. The script used to throw
+# git's stderr away, report "failed without producing conflicted files", and
+# release the claim without flagging, so the same PR failed identically on
+# every sweep forever.
+
+
+@pytest.fixture
+def unrelated_head(repo):
+    """`feature/orphan`: a branch sharing no history with master."""
+    _git(repo, "checkout", "--orphan", "feature/orphan")
+    _git(repo, "rm", "-rf", "--quiet", ".")
+    (repo / "orphan.txt").write_text("no common ancestor\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "orphan root")
+    _git(repo, "push", "-u", "origin", "feature/orphan")
+    _git(repo, "checkout", "master")
+    return "feature/orphan"
+
+
+def test_prepare_error_includes_gits_own_stderr(runner, unrelated_head):
+    result = runner("prepare", head=unrelated_head)
+
+    assert result["status"] == "error"
+    assert "unrelated histories" in result["detail"]
+
+
+def test_prepare_error_releases_the_claim_and_leaves_no_worktree(runner, unrelated_head):
+    result = runner("prepare", head=unrelated_head)
+
+    assert any("--remove-label agent-wip" in c for c in result["_gh_calls"])
+    assert not any("needs-work" in c for c in result["_gh_calls"])
+
+
+def test_repeated_identical_prepare_errors_flag_the_pr_needs_work(runner, unrelated_head):
+    first = runner("prepare", head=unrelated_head)
+    second = runner("prepare", head=unrelated_head)
+    third = runner("prepare", head=unrelated_head)
+
+    assert first["status"] == "error" and second["status"] == "error"
+    assert third["status"] == "flagged"
+    assert "unrelated histories" in third["detail"]
+    assert any("--add-label needs-work" in c for c in third["_gh_calls"])
+    assert "verdict: REJECT" in third["_comment_body"]
+    assert "unrelated histories" in third["_comment_body"]
+
+
+def test_errors_below_the_threshold_do_not_flag(runner, unrelated_head):
+    runner("prepare", head=unrelated_head)
+    second = runner("prepare", head=unrelated_head)
+
+    assert not any("--add-label needs-work" in c for c in second["_gh_calls"])
